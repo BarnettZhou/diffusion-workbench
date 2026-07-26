@@ -1,0 +1,41 @@
+[project]
+name = "diffusion-workbench"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "torch",
+    "transformers",
+    "accelerate",
+    "safetensors",
+    "sentencepiece",
+    "pillow",
+    "pyyaml>=6.0",
+    "textual>=3.0",
+    # Krea2Pipeline 需要源码版 diffusers（尚未随正式版发布）
+    "diffusers @ git+https://github.com/huggingface/diffusers.git",
+]
+
+[project.scripts]
+diffusion-workbench = "diffusion_workbench.cli:main"
+
+[build-system]
+requires = ["setuptools>=81"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["diffusion_workbench", "diffusion_workbench_core"]
+
+[tool.setuptools.package-data]
+diffusion_workbench = ["workbench.yaml"]
+
+[tool.uv]
+package = true
+
+# RTX 5070 Ti 为 Blackwell (sm_120)，必须使用 cu128 及以上构建的 PyTorch
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cu128" }]
