@@ -71,7 +71,7 @@ class WorkbenchApp(App):
         self.eta_seconds = None
         self.stage = "idle"
         self.last_error = ""
-        self._shutdown_complete = False
+        self._shutdown_started = False
 
     def compose(self) -> ComposeResult:
         yield Static("diffusion-workbench", id="title")
@@ -97,6 +97,7 @@ class WorkbenchApp(App):
             log.write(line)
         if response.exit_requested:
             event.input.disabled = True
+            self._shutdown_started = True
             self.run_worker(
                 self._shutdown_and_exit(),
                 name="shutdown",
@@ -107,7 +108,6 @@ class WorkbenchApp(App):
 
     async def _shutdown_and_exit(self) -> None:
         await asyncio.to_thread(self.core.shutdown)
-        self._shutdown_complete = True
         self.exit()
 
     def _receive_core_event(self, event: dict) -> None:
@@ -236,5 +236,5 @@ class WorkbenchApp(App):
         return float(value) if value is not None else None
 
     def on_unmount(self) -> None:
-        if not self._shutdown_complete:
+        if not self._shutdown_started:
             self.core.shutdown()

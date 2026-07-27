@@ -34,6 +34,7 @@ class TuiCore:
         )
         self.sink = lambda _event: None
         self.closed = False
+        self.shutdown_calls = 0
         self.shutdown_started = threading.Event()
         self.release_shutdown = threading.Event()
         self.release_shutdown.set()
@@ -51,6 +52,7 @@ class TuiCore:
         }
 
     def shutdown(self):
+        self.shutdown_calls += 1
         self.shutdown_started.set()
         self.release_shutdown.wait(timeout=2)
         self.closed = True
@@ -79,11 +81,15 @@ class WorkbenchTuiTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(command.disabled)
                 self.assertTrue(app.is_running)
 
+                app.on_unmount()
+                self.assertEqual(core.shutdown_calls, 1)
+
                 core.release_shutdown.set()
                 await press
                 await pilot.pause()
 
             self.assertTrue(core.closed)
+            self.assertEqual(core.shutdown_calls, 1)
 
     async def test_all_generation_stages_keep_sampling_progress_visible(self):
         with tempfile.TemporaryDirectory() as temp_dir:
