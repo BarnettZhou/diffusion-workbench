@@ -11,11 +11,22 @@ from pathlib import Path
 
 from .config import WorkbenchConfig
 from .domain import JobRecord
+from .logging_config import silent_logger, worker_output_level
 from .runtime import GenerationCancelled
 
 
 EVENT_PREFIX = "DWB_EVENT="
 DEFAULT_WORKER_SCRIPT = Path(__file__).resolve().parent / "comfy_worker.py"
+WORKER_EVENT_REQUIRED_FIELDS = {
+    "ready": (),
+    "startup_error": (),
+    "stage_progress": ("job_id", "stage"),
+    "step_progress": ("job_id", "step", "total"),
+    "preview_image": ("job_id", "data"),
+    "result": ("job_id",),
+    "error": ("job_id",),
+    "stopped": (),
+}
 
 
 def _workbench_version() -> str:
@@ -27,16 +38,21 @@ def _workbench_version() -> str:
 
 class PersistentComfyRuntime:
     def __init__(
-        self, config: WorkbenchConfig, worker_script: Path = DEFAULT_WORKER_SCRIPT
+        self,
+        config: WorkbenchConfig,
+        worker_script: Path = DEFAULT_WORKER_SCRIPT,
+        logger=None,
     ):
         self.config = config
         self.worker_script = Path(worker_script).resolve()
+        self._logger = logger or silent_logger()
         self._process: subprocess.Popen | None = None
         self._events: queue.Queue[dict] = queue.Queue()
         self._process_lock = threading.RLock()
         self._generation_lock = threading.Lock()
         self._cancelled = threading.Event()
         self._logs: deque[str] = deque(maxlen=100)
+        self._reader_thread: threading.Thread | None = None
         self._loaded_model: str | None = None
         self._preview_enabled = False
         self._gpu_value = "查询中"
@@ -122,6 +138,7 @@ class PersistentComfyRuntime:
 
     def cancel(self) -> None:
         self._cancelled.set()
+        self._logger.warning("worker cancellation requested")
         self._terminate_process()
 
     def set_preview_enabled(self, enabled: bool) -> None:
@@ -135,11 +152,17 @@ class PersistentComfyRuntime:
             process = self._process
         if process is not None and process.poll() is None:
             try:
+                self._logger.info("worker shutdown requested pid=%s", process.pid)
                 self._write_command(process, {"type": "shutdown"})
                 process.wait(timeout=10)
             except (OSError, subprocess.TimeoutExpired):
+                self._logger.warning(
+                    "worker graceful shutdown failed pid=%s; terminating",
+                    process.pid,
+                )
                 self._terminate_process()
         if process is not None:
+            self._finish_reader()
             self._close_pipes(process)
         with self._process_lock:
             self._process = None
@@ -205,6 +228,12 @@ class PersistentComfyRuntime:
                 }
             )
             creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
+            self._logger.info(
+                "worker starting python=%s script=%s comfy_root=%s",
+                self.config.comfyui.python,
+                self.worker_script,
+                self.config.comfyui.root,
+            )
             process = subprocess.Popen(
                 [
                     str(self.config.comfyui.python),
@@ -226,12 +255,14 @@ class PersistentComfyRuntime:
             )
             self._events = queue.Queue()
             self._process = process
-            threading.Thread(
+            self._logger.info("worker process started pid=%s", process.pid)
+            self._reader_thread = threading.Thread(
                 target=self._read_output,
                 args=(process, self._events),
                 name=f"comfy-worker-{process.pid}",
                 daemon=True,
-            ).start()
+            )
+            self._reader_thread.start()
 
         startup_deadline = time.monotonic() + min(
             self.config.worker_timeout_seconds, 60
@@ -239,6 +270,7 @@ class PersistentComfyRuntime:
         while True:
             remaining = startup_deadline - time.monotonic()
             if remaining <= 0:
+                self._logger.error("worker startup timed out pid=%s", process.pid)
                 self._terminate_process()
                 raise TimeoutError("GPU Worker 启动超时")
             try:
@@ -248,8 +280,14 @@ class PersistentComfyRuntime:
                     self._raise_worker_exit(process)
                 continue
             if event.get("type") == "ready":
+                self._logger.info("worker ready pid=%s", process.pid)
                 return process
             if event.get("type") == "startup_error":
+                self._logger.error(
+                    "worker startup failed pid=%s error=%s",
+                    process.pid,
+                    event.get("error", "GPU Worker 初始化失败"),
+                )
                 self._terminate_process()
                 raise RuntimeError(event.get("error", "GPU Worker 初始化失败"))
             if event.get("type") == "process_eof":
@@ -266,12 +304,39 @@ class PersistentComfyRuntime:
                     event = json.loads(line.removeprefix(EVENT_PREFIX))
                 except json.JSONDecodeError:
                     self._logs.append(line)
+                    self._logger.warning(
+                        "worker pid=%s emitted invalid event: %s", process.pid, line
+                    )
                     continue
                 if isinstance(event, dict):
+                    issue = _worker_event_issue(event)
+                    if issue is not None:
+                        self._logger.warning(
+                            "worker pid=%s emitted invalid event issue=%s keys=%s",
+                            process.pid,
+                            issue,
+                            sorted(event),
+                        )
                     events.put(event)
+                else:
+                    self._logs.append(line)
+                    self._logger.warning(
+                        "worker pid=%s emitted non-object event: %s", process.pid, line
+                    )
             elif line:
                 self._logs.append(line)
+                self._logger.log(
+                    worker_output_level(line), "worker pid=%s %s", process.pid, line
+                )
         events.put({"type": "process_eof", "return_code": process.poll()})
+
+    def _finish_reader(self) -> None:
+        thread = self._reader_thread
+        if thread is None or thread is threading.current_thread():
+            return
+        thread.join()
+        if self._reader_thread is thread:
+            self._reader_thread = None
 
     @staticmethod
     def _write_command(process: subprocess.Popen, command: dict) -> None:
@@ -286,12 +351,15 @@ class PersistentComfyRuntime:
             if process is None:
                 return
         if process.poll() is None:
+            self._logger.warning("worker terminating pid=%s", process.pid)
             process.terminate()
             try:
                 process.wait(timeout=10)
             except subprocess.TimeoutExpired:
+                self._logger.warning("worker kill required pid=%s", process.pid)
                 process.kill()
                 process.wait(timeout=10)
+        self._finish_reader()
         self._close_pipes(process)
         with self._process_lock:
             if self._process is process:
@@ -299,14 +367,25 @@ class PersistentComfyRuntime:
                 self._loaded_model = None
 
     def _raise_worker_exit(self, process: subprocess.Popen) -> None:
+        self._finish_reader()
         self._close_pipes(process)
         with self._process_lock:
             if self._process is process:
                 self._process = None
                 self._loaded_model = None
         if self._cancelled.is_set():
+            self._logger.warning(
+                "worker exited after cancellation pid=%s code=%s",
+                process.pid,
+                process.poll(),
+            )
             raise GenerationCancelled("任务已取消，GPU Worker 已重启")
         log_tail = "\n".join(list(self._logs)[-20:])
+        self._logger.error(
+            "worker exited unexpectedly pid=%s code=%s",
+            process.pid,
+            process.poll(),
+        )
         raise RuntimeError(
             f"GPU Worker 异常退出，code={process.poll()}"
             + (f"\n{log_tail}" if log_tail else "")
@@ -341,3 +420,16 @@ class PersistentComfyRuntime:
                     stream.close()
                 except OSError:
                     pass
+
+
+def _worker_event_issue(event: dict) -> str | None:
+    event_type = event.get("type")
+    if not isinstance(event_type, str):
+        return "missing string type"
+    required = WORKER_EVENT_REQUIRED_FIELDS.get(event_type)
+    if required is None:
+        return f"unknown type {event_type!r}"
+    missing = [field for field in required if field not in event]
+    if missing:
+        return f"missing fields {missing}"
+    return None

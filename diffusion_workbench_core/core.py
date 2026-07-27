@@ -5,6 +5,7 @@ from .config import WorkbenchConfig, load_config
 from .controller import GenerationController
 from .domain import GenerationSettings, Mode, ResourceKind
 from .instance_lock import InstanceLock
+from .logging_config import CoreLogManager
 from .persistent_runtime import PersistentComfyRuntime
 from .storage import JobStore
 
@@ -12,19 +13,38 @@ from .storage import JobStore
 class WorkbenchCore:
     def __init__(self, config: WorkbenchConfig):
         self.config = config
+        self.log_path = config.database.with_suffix(".log").resolve()
         lock_path = config.database.with_suffix(config.database.suffix + ".lock")
-        self._instance_lock = InstanceLock(lock_path)
+        self._instance_lock = None
+        self._log_manager = None
         self.runtime = None
         try:
+            self._instance_lock = InstanceLock(lock_path)
+            self._log_manager = CoreLogManager(config.database)
+            logger = self._log_manager.logger
+            logger.info(
+                "core starting config=%s database=%s output_dir=%s",
+                config.path,
+                config.database,
+                config.output_dir,
+            )
             self.store = JobStore(config.database, config.output_dir)
             self.store.recover_incomplete_jobs()
             self.catalog = ResourceCatalog(config, self.store)
-            self.runtime = PersistentComfyRuntime(config)
-            self.controller = GenerationController(self.runtime, self.store)
+            self.runtime = PersistentComfyRuntime(config, logger=logger)
+            self.controller = GenerationController(
+                self.runtime, self.store, logger=logger
+            )
+            logger.info("core ready log_file=%s", self.log_path)
         except Exception:
+            if self._log_manager is not None:
+                self._log_manager.logger.exception("core startup failed")
             if self.runtime is not None:
                 self.runtime.close()
-            self._instance_lock.close()
+            if self._instance_lock is not None:
+                self._instance_lock.close()
+            if self._log_manager is not None:
+                self._log_manager.close()
             raise
 
     @classmethod
@@ -75,10 +95,20 @@ class WorkbenchCore:
     def set_preview_enabled(self, enabled: bool) -> None:
         """Enable or disable base64 JPEG preview events for future sampling steps."""
 
+        if self._log_manager is not None:
+            self._log_manager.logger.info("preview enabled=%s", bool(enabled))
         self.runtime.set_preview_enabled(enabled)
 
     def shutdown(self) -> None:
+        logger = self._log_manager.logger if self._log_manager is not None else None
+        if logger is not None:
+            logger.info("core shutting down")
         try:
             self.controller.shutdown()
         finally:
-            self._instance_lock.close()
+            if self._instance_lock is not None:
+                self._instance_lock.close()
+            if logger is not None:
+                logger.info("core stopped")
+            if self._log_manager is not None:
+                self._log_manager.close()

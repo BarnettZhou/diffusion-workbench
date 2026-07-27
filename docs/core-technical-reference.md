@@ -8,6 +8,7 @@ FastAPI 服务共同复用的核心层，不包含 HTTP、WebSocket 或界面状
 - [FastAPI 后端接入指南](backend-integration.md)
 - [CLI/TUI 使用说明](workbench-cli.md)
 - [生成预览、速度与 PNG 元数据](generation-preview-speed-and-metadata.md)
+- [Core 日志与任务审计记录](core-logging-and-job-audit.md)
 - [Krea2 非 ComfyUI 后端研究](krea2-alternative-backends.md)
 
 ## 1. 当前能力与边界
@@ -25,6 +26,7 @@ FastAPI 服务共同复用的核心层，不包含 HTTP、WebSocket 或界面状
 - SQLite 任务记录、资源别名和原子 PNG 输出；
 - 队列、执行阶段、采样速度/ETA、可选 latent 预览、错误和完成事件；
 - 带版本化生成参数 iTXt 元数据的 PNG 输出。
+- 独立的 UTF-8 轮转运行日志和 Worker stdout/stderr 持久化。
 
 核心不负责：
 
@@ -128,6 +130,7 @@ finally:
 `core.store`、`core.catalog`、`core.controller` 和 `core.runtime` 当前可访问，但属于内部
 组件。后端第一版若必须读取单个任务，只能临时使用 `core.store.get_job(job_id)`；长期
 应把 `get_job()`、`list_jobs()` 提升为 `WorkbenchCore` 的正式公共方法。
+`core.log_path` 是本实例 Core 诊断日志的绝对路径。
 
 ## 4. 配置契约
 
@@ -500,6 +503,11 @@ CFG 和 error。
 
 状态转换和最终 seed 都会写回数据库。启动恢复会把遗留 `queued`/`running` 统一标记为
 `cancelled`，错误信息为“Workbench 上次退出时任务未完成”。
+
+`jobs.output_path` 是生成时的历史路径快照，不是任务记录有效性的条件。图片移动或删除后，
+任务仍保留且可由任务读取接口完整读取；图片下载端点可单独返回 `410 Gone`。
+Core 不会因文件缺失修改 completed 状态。详细契约和日志格式见
+[Core 日志与任务审计记录](core-logging-and-job-audit.md)。
 
 输出命名：
 

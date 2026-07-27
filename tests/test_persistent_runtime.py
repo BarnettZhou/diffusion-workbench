@@ -1,3 +1,4 @@
+import logging
 import sys
 import tempfile
 import threading
@@ -16,12 +17,18 @@ FAKE_WORKER = r'''
 import argparse, json, sys
 parser = argparse.ArgumentParser(); parser.add_argument("--comfy-root"); parser.parse_args()
 def emit(payload): print("DWB_EVENT=" + json.dumps(payload), flush=True)
+print("worker booted", flush=True)
+print("WARNING: worker warning", flush=True)
+print("[ERROR] worker error", flush=True)
+emit({"type": "mystery"})
 emit({"type": "ready"})
 loaded = None
 for line in sys.stdin:
     command = json.loads(line)
     if command["type"] == "shutdown":
-        emit({"type": "stopped"}); break
+        emit({"type": "stopped"})
+        print("worker shutdown tail", flush=True)
+        break
     loaded_now = loaded != command["model_path"]
     loaded = command["model_path"]
     emit({"type": "stage_progress", "job_id": command["job_id"], "stage": "sampling", "total": command["steps"]})
@@ -33,6 +40,47 @@ for line in sys.stdin:
 
 
 class PersistentRuntimeTests(unittest.TestCase):
+    def test_forwards_worker_output_to_injected_logger(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            worker_script = root / "fake_worker.py"
+            worker_script.write_text(FAKE_WORKER, encoding="utf-8")
+            config = WorkbenchConfig(
+                path=root / "config.yaml",
+                comfyui=ComfyConfig(root, Path(sys.executable)),
+                resources={
+                    Mode.ZIT: ModeResources(
+                        (), (), root / "te.safetensors", "stable_diffusion"
+                    )
+                },
+                output_dir=root / "output",
+                database=root / "jobs.sqlite3",
+                worker_timeout_seconds=10,
+            )
+            logger = logging.getLogger(f"test.runtime.{id(self)}")
+            runtime = PersistentComfyRuntime(
+                config, worker_script=worker_script, logger=logger
+            )
+
+            with self.assertLogs(logger, level=logging.INFO) as captured:
+                runtime.generate(
+                    self.make_job(root, "logged"),
+                    lambda _step, _total, _metrics: None,
+                    lambda _stage, _total: None,
+                )
+                runtime.close()
+
+            messages = "\n".join(captured.output)
+            self.assertIn("INFO:test.runtime", messages)
+            self.assertIn("worker booted", messages)
+            self.assertIn("WARNING:test.runtime", messages)
+            self.assertIn("worker warning", messages)
+            self.assertIn("ERROR:test.runtime", messages)
+            self.assertIn("worker error", messages)
+            self.assertIn("emitted invalid event", messages)
+            self.assertIn("unknown type 'mystery'", messages)
+            self.assertIn("worker shutdown tail", messages)
+
     def test_reuses_worker_and_loaded_model_for_consecutive_jobs(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
