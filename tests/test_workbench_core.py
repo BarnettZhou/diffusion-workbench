@@ -4,6 +4,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 import threading
 from pathlib import Path
+from unittest.mock import patch
 
 from diffusion_workbench_core.catalog import ResourceCatalog
 from diffusion_workbench_core.config import load_config
@@ -349,6 +350,23 @@ class GenerationControllerTests(unittest.TestCase):
             step = next(event for event in events if event["type"] == "step_progress")
             self.assertEqual(step["steps_per_second"], 2.0)
             self.assertEqual(step["eta_seconds"], 3.5)
+
+    def test_default_random_seed_is_safe_for_javascript_numbers(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            store = JobStore(root / "jobs.sqlite3", root / "output")
+            runtime = RecordingRuntime()
+            with patch(
+                "diffusion_workbench_core.controller.secrets.randbelow",
+                return_value=123,
+            ) as randbelow:
+                controller = GenerationController(runtime, store)
+                job = controller.submit(self.make_settings(root), 1)[0]
+                controller.wait_idle()
+                controller.shutdown()
+
+            randbelow.assert_called_once_with(2**53)
+            self.assertEqual(store.get_job(job.id).seed, 123)
 
     def test_stop_cancels_running_and_queued_jobs(self):
         with tempfile.TemporaryDirectory() as temp_dir:

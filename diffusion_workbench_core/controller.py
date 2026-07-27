@@ -12,6 +12,7 @@ from .storage import JobStore
 
 
 EventSink = Callable[[dict], None]
+RANDOM_SEED_UPPER_BOUND = 2**53
 
 
 class GenerationController:
@@ -26,7 +27,9 @@ class GenerationController:
         self.runtime = runtime
         self.store = store
         self._event_sink = event_sink or (lambda _event: None)
-        self._seed_source = seed_source or (lambda: secrets.randbelow(2**63))
+        self._seed_source = seed_source or (
+            lambda: secrets.randbelow(RANDOM_SEED_UPPER_BOUND)
+        )
         self._logger = logger or silent_logger()
         self._queue: queue.Queue[tuple[int, JobRecord] | None] = queue.Queue()
         self._lock = threading.RLock()
