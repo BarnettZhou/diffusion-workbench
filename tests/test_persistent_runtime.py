@@ -39,8 +39,95 @@ for line in sys.stdin:
     emit({"type": "result", "job_id": command["job_id"], "loaded_model": loaded_now, "preview_enabled": command.get("preview_enabled"), "output_path": command["output_path"]})
 '''
 
+CANCELLABLE_FAKE_WORKER = r'''
+import argparse, json, queue, sys, threading
+parser = argparse.ArgumentParser(); parser.add_argument("--comfy-root"); parser.parse_args()
+def emit(payload): print("DWB_EVENT=" + json.dumps(payload), flush=True)
+commands = queue.Queue()
+cancelled = threading.Event()
+def read_commands():
+    for line in sys.stdin:
+        command = json.loads(line)
+        if command["type"] == "cancel":
+            cancelled.set()
+        else:
+            commands.put(command)
+threading.Thread(target=read_commands, daemon=True).start()
+emit({"type": "ready"})
+loaded = None
+while True:
+    command = commands.get()
+    if command["type"] == "shutdown":
+        emit({"type": "stopped"})
+        break
+    loaded_now = loaded != command["model_path"]
+    loaded = command["model_path"]
+    emit({"type": "stage_progress", "job_id": command["job_id"], "stage": "sampling", "total": command["steps"]})
+    if command["job_id"] == "cancelled":
+        cancelled.wait(5)
+        cancelled.clear()
+        emit({"type": "cancelled", "job_id": command["job_id"], "model_path": command["model_path"]})
+        continue
+    emit({"type": "result", "job_id": command["job_id"], "loaded_model": loaded_now, "output_path": command["output_path"]})
+'''
+
 
 class PersistentRuntimeTests(unittest.TestCase):
+    def test_cancel_keeps_worker_and_loaded_model_alive(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            worker_script = root / "fake_worker.py"
+            worker_script.write_text(CANCELLABLE_FAKE_WORKER, encoding="utf-8")
+            config = WorkbenchConfig(
+                path=root / "config.yaml",
+                comfyui=ComfyConfig(root, Path(sys.executable)),
+                resources={
+                    Mode.ZIT: ModeResources(
+                        (), (), root / "te.safetensors", "stable_diffusion"
+                    )
+                },
+                output_dir=root / "output",
+                database=root / "jobs.sqlite3",
+                worker_timeout_seconds=10,
+            )
+            runtime = PersistentComfyRuntime(config, worker_script=worker_script)
+            sampling = threading.Event()
+            cancellation = []
+
+            def generate_cancelled_job():
+                try:
+                    runtime.generate(
+                        self.make_job(root, "cancelled"),
+                        lambda _step, _total, _metrics: None,
+                        lambda stage, _total: sampling.set()
+                        if stage == "sampling"
+                        else None,
+                    )
+                except GenerationCancelled as exc:
+                    cancellation.append(exc)
+
+            thread = threading.Thread(target=generate_cancelled_job)
+            thread.start()
+            self.assertTrue(sampling.wait(2))
+            worker_pid = runtime.status()["pid"]
+            runtime.cancel()
+            thread.join(2)
+
+            self.assertFalse(thread.is_alive())
+            self.assertEqual(len(cancellation), 1)
+            self.assertEqual(runtime.status()["pid"], worker_pid)
+            self.assertEqual(
+                runtime.status()["loaded_model"], str((root / "model.safetensors").resolve())
+            )
+            result = runtime.generate(
+                self.make_job(root, "next"),
+                lambda _step, _total, _metrics: None,
+                lambda _stage, _total: None,
+            )
+            runtime.close()
+
+            self.assertFalse(result["loaded_model"])
+
     def test_cancel_before_generate_is_consumed_by_that_generation_only(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

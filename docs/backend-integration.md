@@ -546,8 +546,8 @@ FastAPI 第一版至少需要：
 5. 验证 GET job 最终 completed 和 PNG 可下载；
 6. 同模型第二张确认 Worker PID 不变；
 7. 切模型确认重新加载；
-8. 运行任务时 stop，确认当前/队列 cancelled、Worker stopped；
-9. 再提交一张确认 Worker 可重启；
+8. 运行任务时 stop，确认当前/队列 cancelled、Worker PID 和已加载资源不变；
+9. 再提交一张确认 Worker 和模型被复用；
 10. 退出 API，确认 Comfy Python 子进程和 GPU 资源释放。
 
 ## 19. 推荐实施顺序

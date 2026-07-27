@@ -7,7 +7,9 @@ import json
 import logging
 import os
 import platform
+import queue
 import sys
+import threading
 import time
 import traceback
 from io import BytesIO
@@ -405,6 +407,9 @@ class ComfyWorker:
         self.model_management.unload_all_models()
         self.model_management.soft_empty_cache(force=True)
 
+    def cancel(self) -> None:
+        self.model_management.interrupt_current_processing()
+
     def release(self) -> None:
         self._unload_gpu()
         self.model = None
@@ -442,31 +447,89 @@ def main() -> None:
         emit({"type": "startup_error", "error": f"{type(exc).__name__}: {exc}"})
         raise
     emit({"type": "ready"})
-    for line in sys.stdin:
-        command = {}
+
+    commands: queue.Queue[dict] = queue.Queue()
+    active_lock = threading.RLock()
+    active_job_id: str | None = None
+
+    def read_commands() -> None:
+        nonlocal active_job_id
         try:
-            command = json.loads(line)
-            if command.get("type") == "shutdown":
-                worker.release()
-                emit({"type": "stopped"})
-                return
-            if command.get("type") != "generate":
-                raise ValueError("未知 Worker 命令")
-            emit(worker.generate(command))
+            for line in sys.stdin:
+                try:
+                    command = json.loads(line)
+                except Exception as exc:
+                    commands.put(
+                        {
+                            "type": "invalid",
+                            "error": f"{type(exc).__name__}: {exc}",
+                        }
+                    )
+                    continue
+                command_type = command.get("type")
+                if command_type == "cancel":
+                    with active_lock:
+                        should_cancel = active_job_id == command.get("job_id")
+                    if should_cancel:
+                        worker.cancel()
+                    continue
+                if command_type == "shutdown":
+                    with active_lock:
+                        should_cancel = active_job_id is not None
+                    if should_cancel:
+                        worker.cancel()
+                commands.put(command)
+        finally:
+            commands.put({"type": "shutdown"})
+
+    threading.Thread(
+        target=read_commands,
+        name="worker-command-reader",
+        daemon=True,
+    ).start()
+
+    while True:
+        command = commands.get()
+        command_type = command.get("type")
+        if command_type == "shutdown":
+            worker.release()
+            emit({"type": "stopped"})
+            return
+        if command_type != "generate":
+            emit(
+                {
+                    "type": "error",
+                    "job_id": command.get("job_id"),
+                    "error": command.get("error", "未知 Worker 命令"),
+                }
+            )
+            continue
+        with active_lock:
+            active_job_id = command.get("job_id")
+        try:
+            payload = worker.generate(command)
+        except worker.model_management.InterruptProcessingException:
+            payload = {
+                "type": "cancelled",
+                "job_id": command.get("job_id"),
+                "model_path": str(worker.model_path) if worker.model_path else None,
+            }
         except Exception as exc:
             traceback_text = traceback.format_exc()
             try:
                 worker.release()
             except Exception as cleanup_exc:
                 logging.exception("生成失败后的资源清理也失败: %s", cleanup_exc)
-            emit(
-                {
-                    "type": "error",
-                    "job_id": command.get("job_id") if isinstance(command, dict) else None,
-                    "error": f"{type(exc).__name__}: {exc}",
-                    "traceback": traceback_text,
-                }
-            )
+            payload = {
+                "type": "error",
+                "job_id": command.get("job_id"),
+                "error": f"{type(exc).__name__}: {exc}",
+                "traceback": traceback_text,
+            }
+        finally:
+            with active_lock:
+                active_job_id = None
+        emit(payload)
 
 
 if __name__ == "__main__":

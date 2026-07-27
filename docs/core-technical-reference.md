@@ -261,7 +261,7 @@ stateDiagram-v2
     queued --> cancelled: stop / stale generation
     running --> completed: image saved + DB update
     running --> failed: validation/runtime/worker/save error
-    running --> cancelled: skip / stop terminates Worker
+    running --> cancelled: skip / stop interrupts sampling
     queued --> cancelled: process restart recovery
     running --> cancelled: process restart recovery
 ```
@@ -273,19 +273,19 @@ stateDiagram-v2
 
 1. 增加队列 generation，防止已取出但未启动的旧任务继续运行；
 2. 清空等待队列并将这些任务标记为 `cancelled`；
-3. 若存在运行中任务，终止整个 Comfy Worker 进程；
-4. 下一次任务会创建一个干净的新 Worker。
+3. 若存在运行中任务，请求 ComfyUI 中断当前采样；
+4. Worker 进程和已加载资源保持可用，下一次任务可以直接复用。
 
 `skip_current()` 只处理当前运行任务：
 
 1. 不增加队列 generation，也不移除任何等待任务；
-2. 标记当前 job 为取消目标并终止其 Worker；
-3. 当前 job 写为 `cancelled` 后，消费线程继续取下一项并创建干净的新 Worker；
-4. 没有等待任务时，Worker 保持停止，Controller 进入空闲状态；
+2. 标记当前 job 为取消目标并请求 ComfyUI 中断当前采样；
+3. 当前 job 写为 `cancelled` 后，消费线程继续取下一项并复用当前 Worker；
+4. 没有等待任务时，Worker 和已加载资源保持就绪，Controller 进入空闲状态；
 5. 空闲、准备阶段或已经认领完成结果时返回 `None`，不修改队列和 SQLite；
 6. Worker 取消失败时撤销 skip 标记并抛出 `RuntimeError`，不会伪报跳过成功。
 
-取消动作在 Controller 状态锁内发起，避免当前任务自然结束的同时误终止刚启动的下一项。
+取消动作在 Controller 状态锁内发起，避免当前任务自然结束的同时误取消刚启动的下一项。
 当前仍不支持 `cancel(job_id)`，也不能用 skip 取消等待队列中的指定任务。FastAPI 不应把
 `stop()` 包装成单任务 DELETE。
 
@@ -566,8 +566,8 @@ migration/version 策略，不能
 | 推理或保存失败 | Worker release 模型，发 error，任务 failed |
 | Worker 意外退出 | Runtime 附加最近 20 行日志，任务 failed |
 | 超时 | Worker 被终止，任务 failed |
-| `skip_current()` | 当前任务 cancelled；等待任务继续；队列为空则 Worker stopped |
-| `stop()` | 当前和等待任务 cancelled；下次任务重启 Worker |
+| `skip_current()` | 当前任务 cancelled；等待任务继续；Worker 和已加载资源保留 |
+| `stop()` | 当前和等待任务 cancelled；Worker 和已加载资源保留 |
 | 主进程异常退出 | 下次初始化将 queued/running 恢复为 cancelled |
 | event sink 抛异常 | 异常被吞掉，生成继续 |
 
