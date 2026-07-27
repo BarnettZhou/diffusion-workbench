@@ -1,3 +1,5 @@
+import asyncio
+
 from textual.app import App, ComposeResult
 from textual.message import Message
 from textual.widgets import Input, RichLog, Static
@@ -69,6 +71,7 @@ class WorkbenchApp(App):
         self.eta_seconds = None
         self.stage = "idle"
         self.last_error = ""
+        self._shutdown_complete = False
 
     def compose(self) -> ComposeResult:
         yield Static("diffusion-workbench", id="title")
@@ -93,9 +96,19 @@ class WorkbenchApp(App):
         for line in response.lines:
             log.write(line)
         if response.exit_requested:
-            self.exit()
+            event.input.disabled = True
+            self.run_worker(
+                self._shutdown_and_exit(),
+                name="shutdown",
+                exclusive=True,
+            )
         else:
             self._render_progress()
+
+    async def _shutdown_and_exit(self) -> None:
+        await asyncio.to_thread(self.core.shutdown)
+        self._shutdown_complete = True
+        self.exit()
 
     def _receive_core_event(self, event: dict) -> None:
         if not self.is_running:
@@ -223,4 +236,5 @@ class WorkbenchApp(App):
         return float(value) if value is not None else None
 
     def on_unmount(self) -> None:
-        self.core.shutdown()
+        if not self._shutdown_complete:
+            self.core.shutdown()

@@ -68,8 +68,7 @@ class CommandSession:
                 self.core.stop()
                 return CommandResponse(("已停止当前任务并清空队列",))
             if command == "exit":
-                self.core.shutdown()
-                return CommandResponse(("资源已释放",), exit_requested=True)
+                return CommandResponse(("正在卸载资源……",), exit_requested=True)
             if command == "help":
                 return CommandResponse((
                     "/mode  /model list|set|set-alias  /vae list|set|set-alias",

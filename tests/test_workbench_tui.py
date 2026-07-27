@@ -1,9 +1,10 @@
 import asyncio
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
-from textual.widgets import Input, Static
+from textual.widgets import Input, RichLog, Static
 
 from diffusion_workbench.tui import WorkbenchApp
 from diffusion_workbench_core.config import (
@@ -33,6 +34,9 @@ class TuiCore:
         )
         self.sink = lambda _event: None
         self.closed = False
+        self.shutdown_started = threading.Event()
+        self.release_shutdown = threading.Event()
+        self.release_shutdown.set()
 
     def set_event_sink(self, sink):
         self.sink = sink
@@ -47,10 +51,40 @@ class TuiCore:
         }
 
     def shutdown(self):
+        self.shutdown_started.set()
+        self.release_shutdown.wait(timeout=2)
         self.closed = True
 
 
 class WorkbenchTuiTests(unittest.IsolatedAsyncioTestCase):
+    async def test_exit_shows_shutdown_message_before_waiting_for_core(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            core = TuiCore(Path(temp_dir))
+            core.release_shutdown.clear()
+            app = WorkbenchApp(core)
+
+            async with app.run_test(size=(100, 30)) as pilot:
+                command = app.query_one("#command", Input)
+                command.value = "/exit"
+                press = asyncio.create_task(pilot.press("enter"))
+
+                started = await asyncio.to_thread(core.shutdown_started.wait, 1)
+                self.assertTrue(started)
+                await pilot.pause()
+
+                log = app.query_one("#log", RichLog)
+                self.assertIn(
+                    "正在卸载资源", "\n".join(str(line) for line in log.lines)
+                )
+                self.assertTrue(command.disabled)
+                self.assertTrue(app.is_running)
+
+                core.release_shutdown.set()
+                await press
+                await pilot.pause()
+
+            self.assertTrue(core.closed)
+
     async def test_all_generation_stages_keep_sampling_progress_visible(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             core = TuiCore(Path(temp_dir))

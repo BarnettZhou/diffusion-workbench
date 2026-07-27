@@ -109,7 +109,7 @@ class CommandSessionTests(unittest.TestCase):
             self.assertIn("krea2", "\n".join(switched.lines))
             self.assertIsNone(session.selected_model)
 
-    def test_rejects_invalid_settings_and_exit_releases_core(self):
+    def test_rejects_invalid_settings_and_exit_defers_core_shutdown_to_tui(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             core = FakeCore(Path(temp_dir))
             session = CommandSession(core)
@@ -119,7 +119,8 @@ class CommandSessionTests(unittest.TestCase):
             response = session.handle("/exit")
 
             self.assertTrue(response.exit_requested)
-            self.assertTrue(core.closed)
+            self.assertIn("正在卸载资源", "\n".join(response.lines))
+            self.assertFalse(core.closed)
 
 
 if __name__ == "__main__":
