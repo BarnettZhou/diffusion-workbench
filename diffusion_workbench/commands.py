@@ -76,7 +76,7 @@ class CommandSession:
             if command == "sampler":
                 return self._choice("sampler", SAMPLERS, args)
             if command == "scheduler":
-                return self._choice("scheduler", SCHEDULERS, args, direct_set=True)
+                return self._choice("scheduler", SCHEDULERS, args)
             if command == "start":
                 return self._start(args)
             if command == "status":
@@ -190,21 +190,16 @@ class CommandSession:
         label: str,
         choices: tuple[str, ...],
         args: list[str],
-        *,
-        direct_set: bool = False,
     ) -> CommandResponse:
         if len(args) == 1 and args[0].lower() == "list":
             return CommandResponse(
                 tuple(f"[{index}] {name}" for index, name in enumerate(choices, 1))
             )
-        value_args = args if direct_set else args[1:]
-        if not direct_set and (not args or args[0].lower() != "set"):
+        if not args or args[0].lower() != "set":
             raise ValueError(f"用法: /{label} list | set <name|index>")
-        if direct_set and value_args and value_args[0].lower() == "set":
-            value_args = value_args[1:]
+        value_args = args[1:]
         if len(value_args) != 1:
-            suffix = "list | [set] <name|index>" if direct_set else "list | set <name|index>"
-            raise ValueError(f"用法: /{label} {suffix}")
+            raise ValueError(f"用法: /{label} list | set <name|index>")
         selected = self._choice_at(label, choices, value_args[0])
         setattr(self, label, selected)
         return CommandResponse((f"{label} 已设置为 {selected}",))

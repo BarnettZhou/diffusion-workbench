@@ -144,7 +144,7 @@ class CommandSessionTests(unittest.TestCase):
             session.handle("/cfg 4")
             session.handle("/steps 40")
             session.handle("/sampler set 2")
-            session.handle("/scheduler sgm_uniform")
+            session.handle("/scheduler set sgm_uniform")
             session.handle("/start")
 
             settings, _count = core.submitted[0]
