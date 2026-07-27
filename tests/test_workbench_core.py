@@ -175,12 +175,21 @@ class RecordingRuntime:
         self.max_active = 0
         self.closed = False
 
-    def generate(self, job, progress, stage):
+    def generate(self, job, progress, stage, preview=None):
         self.active += 1
         self.max_active = max(self.max_active, self.active)
         self.jobs.append(job)
         stage("sampling", job.steps)
-        progress(1, job.steps)
+        progress(
+            1,
+            job.steps,
+            {
+                "elapsed_seconds": 0.5,
+                "seconds_per_step": 0.5,
+                "steps_per_second": 2.0,
+                "eta_seconds": 3.5,
+            },
+        )
         job.output_path.parent.mkdir(parents=True, exist_ok=True)
         job.output_path.write_bytes(b"png")
         self.active -= 1
@@ -195,6 +204,9 @@ class RecordingRuntime:
     def status(self):
         return {"worker": "ready", "gpu": "0/16 GiB"}
 
+    def set_preview_enabled(self, enabled):
+        self.preview_enabled = enabled
+
 
 class BlockingRuntime(RecordingRuntime):
     def __init__(self):
@@ -202,7 +214,7 @@ class BlockingRuntime(RecordingRuntime):
         self.started = threading.Event()
         self.cancelled = threading.Event()
 
-    def generate(self, job, progress, stage):
+    def generate(self, job, progress, stage, preview=None):
         self.started.set()
         self.cancelled.wait(5)
         raise GenerationCancelled("cancelled")
@@ -237,7 +249,13 @@ class GenerationControllerTests(unittest.TestCase):
             store = JobStore(root / "jobs.sqlite3", root / "output")
             runtime = RecordingRuntime()
             seeds = iter([101, 102])
-            controller = GenerationController(runtime, store, seed_source=lambda: next(seeds))
+            events = []
+            controller = GenerationController(
+                runtime,
+                store,
+                event_sink=events.append,
+                seed_source=lambda: next(seeds),
+            )
 
             jobs = controller.submit(self.make_settings(root), 2)
             controller.wait_idle()
@@ -249,6 +267,11 @@ class GenerationControllerTests(unittest.TestCase):
             self.assertEqual([job.status for job in persisted], ["completed", "completed"])
             self.assertTrue(all(job.duration_seconds is not None for job in persisted))
             self.assertTrue(runtime.closed)
+            started = [event for event in events if event["type"] == "job_started"]
+            self.assertEqual([event["steps"] for event in started], [8, 8])
+            step = next(event for event in events if event["type"] == "step_progress")
+            self.assertEqual(step["steps_per_second"], 2.0)
+            self.assertEqual(step["eta_seconds"], 3.5)
 
     def test_stop_cancels_running_and_queued_jobs(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -265,6 +288,29 @@ class GenerationControllerTests(unittest.TestCase):
             controller.shutdown()
 
             self.assertEqual(statuses, ["cancelled", "cancelled"])
+
+    def test_cancelled_before_start_event_keeps_job_step_snapshot(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            store = JobStore(root / "jobs.sqlite3", root / "output")
+            runtime = RecordingRuntime()
+            events = []
+            controller = GenerationController(runtime, store, event_sink=events.append)
+            controller.stop()
+            settings = replace(self.make_settings(root), steps=12)
+            job = store.create_jobs(settings, 1)[0]
+
+            controller._queue.put((0, job))
+            controller.wait_idle()
+            controller.shutdown()
+
+            finished = [
+                event
+                for event in events
+                if event["type"] == "job_finished" and event["job_id"] == job.id
+            ]
+            self.assertEqual(finished[0]["status"], "cancelled")
+            self.assertEqual(finished[0]["steps"], 12)
 
     def test_seed_failure_does_not_kill_queue_thread_or_block_shutdown(self):
         with tempfile.TemporaryDirectory() as temp_dir:

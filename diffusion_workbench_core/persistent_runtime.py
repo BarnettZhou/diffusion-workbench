@@ -6,6 +6,7 @@ import subprocess
 import threading
 import time
 from collections import deque
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
 from .config import WorkbenchConfig
@@ -15,6 +16,13 @@ from .runtime import GenerationCancelled
 
 EVENT_PREFIX = "DWB_EVENT="
 DEFAULT_WORKER_SCRIPT = Path(__file__).resolve().parent / "comfy_worker.py"
+
+
+def _workbench_version() -> str:
+    try:
+        return version("diffusion-workbench")
+    except PackageNotFoundError:
+        return "development"
 
 
 class PersistentComfyRuntime:
@@ -30,6 +38,7 @@ class PersistentComfyRuntime:
         self._cancelled = threading.Event()
         self._logs: deque[str] = deque(maxlen=100)
         self._loaded_model: str | None = None
+        self._preview_enabled = False
         self._gpu_value = "查询中"
         self._gpu_probe_running = False
         self._gpu_probe_time = 0.0
@@ -37,15 +46,17 @@ class PersistentComfyRuntime:
         atexit.register(self.close)
         self._request_gpu_probe()
 
-    def generate(self, job: JobRecord, progress, stage) -> dict:
+    def generate(self, job: JobRecord, progress, stage, preview=None) -> dict:
         with self._generation_lock:
             if self._closed:
                 raise RuntimeError("GPU Worker 已关闭")
             self._cancelled.clear()
+            stage("starting_worker", job.steps)
             process = self._ensure_process()
             command = {
                 "type": "generate",
                 "job_id": job.id,
+                "batch_id": job.batch_id,
                 "mode": job.mode.value,
                 "model_path": str(job.model_path.resolve()),
                 "vae_path": str(job.vae_path.resolve()),
@@ -60,6 +71,8 @@ class PersistentComfyRuntime:
                 "sampler": job.sampler,
                 "scheduler": job.scheduler,
                 "output_path": str(job.output_path.resolve()),
+                "preview_enabled": self._preview_enabled,
+                "workbench_version": _workbench_version(),
             }
             self._write_command(process, command)
             deadline = time.monotonic() + self.config.worker_timeout_seconds
@@ -78,7 +91,20 @@ class PersistentComfyRuntime:
                     continue
                 event_type = event.get("type")
                 if event_type == "step_progress" and event.get("job_id") == job.id:
-                    progress(int(event["step"]), int(event["total"]))
+                    metrics = {
+                        key: event.get(key)
+                        for key in (
+                            "elapsed_seconds",
+                            "step_seconds",
+                            "seconds_per_step",
+                            "steps_per_second",
+                            "eta_seconds",
+                        )
+                    }
+                    progress(int(event["step"]), int(event["total"]), metrics)
+                elif event_type == "preview_image" and event.get("job_id") == job.id:
+                    if preview is not None:
+                        preview(event)
                 elif event_type == "stage_progress" and event.get("job_id") == job.id:
                     total = event.get("total")
                     stage(str(event["stage"]), int(total) if total is not None else None)
@@ -97,6 +123,9 @@ class PersistentComfyRuntime:
     def cancel(self) -> None:
         self._cancelled.set()
         self._terminate_process()
+
+    def set_preview_enabled(self, enabled: bool) -> None:
+        self._preview_enabled = bool(enabled)
 
     def close(self) -> None:
         with self._process_lock:
@@ -126,6 +155,7 @@ class PersistentComfyRuntime:
             "worker": "ready" if running else "stopped",
             "pid": pid,
             "loaded_model": self._loaded_model,
+            "preview_enabled": self._preview_enabled,
             "gpu": self._gpu_value,
         }
 

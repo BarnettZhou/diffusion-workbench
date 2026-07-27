@@ -30,6 +30,7 @@ class GenerationController:
         self._current: JobRecord | None = None
         self._cancel_requested: set[str] = set()
         self._generation = 0
+        self._queue_event_sequence = 0
         self._closed = False
         self._thread = threading.Thread(target=self._run, name="generation-controller", daemon=True)
         self._thread.start()
@@ -44,8 +45,8 @@ class GenerationController:
             jobs = self.store.create_jobs(settings, count)
             for job in jobs:
                 self._queue.put((self._generation, job))
-            self._emit_queue()
-            return jobs
+        self._emit_queue()
+        return jobs
 
     def stop(self) -> None:
         queued = []
@@ -147,27 +148,41 @@ class GenerationController:
                             "type": "job_finished",
                             "job_id": job.id,
                             "status": "cancelled",
+                            "steps": job.steps,
                         }
                     )
                     self._emit_queue()
                 continue
+            self._emit_queue()
             started_clock = time.perf_counter()
             status = "failed"
             try:
                 started_at = datetime.now().astimezone()
                 seed = job.seed if job.seed >= 0 else self._seed_source()
                 running_job = self.store.mark_running(job.id, seed, started_at)
-                self._emit({"type": "job_started", "job_id": job.id, "seed": seed})
-                self.runtime.generate(
-                    running_job,
-                    lambda step, total: self._emit(
+                self._emit(
+                    {
+                        "type": "job_started",
+                        "job_id": job.id,
+                        "seed": seed,
+                        "steps": running_job.steps,
+                    }
+                )
+
+                def progress(step, total, metrics=None):
+                    self._emit(
                         {
                             "type": "step_progress",
                             "job_id": job.id,
                             "step": step,
                             "total": total,
+                            **(metrics or {}),
                         }
-                    ),
+                    )
+
+                self.runtime.generate(
+                    running_job,
+                    progress,
                     lambda stage, total: self._emit(
                         {
                             "type": "stage_progress",
@@ -176,6 +191,7 @@ class GenerationController:
                             "total": total,
                         }
                     ),
+                    lambda event: self._emit(event),
                 )
                 duration = time.perf_counter() - started_clock
                 if job.id in self._cancel_requested:
@@ -222,19 +238,22 @@ class GenerationController:
                         "job_id": job.id,
                         "status": status,
                         "output_path": str(job.output_path),
+                        "steps": job.steps,
                     }
                 )
                 self._emit_queue()
 
     def _emit_queue(self) -> None:
         with self._lock:
-            self._emit(
-                {
-                    "type": "queue_progress",
-                    "queued": self._queue.qsize(),
-                    "running": self._current.id if self._current else None,
-                }
-            )
+            self._queue_event_sequence += 1
+            event = {
+                "type": "queue_progress",
+                "queued": self._queue.qsize(),
+                "running": self._current.id if self._current else None,
+                "steps": self._current.steps if self._current else None,
+                "sequence": self._queue_event_sequence,
+            }
+        self._emit(event)
 
     def _emit(self, event: dict) -> None:
         try:

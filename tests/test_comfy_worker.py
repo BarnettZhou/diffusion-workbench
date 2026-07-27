@@ -1,6 +1,13 @@
 import unittest
+import base64
 
-from diffusion_workbench_core.comfy_worker import ComfyWorker
+from PIL import Image
+
+from diffusion_workbench_core.comfy_worker import (
+    ComfyWorker,
+    encode_preview_image,
+    sampling_progress_payload,
+)
 
 
 class FakeInferenceMode:
@@ -23,6 +30,34 @@ class FakeTorch:
 
 
 class ComfyWorkerTests(unittest.TestCase):
+    def test_sampling_progress_contains_speed_and_eta(self):
+        progress = sampling_progress_payload(
+            step=2,
+            total_steps=8,
+            started_at=10.0,
+            previous_step_at=13.5,
+            now=16.0,
+        )
+
+        self.assertEqual(progress["step"], 3)
+        self.assertEqual(progress["elapsed_seconds"], 6.0)
+        self.assertEqual(progress["step_seconds"], 2.5)
+        self.assertEqual(progress["seconds_per_step"], 2.0)
+        self.assertEqual(progress["steps_per_second"], 0.5)
+        self.assertEqual(progress["eta_seconds"], 10.0)
+
+    def test_preview_is_a_base64_jpeg_event_payload(self):
+        class Previewer:
+            @staticmethod
+            def decode_latent_to_preview(_x0):
+                return Image.new("RGB", (12, 8), "red")
+
+        payload = encode_preview_image(Previewer(), object())
+
+        self.assertEqual(payload["mime_type"], "image/jpeg")
+        self.assertEqual((payload["width"], payload["height"]), (12, 8))
+        self.assertTrue(base64.b64decode(payload["data"]).startswith(b"\xff\xd8"))
+
     def test_generation_matches_comfy_executor_inference_mode_boundary(self):
         worker = object.__new__(ComfyWorker)
         worker.torch = FakeTorch()

@@ -1,14 +1,30 @@
 """Long-lived headless ComfyUI worker. Run only with ComfyUI's Python."""
 
 import argparse
+import base64
 import gc
 import json
 import logging
 import os
+import platform
 import sys
 import time
 import traceback
+from io import BytesIO
 from pathlib import Path
+
+try:
+    from .png_metadata import (
+        ResourceFingerprintCache,
+        build_generation_metadata,
+        create_png_info,
+    )
+except ImportError:  # The Comfy worker runs this module as a standalone script.
+    from png_metadata import (
+        ResourceFingerprintCache,
+        build_generation_metadata,
+        create_png_info,
+    )
 
 
 EVENT_PREFIX = "DWB_EVENT="
@@ -22,6 +38,42 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument("--comfy-root", type=Path, required=True)
     return parser
+
+
+def sampling_progress_payload(
+    step: int,
+    total_steps: int,
+    started_at: float,
+    previous_step_at: float,
+    now: float,
+) -> dict:
+    completed = int(step) + 1
+    total = int(total_steps)
+    elapsed = max(now - started_at, 0.0)
+    average = elapsed / completed if completed else 0.0
+    step_seconds = max(now - previous_step_at, 0.0)
+    return {
+        "step": completed,
+        "total": total,
+        "elapsed_seconds": round(elapsed, 4),
+        "step_seconds": round(step_seconds, 4),
+        "seconds_per_step": round(average, 4),
+        "steps_per_second": round(1.0 / average, 4) if average > 0 else None,
+        "eta_seconds": round(average * max(total - completed, 0), 4),
+    }
+
+
+def encode_preview_image(previewer, x0) -> dict:
+    image = previewer.decode_latent_to_preview(x0)
+    buffer = BytesIO()
+    image.save(buffer, format="JPEG", quality=85, optimize=False)
+    return {
+        "mime_type": "image/jpeg",
+        "encoding": "base64",
+        "width": image.width,
+        "height": image.height,
+        "data": base64.b64encode(buffer.getvalue()).decode("ascii"),
+    }
 
 
 class ComfyWorker:
@@ -44,6 +96,8 @@ class ComfyWorker:
         import comfy.model_management
         import comfy.sample
         import comfy.samplers
+        import comfyui_version
+        import latent_preview
         import nodes
         import torch
         from PIL import Image
@@ -56,9 +110,17 @@ class ComfyWorker:
         self.folder_paths = folder_paths
         self.model_management = comfy.model_management
         self.comfy_sample = comfy.sample
+        self.latent_preview = latent_preview
         self.nodes = nodes
         self.torch = torch
         self.Image = Image
+        self.runtime_versions = {
+            "comfyui": str(comfyui_version.__version__),
+            "python": platform.python_version(),
+            "pytorch": str(torch.__version__),
+            "cuda": str(torch.version.cuda) if torch.version.cuda else None,
+        }
+        self.resource_fingerprints = ResourceFingerprintCache()
         self.model = None
         self.model_path: Path | None = None
         self.clip = None
@@ -84,16 +146,45 @@ class ComfyWorker:
         text_encoder_path = Path(command["text_encoder_path"]).resolve()
         clip_type = command["clip_type"]
         load_started = time.perf_counter()
-        emit({"type": "stage_progress", "job_id": job_id, "stage": "loading_model"})
+        stage_total = int(command["steps"])
+        emit(
+            {
+                "type": "stage_progress",
+                "job_id": job_id,
+                "stage": "loading_model",
+                "total": stage_total,
+            }
+        )
         loaded_model = self._ensure_model(model_path)
         loaded_clip = self._ensure_clip(text_encoder_path, clip_type)
         loaded_vae = self._ensure_vae(vae_path)
+        resource_metadata = {
+            "diffusion_model": self.resource_fingerprints.describe(model_path),
+            "vae": self.resource_fingerprints.describe(vae_path),
+            "text_encoder": self.resource_fingerprints.describe(text_encoder_path),
+        }
+        previewer = self._create_previewer() if command.get("preview_enabled") else None
 
-        emit({"type": "stage_progress", "job_id": job_id, "stage": "prompt"})
+        emit(
+            {
+                "type": "stage_progress",
+                "job_id": job_id,
+                "stage": "prompt",
+                "total": stage_total,
+            }
+        )
         positive = self.nodes.CLIPTextEncode().encode(self.clip, command["prompt"])[0]
         negative = self.nodes.ConditioningZeroOut().zero_out(positive)[0]
         load_seconds = time.perf_counter() - load_started
 
+        emit(
+            {
+                "type": "stage_progress",
+                "job_id": job_id,
+                "stage": "latent",
+                "total": stage_total,
+            }
+        )
         width, height = int(command["width"]), int(command["height"])
         latent = {
             "samples": self.torch.zeros(
@@ -105,15 +196,37 @@ class ComfyWorker:
         }
         self.torch.cuda.reset_peak_memory_stats()
 
-        def sampling_callback(step, _x0, _x, total_steps):
+        sampling_started = time.perf_counter()
+        previous_step_at = sampling_started
+
+        def sampling_callback(step, x0, _x, total_steps):
+            nonlocal previous_step_at, previewer
+            now = time.perf_counter()
+            progress = sampling_progress_payload(
+                step, total_steps, sampling_started, previous_step_at, now
+            )
+            previous_step_at = now
             emit(
                 {
                     "type": "step_progress",
                     "job_id": job_id,
-                    "step": int(step) + 1,
-                    "total": int(total_steps),
+                    **progress,
                 }
             )
+            if previewer is not None:
+                try:
+                    emit(
+                        {
+                            "type": "preview_image",
+                            "job_id": job_id,
+                            "step": progress["step"],
+                            "total": progress["total"],
+                            **encode_preview_image(previewer, x0),
+                        }
+                    )
+                except Exception:
+                    logging.exception("生成 latent 预览失败，当前任务将停止输出预览")
+                    previewer = None
 
         emit(
             {
@@ -123,22 +236,66 @@ class ComfyWorker:
                 "total": int(command["steps"]),
             }
         )
-        generation_started = time.perf_counter()
         samples = self._sample(command, latent, positive, negative, sampling_callback)
-        emit({"type": "stage_progress", "job_id": job_id, "stage": "vae"})
+        sampling_seconds = time.perf_counter() - sampling_started
+        emit(
+            {
+                "type": "stage_progress",
+                "job_id": job_id,
+                "stage": "vae",
+                "total": stage_total,
+            }
+        )
+        vae_started = time.perf_counter()
         images = self.nodes.VAEDecode().decode(self.vae, samples)[0]
-        generation_seconds = time.perf_counter() - generation_started
+        vae_seconds = time.perf_counter() - vae_started
+        generation_seconds = sampling_seconds + vae_seconds
 
+        emit(
+            {
+                "type": "stage_progress",
+                "job_id": job_id,
+                "stage": "saving",
+                "total": stage_total,
+            }
+        )
         pixels = images[0].detach().cpu().clamp(0, 1).mul(255).byte().numpy()
         output_path = Path(command["output_path"]).resolve()
         output_path.parent.mkdir(parents=True, exist_ok=True)
         temporary_path = output_path.with_name(f".{output_path.name}.{job_id}.tmp")
+        peak_allocated = self.torch.cuda.max_memory_allocated() / 1024**3
+        peak_reserved = self.torch.cuda.max_memory_reserved() / 1024**3
+        performance = {
+            "load_seconds": round(load_seconds, 3),
+            "sampling_seconds": round(sampling_seconds, 3),
+            "vae_seconds": round(vae_seconds, 3),
+            "generation_seconds": round(generation_seconds, 3),
+            "cuda_peak_allocated_gib": round(peak_allocated, 3),
+            "cuda_peak_reserved_gib": round(peak_reserved, 3),
+        }
+        metadata = build_generation_metadata(
+            command,
+            self.runtime_versions,
+            performance,
+            resource_metadata,
+        )
         try:
-            self.Image.fromarray(pixels).save(temporary_path, format="PNG")
+            self.Image.fromarray(pixels).save(
+                temporary_path,
+                format="PNG",
+                pnginfo=create_png_info(metadata),
+            )
             os.link(temporary_path, output_path)
         finally:
             temporary_path.unlink(missing_ok=True)
-        emit({"type": "stage_progress", "job_id": job_id, "stage": "saved"})
+        emit(
+            {
+                "type": "stage_progress",
+                "job_id": job_id,
+                "stage": "saved",
+                "total": stage_total,
+            }
+        )
         return {
             "type": "result",
             "job_id": job_id,
@@ -148,14 +305,7 @@ class ComfyWorker:
             "loaded_model": loaded_model,
             "loaded_clip": loaded_clip,
             "loaded_vae": loaded_vae,
-            "load_seconds": round(load_seconds, 3),
-            "generation_seconds": round(generation_seconds, 3),
-            "cuda_peak_allocated_gib": round(
-                self.torch.cuda.max_memory_allocated() / 1024**3, 3
-            ),
-            "cuda_peak_reserved_gib": round(
-                self.torch.cuda.max_memory_reserved() / 1024**3, 3
-            ),
+            **performance,
         }
 
     def _sample(self, command, latent, positive, negative, callback):
@@ -199,6 +349,17 @@ class ComfyWorker:
         self.model = self.nodes.UNETLoader().load_unet(name, "default")[0]
         self.model_path = path
         return True
+
+    def _create_previewer(self):
+        latent_format = self.model.model.latent_format
+        factors = latent_format.latent_rgb_factors
+        if factors is None:
+            return None
+        return self.latent_preview.Latent2RGBPreviewer(
+            factors,
+            latent_format.latent_rgb_factors_bias,
+            latent_format.latent_rgb_factors_reshape,
+        )
 
     def _ensure_clip(self, path: Path, clip_type: str) -> bool:
         if self.clip is not None and self.clip_path == path and self.clip_type == clip_type:

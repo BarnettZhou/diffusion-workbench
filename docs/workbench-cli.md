@@ -39,17 +39,21 @@ encoder 都在 `configs/workbench.yaml` 中设置；`diffusion` 与 `vae` 都接
 当前固定为 Euler + simple、CFG 1。默认模式为 ZIT，默认尺寸为 576×576、8 步、
 随机 seed。模型和 VAE 默认不选择。`/start` 省略 `num` 时默认提交 1 个任务。
 
-TUI 底部状态栏按 Worker 的真实执行事件依次显示“加载模型”“处理 prompt”
-“采样步数 1/n”“VAE 处理”“图片已保存”。生成失败时会显示错误状态并保持命令
-输入可用；详细错误同时写入对应任务的 SQLite 记录。
+TUI 底部状态栏按真实执行事件显示“启动推理 Worker”“加载模型资源”“编码提示词”
+“准备 latent”“采样中”“VAE 解码”“保存图片”“图片已保存”等阶段。采样步数始终
+单独显示：进入采样前为“未开始/n”，采样时实时更新为“1/n”，采样完成后保持
+“n/n”，采样时还会显示实时速度和预计剩余时间。状态栏同时显示队列、Worker 和 GPU 状态。生成失败时保持命令输入可用；
+详细错误同时写入对应任务的 SQLite 记录。
 
 任务按提交时的设置快照依次执行。Worker 在 TUI 存活期间保留已加载资源；同模式
 切换 diffusion 时复用 text encoder 和 VAE，跨模式时先释放旧模式资源。`/stop`
 会终止当前 Worker 并清空队列，下一次 `/start` 会创建干净的 Worker；`/exit` 释放
 全部资源。
 
-输出写入 `output/YYYY-MM-DD/<mode>-NNNNN.png`。任务和别名存入
-`.cache/diffusion_workbench.sqlite3`。
+输出写入 `output/YYYY-MM-DD/<mode>-NNNNN.png`。每张 PNG 的
+`diffusion_workbench` iTXt 块包含实际 seed、prompt、尺寸、采样参数、资源路径/SHA-256 和运行时
+版本；可通过 `uv run python demo_png_metadata.py <image.png>` 验证读取。任务和别名仍会
+存入 `.cache/diffusion_workbench.sqlite3`。
 
 同一个 SQLite 数据库同一时间只允许一个 core 实例持有；TUI 与未来 HTTP 接口应共享
 这个实例和它的串行队列，避免两个 Worker 同时占用 GPU。

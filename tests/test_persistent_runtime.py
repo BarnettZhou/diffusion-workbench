@@ -25,8 +25,10 @@ for line in sys.stdin:
     loaded_now = loaded != command["model_path"]
     loaded = command["model_path"]
     emit({"type": "stage_progress", "job_id": command["job_id"], "stage": "sampling", "total": command["steps"]})
-    emit({"type": "step_progress", "job_id": command["job_id"], "step": 1, "total": command["steps"]})
-    emit({"type": "result", "job_id": command["job_id"], "loaded_model": loaded_now, "output_path": command["output_path"]})
+    emit({"type": "step_progress", "job_id": command["job_id"], "step": 1, "total": command["steps"], "elapsed_seconds": 2.0, "step_seconds": 2.0, "seconds_per_step": 2.0, "steps_per_second": 0.5, "eta_seconds": 14.0})
+    if command.get("preview_enabled"):
+        emit({"type": "preview_image", "job_id": command["job_id"], "step": 1, "total": command["steps"], "mime_type": "image/jpeg", "encoding": "base64", "width": 72, "height": 72, "data": "YWJj"})
+    emit({"type": "result", "job_id": command["job_id"], "loaded_model": loaded_now, "preview_enabled": command.get("preview_enabled"), "output_path": command["output_path"]})
 '''
 
 
@@ -49,18 +51,21 @@ class PersistentRuntimeTests(unittest.TestCase):
                 worker_timeout_seconds=10,
             )
             runtime = PersistentComfyRuntime(config, worker_script=worker_script)
+            runtime.set_preview_enabled(True)
             progress = []
             stages = []
+            previews = []
 
             first = runtime.generate(
                 self.make_job(root, "one"),
-                lambda step, total: progress.append((step, total)),
+                lambda step, total, metrics: progress.append((step, total, metrics)),
                 lambda stage, total: stages.append((stage, total)),
+                previews.append,
             )
             first_pid = runtime.status()["pid"]
             second = runtime.generate(
                 self.make_job(root, "two"),
-                lambda _step, _total: None,
+                lambda _step, _total, _metrics: None,
                 lambda _stage, _total: None,
             )
             second_pid = runtime.status()["pid"]
@@ -69,8 +74,11 @@ class PersistentRuntimeTests(unittest.TestCase):
             self.assertEqual(first_pid, second_pid)
             self.assertTrue(first["loaded_model"])
             self.assertFalse(second["loaded_model"])
-            self.assertEqual(progress, [(1, 8)])
-            self.assertEqual(stages, [("sampling", 8)])
+            self.assertTrue(first["preview_enabled"])
+            self.assertEqual(progress[0][:2], (1, 8))
+            self.assertEqual(progress[0][2]["seconds_per_step"], 2.0)
+            self.assertEqual(previews[0]["data"], "YWJj")
+            self.assertEqual(stages, [("starting_worker", 8), ("sampling", 8)])
             self.assertEqual(runtime.status()["worker"], "stopped")
 
     def test_status_does_not_block_on_gpu_probe(self):

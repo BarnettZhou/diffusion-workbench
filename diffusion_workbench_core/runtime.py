@@ -12,8 +12,9 @@ class GenerationRuntime(Protocol):
     def generate(
         self,
         job: JobRecord,
-        progress: Callable[[int, int], None],
+        progress: Callable[[int, int, dict], None],
         stage: Callable[[str, int | None], None],
+        preview: Callable[[dict], None] | None = None,
     ) -> dict: ...
 
     def cancel(self) -> None: ...
@@ -21,3 +22,5 @@ class GenerationRuntime(Protocol):
     def close(self) -> None: ...
 
     def status(self) -> dict: ...
+
+    def set_preview_enabled(self, enabled: bool) -> None: ...

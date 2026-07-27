@@ -51,12 +51,106 @@ class TuiCore:
 
 
 class WorkbenchTuiTests(unittest.IsolatedAsyncioTestCase):
+    async def test_all_generation_stages_keep_sampling_progress_visible(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            core = TuiCore(Path(temp_dir))
+            app = WorkbenchApp(core)
+
+            async with app.run_test(size=(100, 30)) as pilot:
+                progress = app.query_one("#progress", Static)
+                await asyncio.to_thread(
+                    core.sink,
+                    {
+                        "type": "job_started",
+                        "job_id": "job-1",
+                        "seed": 42,
+                        "steps": 12,
+                    },
+                )
+                await pilot.pause()
+                self.assertIn("启动推理 Worker", str(progress.render()))
+                self.assertIn("未开始/12", str(progress.render()))
+
+                for stage, label in (
+                    ("loading_model", "加载模型资源"),
+                    ("prompt", "编码提示词"),
+                    ("latent", "准备 latent"),
+                ):
+                    await asyncio.to_thread(
+                        core.sink,
+                        {
+                            "type": "stage_progress",
+                            "job_id": "job-1",
+                            "stage": stage,
+                            "total": 12,
+                        },
+                    )
+                    await pilot.pause()
+                    self.assertIn(label, str(progress.render()))
+                    self.assertIn("采样步数: 未开始/12", str(progress.render()))
+
+                await asyncio.to_thread(
+                    core.sink,
+                    {
+                        "type": "stage_progress",
+                        "job_id": "job-1",
+                        "stage": "sampling",
+                        "total": 12,
+                    },
+                )
+                await pilot.pause()
+                self.assertIn("采样步数: 0/12", str(progress.render()))
+
+                for stage, label in (
+                    ("vae", "VAE 解码"),
+                    ("saving", "保存图片"),
+                    ("saved", "图片已保存"),
+                ):
+                    await asyncio.to_thread(
+                        core.sink,
+                        {
+                            "type": "stage_progress",
+                            "job_id": "job-1",
+                            "stage": stage,
+                            "total": 12,
+                        },
+                    )
+                    await pilot.pause()
+                    self.assertIn(label, str(progress.render()))
+                    self.assertIn("采样步数: 12/12", str(progress.render()))
+
+                await asyncio.to_thread(
+                    core.sink,
+                    {
+                        "type": "job_started",
+                        "job_id": "job-2",
+                        "seed": 43,
+                        "steps": 10,
+                    },
+                )
+                await asyncio.to_thread(
+                    core.sink,
+                    {
+                        "type": "job_finished",
+                        "job_id": "job-2",
+                        "status": "cancelled",
+                        "steps": 10,
+                    },
+                )
+                await pilot.pause()
+                self.assertIn("任务已取消", str(progress.render()))
+                self.assertIn("采样步数: 未开始/10", str(progress.render()))
+
     async def test_progress_from_worker_thread_does_not_block_command_input(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             core = TuiCore(Path(temp_dir))
             app = WorkbenchApp(core)
 
             async with app.run_test(size=(100, 30)) as pilot:
+                progress = app.query_one("#progress", Static)
+                self.assertIn("当前阶段: 等待任务", str(progress.render()))
+                self.assertIn("采样步数: 未开始/8", str(progress.render()))
+
                 command = app.query_one("#command", Input)
                 command.value = "/prompt first prompt"
                 await pilot.press("enter")
@@ -64,7 +158,21 @@ class WorkbenchTuiTests(unittest.IsolatedAsyncioTestCase):
 
                 await asyncio.to_thread(
                     core.sink,
-                    {"type": "queue_progress", "queued": 2, "running": None},
+                    {
+                        "type": "queue_progress",
+                        "queued": 1,
+                        "running": "job-1",
+                        "sequence": 2,
+                    },
+                )
+                await asyncio.to_thread(
+                    core.sink,
+                    {
+                        "type": "queue_progress",
+                        "queued": 2,
+                        "running": None,
+                        "sequence": 1,
+                    },
                 )
                 await asyncio.to_thread(
                     core.sink,
@@ -72,6 +180,7 @@ class WorkbenchTuiTests(unittest.IsolatedAsyncioTestCase):
                         "type": "job_started",
                         "job_id": "job-1",
                         "seed": 42,
+                        "steps": 8,
                     },
                 )
                 await asyncio.to_thread(
@@ -81,6 +190,9 @@ class WorkbenchTuiTests(unittest.IsolatedAsyncioTestCase):
                         "job_id": "job-1",
                         "step": 3,
                         "total": 8,
+                        "seconds_per_step": 2.0,
+                        "steps_per_second": 0.5,
+                        "eta_seconds": 10.0,
                     },
                 )
                 await pilot.pause()
@@ -93,8 +205,13 @@ class WorkbenchTuiTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(app.total_steps, 8)
                 self.assertEqual(app.queue_waiting, 1)
                 self.assertIn(
-                    "采样步数 3/8", str(app.query_one("#progress", Static).render())
+                    "当前阶段: 采样中", str(progress.render())
                 )
+                self.assertIn(
+                    "采样步数: 3/8", str(progress.render())
+                )
+                self.assertIn("速度: 2.00 秒/步", str(progress.render()))
+                self.assertIn("剩余: 10.0 秒", str(progress.render()))
 
                 await asyncio.to_thread(
                     core.sink,
@@ -102,8 +219,19 @@ class WorkbenchTuiTests(unittest.IsolatedAsyncioTestCase):
                 )
                 await pilot.pause()
                 self.assertIn(
-                    "VAE 处理", str(app.query_one("#progress", Static).render())
+                    "当前阶段: VAE 解码", str(progress.render())
                 )
+                self.assertIn(
+                    "采样步数: 8/8", str(progress.render())
+                )
+
+                await asyncio.to_thread(
+                    core.sink,
+                    {"type": "stage_progress", "job_id": "job-1", "stage": "saving"},
+                )
+                await pilot.pause()
+                self.assertIn("当前阶段: 保存图片", str(progress.render()))
+                self.assertIn("采样步数: 8/8", str(progress.render()))
 
                 await asyncio.to_thread(
                     core.sink,
@@ -118,10 +246,76 @@ class WorkbenchTuiTests(unittest.IsolatedAsyncioTestCase):
                 await pilot.press("enter")
                 self.assertEqual(app.session.prompt, "still responsive")
                 self.assertIn(
-                    "生成失败", str(app.query_one("#progress", Static).render())
+                    "生成失败", str(progress.render())
                 )
 
             self.assertTrue(core.closed)
+
+    async def test_failure_before_job_started_does_not_reuse_previous_progress(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            core = TuiCore(Path(temp_dir))
+            app = WorkbenchApp(core)
+
+            async with app.run_test(size=(100, 30)) as pilot:
+                progress = app.query_one("#progress", Static)
+                await asyncio.to_thread(
+                    core.sink,
+                    {
+                        "type": "job_started",
+                        "job_id": "completed-job",
+                        "seed": 42,
+                        "steps": 8,
+                    },
+                )
+                await asyncio.to_thread(
+                    core.sink,
+                    {
+                        "type": "stage_progress",
+                        "job_id": "completed-job",
+                        "stage": "saved",
+                        "total": 8,
+                    },
+                )
+                await asyncio.to_thread(
+                    core.sink,
+                    {
+                        "type": "job_finished",
+                        "job_id": "completed-job",
+                        "status": "completed",
+                        "steps": 8,
+                    },
+                )
+                await asyncio.to_thread(
+                    core.sink,
+                    {
+                        "type": "queue_progress",
+                        "queued": 0,
+                        "running": "failed-job",
+                        "steps": 12,
+                        "sequence": 1,
+                    },
+                )
+                await pilot.pause()
+                self.assertIn("当前阶段: 准备任务", str(progress.render()))
+                self.assertIn("采样步数: 未开始/12", str(progress.render()))
+
+                await asyncio.to_thread(
+                    core.sink,
+                    {"type": "job_error", "job_id": "failed-job", "error": "seed failed"},
+                )
+                await asyncio.to_thread(
+                    core.sink,
+                    {
+                        "type": "job_finished",
+                        "job_id": "failed-job",
+                        "status": "failed",
+                        "steps": 12,
+                    },
+                )
+                await pilot.pause()
+
+                self.assertIn("当前阶段: 生成失败", str(progress.render()))
+                self.assertIn("采样步数: 未开始/12", str(progress.render()))
 
 
 if __name__ == "__main__":

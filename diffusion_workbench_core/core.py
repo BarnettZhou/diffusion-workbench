@@ -72,6 +72,11 @@ class WorkbenchCore:
     def set_event_sink(self, sink) -> None:
         self.controller.set_event_sink(sink)
 
+    def set_preview_enabled(self, enabled: bool) -> None:
+        """Enable or disable base64 JPEG preview events for future sampling steps."""
+
+        self.runtime.set_preview_enabled(enabled)
+
     def shutdown(self) -> None:
         try:
             self.controller.shutdown()
