@@ -2,9 +2,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from demo import demo_krea2, demo_zit
-import comfyui_krea2_runner
-from krea2_config import KREA2_MODEL_PATH
+from demo import comfyui_krea2_runner, demo_krea2, demo_zit
+from demo.krea2_config import KREA2_MODEL_PATH
 from demo.demo_txt2img import (
     MODELS,
     load_pipeline,

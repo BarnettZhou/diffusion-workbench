@@ -11,10 +11,10 @@ from pathlib import Path
 from typing import Callable
 
 
-WORKSPACE_ROOT = Path(__file__).resolve().parent
+WORKSPACE_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_COMFY_ROOT = Path(r"C:\App\ComfyUI-aki-v1.6\ComfyUI")
 DEFAULT_MODEL_DIR = Path(r"E:\Documents\ComfyUI\models\diffusion_models\krea2")
-RUNNER_PATH = WORKSPACE_ROOT / "comfyui_krea2_runner.py"
+RUNNER_PATH = WORKSPACE_ROOT / "demo" / "comfyui_krea2_runner.py"
 FORMAT_CACHE_PATH = WORKSPACE_ROOT / ".cache" / "krea2_checkpoint_formats.json"
 RESULT_CACHE_PATH = WORKSPACE_ROOT / ".cache" / "krea2_benchmark_results.json"
 OUTPUT_DIR = WORKSPACE_ROOT / "outputs" / "krea2_matrix"

@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import benchmark_all_krea2
+from demo import benchmark_all_krea2
 
 
 class Krea2BenchmarkTests(unittest.TestCase):
@@ -47,9 +47,9 @@ class Krea2BenchmarkTests(unittest.TestCase):
 
         self.assertEqual(benchmark_all_krea2.parse_runner_result(output), payload)
 
-    @patch("benchmark_all_krea2.time.sleep")
-    @patch("benchmark_all_krea2.time.monotonic", side_effect=[0.0, 181.0, 181.1])
-    @patch("benchmark_all_krea2.subprocess.Popen")
+    @patch("demo.benchmark_all_krea2.time.sleep")
+    @patch("demo.benchmark_all_krea2.time.monotonic", side_effect=[0.0, 181.0, 181.1])
+    @patch("demo.benchmark_all_krea2.subprocess.Popen")
     def test_timeout_terminates_only_started_process(self, popen, _monotonic, _sleep):
         process = MagicMock()
         process.pid = 1234
@@ -74,9 +74,9 @@ class Krea2BenchmarkTests(unittest.TestCase):
         self.assertEqual(result["status"], "timeout")
         self.assertEqual(result["pid"], 1234)
 
-    @patch("benchmark_all_krea2.available_physical_memory_gib", side_effect=OSError("probe failed"))
-    @patch("benchmark_all_krea2.time.monotonic", side_effect=[0.0, 1.0])
-    @patch("benchmark_all_krea2.subprocess.Popen")
+    @patch("demo.benchmark_all_krea2.available_physical_memory_gib", side_effect=OSError("probe failed"))
+    @patch("demo.benchmark_all_krea2.time.monotonic", side_effect=[0.0, 1.0])
+    @patch("demo.benchmark_all_krea2.subprocess.Popen")
     def test_orchestrator_error_still_terminates_started_process(
         self, popen, _monotonic, _memory_probe
     ):
@@ -96,7 +96,7 @@ class Krea2BenchmarkTests(unittest.TestCase):
 
         process.terminate.assert_called_once_with()
 
-    @patch("benchmark_all_krea2.run_single_checkpoint")
+    @patch("demo.benchmark_all_krea2.run_single_checkpoint")
     def test_cleanup_failure_aborts_batch(self, run_single):
         run_single.side_effect = benchmark_all_krea2.ProcessCleanupError("still running")
 
@@ -128,7 +128,7 @@ class Krea2BenchmarkTests(unittest.TestCase):
         self.assertEqual(record["detected_format"], "unknown")
         self.assertIn("过期", record["format_detection_error"])
 
-    @patch("benchmark_all_krea2.run_single_checkpoint")
+    @patch("demo.benchmark_all_krea2.run_single_checkpoint")
     def test_run_all_continues_after_failure(self, run_single):
         run_single.side_effect = [
             {"model": "one", "status": "error"},
@@ -147,7 +147,7 @@ class Krea2BenchmarkTests(unittest.TestCase):
         self.assertEqual([item["status"] for item in results], ["error", "success"])
         self.assertEqual(len(saved), 2)
 
-    @patch("benchmark_all_krea2.run_single_checkpoint")
+    @patch("demo.benchmark_all_krea2.run_single_checkpoint")
     def test_run_all_records_unexpected_error_and_continues(self, run_single):
         run_single.side_effect = [
             RuntimeError("could not start"),

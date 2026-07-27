@@ -8,7 +8,10 @@ import sys
 import time
 from pathlib import Path
 
-from krea2_config import (
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from demo.krea2_config import (
     KREA2_MODEL_NAME,
     KREA2_MODEL_PATH,
     KREA2_TEXT_ENCODER_NAME,

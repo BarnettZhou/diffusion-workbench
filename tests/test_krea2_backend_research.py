@@ -6,7 +6,7 @@ from pathlib import Path
 import torch
 from safetensors.torch import save_file
 
-import research_krea2_backends
+from demo import research_krea2_backends
 
 
 def quant_metadata(format_name: str, **extra) -> torch.Tensor:

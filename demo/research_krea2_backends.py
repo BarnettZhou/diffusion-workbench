@@ -9,19 +9,23 @@ import argparse
 import importlib.util
 import json
 import os
+import sys
 import time
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 import torch
 import torch.nn.functional as F
 from safetensors import safe_open
 
-from krea2_config import KREA2_MODEL_PATH
+from demo.krea2_config import KREA2_MODEL_PATH
 
 
-WORKSPACE_ROOT = Path(__file__).resolve().parent
+WORKSPACE_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MODEL_DIR = KREA2_MODEL_PATH.parent
 DEFAULT_CACHE_PATH = WORKSPACE_ROOT / ".cache" / "krea2_alternative_backend_probe.json"
 CACHE_VERSION = 1

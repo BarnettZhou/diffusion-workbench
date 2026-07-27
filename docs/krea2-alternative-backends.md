@@ -17,7 +17,7 @@ Krea2 **不是只能通过 ComfyUI 推理**。官方仓库本身提供独立 PyT
 
 ## Checkpoint 兼容矩阵
 
-以下数据来自 [research_krea2_backends.py](../research_krea2_backends.py) 的 safetensors 头部扫描和 [.cache/krea2_alternative_backend_probe.json](../.cache/krea2_alternative_backend_probe.json)。所有文件展开 BF16 后的基础权重均约 23.879 GiB。
+以下数据来自 [research_krea2_backends.py](../demo/research_krea2_backends.py) 的 safetensors 头部扫描和 [.cache/krea2_alternative_backend_probe.json](../.cache/krea2_alternative_backend_probe.json)。所有文件展开 BF16 后的基础权重均约 23.879 GiB。
 
 | 类别 | 模型 | 文件布局 | Diffusers 直接加载 | 自定义 scaled-FP8 路线 | 主要阻碍 |
 |---|---|---:|---:|---:|---|
@@ -133,4 +133,4 @@ Krea2 官方仓库把 [SGLang Krea2 cookbook](https://docs.sglang.io/cookbook/di
 - [Diffusers TorchAO 文档](https://huggingface.co/docs/diffusers/main/en/quantization/torchao)
 - [Diffusers 量化器源码](https://github.com/huggingface/diffusers/tree/main/src/diffusers/quantizers)
 - 本机 ComfyUI：`C:\App\ComfyUI-aki-v1.6\ComfyUI\comfy\ops.py` 第 1041-1128 行
-- 本项目探针：[research_krea2_backends.py](../research_krea2_backends.py)及其[缓存结果](../.cache/krea2_alternative_backend_probe.json)
+- 本项目探针：[research_krea2_backends.py](../demo/research_krea2_backends.py)及其[缓存结果](../.cache/krea2_alternative_backend_probe.json)

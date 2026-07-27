@@ -28,7 +28,7 @@ if __package__ in {None, ""}:
 import torch
 from safetensors import safe_open
 
-from krea2_config import KREA2_MODEL_PATH
+from demo.krea2_config import KREA2_MODEL_PATH
 
 # ---------------------------------------------------------------------------
 # ComfyUI 权重加载：同时兼容纯 bf16 文件与 ComfyUI scaled 量化文件。
