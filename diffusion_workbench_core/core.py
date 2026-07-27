@@ -86,6 +86,9 @@ class WorkbenchCore:
     def stop(self) -> None:
         self.controller.stop()
 
+    def skip_current(self) -> str | None:
+        return self.controller.skip_current()
+
     def runtime_status(self) -> dict:
         return self.controller.status()
 

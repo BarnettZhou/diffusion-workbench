@@ -32,6 +32,8 @@ class FakeCore:
         }
         self.submitted = []
         self.stopped = False
+        self.skipped_job_id = None
+        self.skip_error = None
         self.closed = False
 
     def list_resources(self, mode, kind):
@@ -50,6 +52,11 @@ class FakeCore:
 
     def stop(self):
         self.stopped = True
+
+    def skip_current(self):
+        if self.skip_error is not None:
+            raise RuntimeError(self.skip_error)
+        return self.skipped_job_id
 
     def runtime_status(self):
         return {"queue": 0, "running": None, "gpu": "1.0/16.0 GiB", "worker": "idle"}
@@ -121,6 +128,23 @@ class CommandSessionTests(unittest.TestCase):
             self.assertTrue(response.exit_requested)
             self.assertIn("正在卸载资源", "\n".join(response.lines))
             self.assertFalse(core.closed)
+
+    def test_skip_reports_running_job_or_idle(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            core = FakeCore(Path(temp_dir))
+            session = CommandSession(core)
+
+            idle = session.handle("/skip")
+            core.skipped_job_id = "job-123"
+            skipped = session.handle("/skip")
+
+            self.assertIn("没有可跳过的任务", "\n".join(idle.lines))
+            self.assertIn("job-123", "\n".join(skipped.lines))
+            self.assertIn("/skip", "\n".join(session.handle("/help").lines))
+
+            core.skip_error = "跳过任务失败"
+            failed = session.handle("/skip")
+            self.assertIn("错误: 跳过任务失败", "\n".join(failed.lines))
 
 
 if __name__ == "__main__":

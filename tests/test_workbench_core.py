@@ -232,6 +232,72 @@ class CancelErrorRuntime(BlockingRuntime):
         self.cancelled.set()
 
 
+class SkippableRuntime(RecordingRuntime):
+    def __init__(self):
+        super().__init__()
+        self.first_started = threading.Event()
+        self.first_cancelled = threading.Event()
+        self.cancel_calls = 0
+
+    def generate(self, job, progress, stage, preview=None):
+        if not self.jobs:
+            self.jobs.append(job)
+            self.first_started.set()
+            self.first_cancelled.wait(5)
+            raise GenerationCancelled("skipped")
+        return super().generate(job, progress, stage, preview)
+
+    def cancel(self):
+        self.cancel_calls += 1
+        self.first_cancelled.set()
+
+
+class CancelFailureRuntime(RecordingRuntime):
+    def __init__(self):
+        super().__init__()
+        self.started = threading.Event()
+        self.release = threading.Event()
+
+    def generate(self, job, progress, stage, preview=None):
+        self.started.set()
+        self.release.wait(5)
+        return super().generate(job, progress, stage, preview)
+
+    def cancel(self):
+        raise RuntimeError("cancel failed")
+
+
+class InterleavedCancelFailureRuntime(CancelFailureRuntime):
+    def __init__(self):
+        super().__init__()
+        self.first_cancel_started = threading.Event()
+        self.release_first_cancel = threading.Event()
+        self._cancel_calls = 0
+        self._cancel_lock = threading.Lock()
+
+    def cancel(self):
+        with self._cancel_lock:
+            self._cancel_calls += 1
+            call = self._cancel_calls
+        if call == 1:
+            self.first_cancel_started.set()
+            self.release_first_cancel.wait(5)
+            raise RuntimeError("stop cancel failed")
+        raise RuntimeError("skip cancel failed")
+
+
+class BlockingCompletionStore(JobStore):
+    def __init__(self, database, output_dir):
+        super().__init__(database, output_dir)
+        self.completion_started = threading.Event()
+        self.release_completion = threading.Event()
+
+    def mark_completed(self, job_id, completed_at, duration_seconds):
+        self.completion_started.set()
+        self.release_completion.wait(5)
+        super().mark_completed(job_id, completed_at, duration_seconds)
+
+
 class GenerationControllerTests(unittest.TestCase):
     def make_settings(self, root: Path) -> GenerationSettings:
         return GenerationSettings(
@@ -288,6 +354,133 @@ class GenerationControllerTests(unittest.TestCase):
             controller.shutdown()
 
             self.assertEqual(statuses, ["cancelled", "cancelled"])
+
+    def test_skip_current_cancels_running_job_and_runs_next_job(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            store = JobStore(root / "jobs.sqlite3", root / "output")
+            runtime = SkippableRuntime()
+            events = []
+            controller = GenerationController(
+                runtime, store, event_sink=events.append, seed_source=lambda: 42
+            )
+
+            jobs = controller.submit(self.make_settings(root), 2)
+            self.assertTrue(runtime.first_started.wait(2))
+            skipped_job_id = controller.skip_current()
+            controller.wait_idle()
+            statuses = [store.get_job(job.id).status for job in jobs]
+            controller.shutdown()
+
+            self.assertEqual(skipped_job_id, jobs[0].id)
+            self.assertEqual(statuses, ["cancelled", "completed"])
+            self.assertEqual([job.id for job in runtime.jobs], [job.id for job in jobs])
+            self.assertEqual(runtime.cancel_calls, 1)
+            finished = [
+                (event["job_id"], event["status"])
+                for event in events
+                if event["type"] == "job_finished"
+            ]
+            self.assertEqual(
+                finished,
+                [(jobs[0].id, "cancelled"), (jobs[1].id, "completed")],
+            )
+
+    def test_skip_current_with_no_waiting_job_leaves_controller_idle(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            store = JobStore(root / "jobs.sqlite3", root / "output")
+            runtime = SkippableRuntime()
+            controller = GenerationController(runtime, store, seed_source=lambda: 42)
+
+            job = controller.submit(self.make_settings(root), 1)[0]
+            self.assertTrue(runtime.first_started.wait(2))
+            self.assertEqual(controller.skip_current(), job.id)
+            controller.wait_idle()
+            status = controller.status()
+            persisted = store.get_job(job.id)
+            controller.shutdown()
+
+            self.assertEqual(persisted.status, "cancelled")
+            self.assertEqual(status["queue"], 0)
+            self.assertIsNone(status["running"])
+            self.assertEqual(runtime.cancel_calls, 1)
+
+    def test_skip_current_is_noop_when_idle(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            store = JobStore(root / "jobs.sqlite3", root / "output")
+            runtime = SkippableRuntime()
+            controller = GenerationController(runtime, store)
+
+            self.assertIsNone(controller.skip_current())
+            controller.shutdown()
+
+            self.assertEqual(runtime.cancel_calls, 0)
+
+    def test_skip_current_reports_cancel_failure_and_job_can_complete(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            store = JobStore(root / "jobs.sqlite3", root / "output")
+            runtime = CancelFailureRuntime()
+            events = []
+            controller = GenerationController(
+                runtime, store, event_sink=events.append, seed_source=lambda: 42
+            )
+            job = controller.submit(self.make_settings(root), 1)[0]
+            self.assertTrue(runtime.started.wait(2))
+
+            with self.assertRaisesRegex(RuntimeError, "跳过任务失败"):
+                controller.skip_current()
+            runtime.release.set()
+            controller.wait_idle()
+            persisted = store.get_job(job.id)
+            controller.shutdown()
+
+            self.assertEqual(persisted.status, "completed")
+            errors = [event for event in events if event["type"] == "job_error"]
+            self.assertIn("跳过失败", errors[0]["error"])
+
+    def test_skip_current_is_rejected_after_completion_is_claimed(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            store = BlockingCompletionStore(root / "jobs.sqlite3", root / "output")
+            runtime = RecordingRuntime()
+            controller = GenerationController(runtime, store, seed_source=lambda: 42)
+            job = controller.submit(self.make_settings(root), 1)[0]
+            self.assertTrue(store.completion_started.wait(2))
+
+            self.assertIsNone(controller.skip_current())
+            store.release_completion.set()
+            controller.wait_idle()
+            persisted = store.get_job(job.id)
+            controller.shutdown()
+
+            self.assertEqual(persisted.status, "completed")
+
+    def test_failed_skip_does_not_remove_concurrent_stop_intent(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            store = JobStore(root / "jobs.sqlite3", root / "output")
+            runtime = InterleavedCancelFailureRuntime()
+            controller = GenerationController(runtime, store, seed_source=lambda: 42)
+            job = controller.submit(self.make_settings(root), 1)[0]
+            self.assertTrue(runtime.started.wait(2))
+            stop_thread = threading.Thread(target=controller.stop)
+            stop_thread.start()
+            self.assertTrue(runtime.first_cancel_started.wait(2))
+
+            with self.assertRaisesRegex(RuntimeError, "skip cancel failed"):
+                controller.skip_current()
+            runtime.release_first_cancel.set()
+            stop_thread.join(2)
+            runtime.release.set()
+            controller.wait_idle()
+            persisted = store.get_job(job.id)
+            controller.shutdown()
+
+            self.assertFalse(stop_thread.is_alive())
+            self.assertEqual(persisted.status, "cancelled")
 
     def test_cancelled_before_start_event_keeps_job_step_snapshot(self):
         with tempfile.TemporaryDirectory() as temp_dir:

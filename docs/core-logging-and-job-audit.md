@@ -58,7 +58,7 @@ Python `WARNING` 显示为 `[WARN]`。Core 使用独立文件 handler 且不向 
 Core 日志覆盖：
 
 - Core 启动、就绪和关闭；
-- 任务入队、开始、阶段、每步采样速度与 ETA、完成、取消和失败；
+- 任务入队、开始、阶段、每步采样速度与 ETA、跳过、完成、取消和失败；
 - Worker 启动、PID、就绪、关闭、强制终止和异常退出；
 - Worker 的普通 stdout/stderr；以 `WARN`/`WARNING` 开头的行记为 `[WARN]`，以
   `ERROR`/`CRITICAL`/`FATAL`/`Traceback` 开头的行记为 `[ERROR]`，其他行记为 `[INFO]`；

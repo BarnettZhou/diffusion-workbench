@@ -35,6 +35,7 @@ encoder 都在 `configs/workbench.yaml` 中设置；`diffusion` 与 `vae` 都接
 /seed <-1|非负整数>
 /start [num]
 /status
+/skip
 /stop
 /exit
 ```
@@ -50,9 +51,11 @@ TUI 底部状态栏按真实执行事件显示“启动推理 Worker”“加载
 详细错误同时写入对应任务的 SQLite 记录。
 
 任务按提交时的设置快照依次执行。Worker 在 TUI 存活期间保留已加载资源；同模式
-切换 diffusion 时复用 text encoder 和 VAE，跨模式时先释放旧模式资源。`/stop`
-会终止当前 Worker 并清空队列，下一次 `/start` 会创建干净的 Worker；`/exit` 释放
-全部资源。
+切换 diffusion 时复用 text encoder 和 VAE，跨模式时先释放旧模式资源。`/skip`
+只终止当前任务，等待队列不变；若仍有任务，Core 会重启 Worker 并继续下一项，若没有
+等待任务则进入空闲状态。任务尚在准备或已经进入完成落库阶段时不会误报跳过；Worker
+取消失败会直接显示错误。`/stop` 会终止当前 Worker 并清空队列，下一次 `/start` 会创建
+干净的 Worker；`/exit` 释放全部资源。
 
 输出写入 `output/YYYY-MM-DD/<mode>-NNNNN.png`。每张 PNG 的
 `diffusion_workbench` iTXt 块包含实际 seed、prompt、尺寸、采样参数、资源路径/SHA-256

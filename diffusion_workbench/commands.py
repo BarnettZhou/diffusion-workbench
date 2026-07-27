@@ -67,15 +67,20 @@ class CommandSession:
             if command == "stop":
                 self.core.stop()
                 return CommandResponse(("已停止当前任务并清空队列",))
+            if command == "skip":
+                job_id = self.core.skip_current()
+                if job_id is None:
+                    return CommandResponse(("当前没有可跳过的任务",))
+                return CommandResponse((f"已跳过当前任务: {job_id}",))
             if command == "exit":
                 return CommandResponse(("正在卸载资源……",), exit_requested=True)
             if command == "help":
                 return CommandResponse((
                     "/mode  /model list|set|set-alias  /vae list|set|set-alias",
-                    "/prompt  /size  /steps  /seed  /start  /status  /stop  /exit",
+                    "/prompt  /size  /steps  /seed  /start  /status  /skip  /stop  /exit",
                 ))
             return CommandResponse((f"错误: 未知命令 /{command}",))
-        except (ValueError, IndexError) as exc:
+        except (ValueError, IndexError, RuntimeError) as exc:
             return CommandResponse((f"错误: {exc}",))
 
     def _mode(self, args: list[str]) -> CommandResponse:

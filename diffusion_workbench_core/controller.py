@@ -31,6 +31,7 @@ class GenerationController:
         self._queue: queue.Queue[tuple[int, JobRecord] | None] = queue.Queue()
         self._lock = threading.RLock()
         self._current: JobRecord | None = None
+        self._current_cancellable = False
         self._cancel_requested: set[str] = set()
         self._generation = 0
         self._queue_event_sequence = 0
@@ -118,6 +119,43 @@ class GenerationController:
             self._logger.info("stop requested while idle")
         self._emit_queue()
 
+    def skip_current(self) -> str | None:
+        cancel_error = None
+        with self._lock:
+            current = self._current
+            if current is None or not self._current_cancellable:
+                self._logger.info("skip requested with no cancellable job")
+                return None
+            cancellation_already_requested = current.id in self._cancel_requested
+            self._cancel_requested.add(current.id)
+            queued_remaining = self._queue.qsize()
+            try:
+                self.runtime.cancel()
+            except Exception as exc:
+                cancel_error = exc
+                if not cancellation_already_requested:
+                    self._cancel_requested.discard(current.id)
+                self._logger.exception(
+                    "worker cancellation failed while skipping job_id=%s", current.id
+                )
+            else:
+                self._logger.warning(
+                    "skip requested job_id=%s queued_remaining=%d",
+                    current.id,
+                    queued_remaining,
+                )
+        if cancel_error is not None:
+            self._emit(
+                {
+                    "type": "job_error",
+                    "job_id": current.id,
+                    "error": f"GPU Worker 跳过失败: {cancel_error}",
+                }
+            )
+            raise RuntimeError(f"跳过任务失败: {cancel_error}") from cancel_error
+        self._emit_queue()
+        return current.id
+
     def wait_idle(self) -> None:
         self._queue.join()
 
@@ -161,6 +199,7 @@ class GenerationController:
                 cancelled_before_start = generation != self._generation
                 if not cancelled_before_start:
                     self._current = job
+                    self._current_cancellable = False
             if cancelled_before_start:
                 try:
                     self.store.mark_cancelled(job.id)
@@ -249,6 +288,8 @@ class GenerationController:
                         }
                     )
 
+                with self._lock:
+                    self._current_cancellable = True
                 result = self.runtime.generate(
                     running_job,
                     progress,
@@ -265,7 +306,10 @@ class GenerationController:
                     result.get("generation_seconds"),
                 )
                 duration = time.perf_counter() - started_clock
-                if job.id in self._cancel_requested:
+                with self._lock:
+                    self._current_cancellable = False
+                    cancellation_requested = job.id in self._cancel_requested
+                if cancellation_requested:
                     self.store.mark_cancelled(job.id, duration_seconds=duration)
                     status = "cancelled"
                 else:
@@ -274,6 +318,8 @@ class GenerationController:
             except GenerationCancelled as exc:
                 duration = time.perf_counter() - started_clock
                 status = "cancelled"
+                with self._lock:
+                    self._current_cancellable = False
                 self._logger.warning("job cancelled job_id=%s reason=%s", job.id, exc)
                 try:
                     self.store.mark_cancelled(job.id, duration_seconds=duration)
@@ -290,25 +336,50 @@ class GenerationController:
                     )
             except Exception as exc:
                 duration = time.perf_counter() - started_clock
-                status = "failed"
-                error = f"{type(exc).__name__}: {exc}"
-                self._logger.exception("job failed job_id=%s", job.id)
-                try:
-                    self.store.mark_failed(
+                with self._lock:
+                    self._current_cancellable = False
+                    cancellation_requested = job.id in self._cancel_requested
+                if cancellation_requested:
+                    status = "cancelled"
+                    self._logger.warning(
+                        "job cancelled during runtime failure job_id=%s reason=%s",
                         job.id,
-                        datetime.now().astimezone(),
-                        duration,
-                        error,
+                        exc,
                     )
-                except Exception as persistence_error:
-                    self._logger.exception(
-                        "job failure persistence failed job_id=%s", job.id
-                    )
-                    error += f"; 失败状态写入失败: {persistence_error}"
-                self._emit({"type": "job_error", "job_id": job.id, "error": error})
+                    try:
+                        self.store.mark_cancelled(job.id, duration_seconds=duration)
+                    except Exception as persistence_error:
+                        self._logger.exception(
+                            "job cancellation persistence failed job_id=%s", job.id
+                        )
+                        self._emit(
+                            {
+                                "type": "job_error",
+                                "job_id": job.id,
+                                "error": f"取消状态写入失败: {persistence_error}",
+                            }
+                        )
+                else:
+                    status = "failed"
+                    error = f"{type(exc).__name__}: {exc}"
+                    self._logger.exception("job failed job_id=%s", job.id)
+                    try:
+                        self.store.mark_failed(
+                            job.id,
+                            datetime.now().astimezone(),
+                            duration,
+                            error,
+                        )
+                    except Exception as persistence_error:
+                        self._logger.exception(
+                            "job failure persistence failed job_id=%s", job.id
+                        )
+                        error += f"; 失败状态写入失败: {persistence_error}"
+                    self._emit({"type": "job_error", "job_id": job.id, "error": error})
             finally:
                 with self._lock:
                     self._cancel_requested.discard(job.id)
+                    self._current_cancellable = False
                     self._current = None
                 self._queue.task_done()
                 self._emit(

@@ -11,6 +11,7 @@ from unittest.mock import patch
 from diffusion_workbench_core.config import ComfyConfig, ModeResources, WorkbenchConfig
 from diffusion_workbench_core.domain import JobRecord, Mode
 from diffusion_workbench_core.persistent_runtime import PersistentComfyRuntime
+from diffusion_workbench_core.runtime import GenerationCancelled
 
 
 FAKE_WORKER = r'''
@@ -40,6 +41,43 @@ for line in sys.stdin:
 
 
 class PersistentRuntimeTests(unittest.TestCase):
+    def test_cancel_before_generate_is_consumed_by_that_generation_only(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            worker_script = root / "fake_worker.py"
+            worker_script.write_text(FAKE_WORKER, encoding="utf-8")
+            config = WorkbenchConfig(
+                path=root / "config.yaml",
+                comfyui=ComfyConfig(root, Path(sys.executable)),
+                resources={
+                    Mode.ZIT: ModeResources(
+                        (), (), root / "te.safetensors", "stable_diffusion"
+                    )
+                },
+                output_dir=root / "output",
+                database=root / "jobs.sqlite3",
+                worker_timeout_seconds=10,
+            )
+            runtime = PersistentComfyRuntime(config, worker_script=worker_script)
+            try:
+                runtime.cancel()
+
+                with self.assertRaises(GenerationCancelled):
+                    runtime.generate(
+                        self.make_job(root, "cancel-before-start"),
+                        lambda _step, _total, _metrics: None,
+                        lambda _stage, _total: None,
+                    )
+                result = runtime.generate(
+                    self.make_job(root, "next"),
+                    lambda _step, _total, _metrics: None,
+                    lambda _stage, _total: None,
+                )
+            finally:
+                runtime.close()
+
+            self.assertEqual(result["job_id"], "next")
+
     def test_forwards_worker_output_to_injected_logger(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

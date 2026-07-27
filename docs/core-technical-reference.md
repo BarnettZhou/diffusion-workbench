@@ -22,7 +22,7 @@ FastAPI 服务共同复用的核心层，不包含 HTTP、WebSocket 或界面状
 - 8 到 20 步；
 - 固定 seed 或 `-1` 随机 seed；
 - 单 GPU 串行队列和批量任务；
-- 模型跨任务复用、切模重载、停止/退出释放；
+- 模型跨任务复用、切模重载、跳过/停止/退出释放；
 - SQLite 任务记录、资源别名和原子 PNG 输出；
 - 队列、执行阶段、采样速度/ETA、可选 latent 预览、错误和完成事件；
 - 带版本化生成参数 iTXt 元数据的 PNG 输出。
@@ -33,7 +33,7 @@ FastAPI 服务共同复用的核心层，不包含 HTTP、WebSocket 或界面状
 - HTTP 鉴权、限流、CORS、内容安全或用户隔离；
 - 任意 ComfyUI workflow；
 - 并行 GPU 推理或多个 GPU Worker；
-- 单任务取消；当前 `stop()` 会取消正在运行的任务并清空整个队列；
+- 按任意 job id 取消；当前只支持跳过正在运行的任务或全局停止；
 - 稳定的分页历史查询 API；当前只有 `JobStore.get_job()`；
 - 持久化事件流；事件只在进程内实时投递，SQLite 才是最终事实来源。
 
@@ -124,6 +124,7 @@ finally:
 | `runtime_status()` | `dict` | GPU 数据最多约 2 秒陈旧 |
 | `set_event_sink(callback)` | 无 | 只有一个 sink，后设置会覆盖前一个 |
 | `set_preview_enabled(enabled)` | 无 | 默认关闭；FastAPI 启用后发送 base64 JPEG 预览事件 |
+| `skip_current()` | `str | None` | 接受时返回 job id；无可跳过任务时返回 `None`；失败时抛 `RuntimeError` |
 | `stop()` | 无 | 取消当前任务并清空全部等待任务 |
 | `shutdown()` | 无 | 永久关闭该实例并释放资源 |
 
@@ -260,7 +261,7 @@ stateDiagram-v2
     queued --> cancelled: stop / stale generation
     running --> completed: image saved + DB update
     running --> failed: validation/runtime/worker/save error
-    running --> cancelled: stop terminates Worker
+    running --> cancelled: skip / stop terminates Worker
     queued --> cancelled: process restart recovery
     running --> cancelled: process restart recovery
 ```
@@ -275,7 +276,18 @@ stateDiagram-v2
 3. 若存在运行中任务，终止整个 Comfy Worker 进程；
 4. 下一次任务会创建一个干净的新 Worker。
 
-当前不支持 `cancel(job_id)`。FastAPI 不应把 `stop()` 包装成单任务 DELETE。
+`skip_current()` 只处理当前运行任务：
+
+1. 不增加队列 generation，也不移除任何等待任务；
+2. 标记当前 job 为取消目标并终止其 Worker；
+3. 当前 job 写为 `cancelled` 后，消费线程继续取下一项并创建干净的新 Worker；
+4. 没有等待任务时，Worker 保持停止，Controller 进入空闲状态；
+5. 空闲、准备阶段或已经认领完成结果时返回 `None`，不修改队列和 SQLite；
+6. Worker 取消失败时撤销 skip 标记并抛出 `RuntimeError`，不会伪报跳过成功。
+
+取消动作在 Controller 状态锁内发起，避免当前任务自然结束的同时误终止刚启动的下一项。
+当前仍不支持 `cancel(job_id)`，也不能用 skip 取消等待队列中的指定任务。FastAPI 不应把
+`stop()` 包装成单任务 DELETE。
 
 ## 8. Worker 生命周期和模型复用
 
@@ -310,7 +322,7 @@ Worker 是长生命周期子进程：
 - 跨 mode 时调用完整 `release()`；
 - 成功任务结束后保留资源，以加速下一张；
 - 失败时 Worker 执行 `release()`，保留进程但清空模型；
-- `stop()` 直接终止进程；
+- `skip_current()` / `stop()` 直接终止进程；
 - `shutdown()` 请求优雅释放，10 秒内未退出则终止。
 
 ComfyUI 的动态显存管理可能在 VAE 阶段把部分 diffusion 权重移到 CPU/pinned RAM。
@@ -554,6 +566,7 @@ migration/version 策略，不能
 | 推理或保存失败 | Worker release 模型，发 error，任务 failed |
 | Worker 意外退出 | Runtime 附加最近 20 行日志，任务 failed |
 | 超时 | Worker 被终止，任务 failed |
+| `skip_current()` | 当前任务 cancelled；等待任务继续；队列为空则 Worker stopped |
 | `stop()` | 当前和等待任务 cancelled；下次任务重启 Worker |
 | 主进程异常退出 | 下次初始化将 queued/running 恢复为 cancelled |
 | event sink 抛异常 | 异常被吞掉，生成继续 |
