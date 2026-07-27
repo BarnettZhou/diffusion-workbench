@@ -4,6 +4,9 @@
 持久化位于独立的 `diffusion_workbench_core` 包中。后续 HTTP 服务应直接复用
 `WorkbenchCore`，不要绕过 core 启动第二套 GPU Worker。
 
+预览事件、速度字段和 PNG 内嵌参数的完整契约见
+[生成预览、速度与 PNG 元数据](generation-preview-speed-and-metadata.md)。
+
 ## 启动
 
 ```powershell
@@ -42,7 +45,8 @@ encoder 都在 `configs/workbench.yaml` 中设置；`diffusion` 与 `vae` 都接
 TUI 底部状态栏按真实执行事件显示“启动推理 Worker”“加载模型资源”“编码提示词”
 “准备 latent”“采样中”“VAE 解码”“保存图片”“图片已保存”等阶段。采样步数始终
 单独显示：进入采样前为“未开始/n”，采样时实时更新为“1/n”，采样完成后保持
-“n/n”，采样时还会显示实时速度和预计剩余时间。状态栏同时显示队列、Worker 和 GPU 状态。生成失败时保持命令输入可用；
+“n/n”，采样时还会显示实时速度和预计剩余时间。状态栏同时显示队列、Worker 和 GPU
+状态。生成失败时保持命令输入可用；
 详细错误同时写入对应任务的 SQLite 记录。
 
 任务按提交时的设置快照依次执行。Worker 在 TUI 存活期间保留已加载资源；同模式
@@ -51,8 +55,8 @@ TUI 底部状态栏按真实执行事件显示“启动推理 Worker”“加载
 全部资源。
 
 输出写入 `output/YYYY-MM-DD/<mode>-NNNNN.png`。每张 PNG 的
-`diffusion_workbench` iTXt 块包含实际 seed、prompt、尺寸、采样参数、资源路径/SHA-256 和运行时
-版本；可通过 `uv run python demo_png_metadata.py <image.png>` 验证读取。任务和别名仍会
+`diffusion_workbench` iTXt 块包含实际 seed、prompt、尺寸、采样参数、资源路径/SHA-256
+和运行时版本；可通过 `uv run python demo_png_metadata.py <image.png>` 验证读取。任务和别名仍会
 存入 `.cache/diffusion_workbench.sqlite3`。
 
 同一个 SQLite 数据库同一时间只允许一个 core 实例持有；TUI 与未来 HTTP 接口应共享

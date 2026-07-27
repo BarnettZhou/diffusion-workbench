@@ -1,7 +1,9 @@
 # FastAPI 后端接入 diffusion-workbench-core
 
-本文面向接手 FastAPI 的开发者，描述如何把现有 Core 包装为单机 HTTP 服务。先阅读
-[Core 技术参考](core-technical-reference.md)，本文不重复内部推理实现。
+本文面向接手 FastAPI 的开发者，描述如何把现有 Core 包装为单机 HTTP 服务。请先阅读
+[Core 技术参考](core-technical-reference.md)与
+[生成预览、速度与 PNG 元数据](generation-preview-speed-and-metadata.md)。本文不重复内部
+推理实现。
 
 ## 1. 设计结论
 

@@ -7,6 +7,7 @@ FastAPI 服务共同复用的核心层，不包含 HTTP、WebSocket 或界面状
 
 - [FastAPI 后端接入指南](backend-integration.md)
 - [CLI/TUI 使用说明](workbench-cli.md)
+- [生成预览、速度与 PNG 元数据](generation-preview-speed-and-metadata.md)
 - [Krea2 非 ComfyUI 后端研究](krea2-alternative-backends.md)
 
 ## 1. 当前能力与边界
@@ -521,7 +522,8 @@ metadata = read_generation_metadata("output.png")
 uv run python demo_png_metadata.py output.png
 ```
 
-当前 schema 没有版本号和迁移框架。修改字段前必须先引入 migration/version 策略，不能
+当前 SQLite schema 没有版本号和迁移框架。修改数据库字段前必须先引入
+migration/version 策略，不能
 仅修改 `CREATE TABLE IF NOT EXISTS` 后假设旧库会自动升级。
 
 ## 14. 并发与部署约束
