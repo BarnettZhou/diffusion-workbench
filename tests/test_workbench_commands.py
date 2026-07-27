@@ -19,6 +19,7 @@ class FakeCore:
             resources={
                 Mode.ZIT: ModeResources((), (), root / "zit-te.safetensors", "stable_diffusion"),
                 Mode.KREA2: ModeResources((), (), root / "krea-te.safetensors", "krea2"),
+                Mode.ZIB: ModeResources((), (), root / "zib-te.safetensors", "stable_diffusion"),
             },
             output_dir=root / "output",
             database=root / "jobs.sqlite3",
@@ -29,6 +30,8 @@ class FakeCore:
             (Mode.ZIT, ResourceKind.VAE): [ResourceItem(1, root / "zit-vae.safetensors")],
             (Mode.KREA2, ResourceKind.DIFFUSION): [ResourceItem(1, root / "krea.safetensors")],
             (Mode.KREA2, ResourceKind.VAE): [ResourceItem(1, root / "krea-vae.safetensors")],
+            (Mode.ZIB, ResourceKind.DIFFUSION): [ResourceItem(1, root / "zib.safetensors")],
+            (Mode.ZIB, ResourceKind.VAE): [ResourceItem(1, root / "zib-vae.safetensors")],
         }
         self.submitted = []
         self.stopped = False
@@ -116,12 +119,62 @@ class CommandSessionTests(unittest.TestCase):
             self.assertIn("krea2", "\n".join(switched.lines))
             self.assertIsNone(session.selected_model)
 
+    def test_mode_can_select_zib_and_list_its_models(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            session = CommandSession(FakeCore(Path(temp_dir)))
+
+            selected = session.handle("/mode zib")
+            models = session.handle("/model list")
+
+            self.assertIn("zib", "\n".join(selected.lines))
+            self.assertIn("zib.safetensors", "\n".join(models.lines))
+
+    def test_sampling_commands_update_submitted_settings(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            core = FakeCore(Path(temp_dir))
+            session = CommandSession(core)
+            session.handle("/mode zib")
+            session.handle("/model set 1")
+            session.handle("/vae set 1")
+            session.handle("/prompt portrait")
+            session.handle("/negative blurry, watermark")
+
+            self.assertIn("dpmpp_2m_sde", "\n".join(session.handle("/sampler list").lines))
+            self.assertIn("sgm_uniform", "\n".join(session.handle("/scheduler list").lines))
+            session.handle("/cfg 4")
+            session.handle("/steps 40")
+            session.handle("/sampler set 2")
+            session.handle("/scheduler sgm_uniform")
+            session.handle("/start")
+
+            settings, _count = core.submitted[0]
+            self.assertEqual(settings.mode, Mode.ZIB)
+            self.assertEqual(settings.cfg, 4.0)
+            self.assertEqual(settings.steps, 40)
+            self.assertEqual(settings.sampler, "dpmpp_2m_sde")
+            self.assertEqual(settings.scheduler, "sgm_uniform")
+            self.assertEqual(settings.negative_prompt, "blurry, watermark")
+            status = "\n".join(session.handle("/status").lines)
+            self.assertIn("cfg: 4", status)
+            self.assertIn("sampler: dpmpp_2m_sde", status)
+            self.assertIn("scheduler: sgm_uniform", status)
+            self.assertIn("negative: blurry, wate...", status)
+
+    def test_sampling_commands_accept_names_and_reject_invalid_values(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            session = CommandSession(FakeCore(Path(temp_dir)))
+
+            self.assertIn("euler", "\n".join(session.handle("/sampler set euler").lines))
+            self.assertIn("beta", "\n".join(session.handle("/scheduler set 3").lines))
+            self.assertIn("大于 0", "\n".join(session.handle("/cfg 0").lines))
+            self.assertIn("找不到 sampler", "\n".join(session.handle("/sampler set nope").lines))
+
     def test_rejects_invalid_settings_and_exit_defers_core_shutdown_to_tui(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             core = FakeCore(Path(temp_dir))
             session = CommandSession(core)
 
-            self.assertIn("8 到 20", "\n".join(session.handle("/steps 7").lines))
+            self.assertIn("1 到 100", "\n".join(session.handle("/steps 0").lines))
             self.assertIn("16 的倍数", "\n".join(session.handle("/size 575*576").lines))
             response = session.handle("/exit")
 

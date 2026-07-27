@@ -7,7 +7,8 @@ from PIL import Image, PngImagePlugin
 
 
 PNG_METADATA_KEY = "diffusion_workbench"
-PNG_METADATA_SCHEMA_VERSION = 1
+PNG_METADATA_SCHEMA_VERSION = 2
+SUPPORTED_PNG_METADATA_SCHEMA_VERSIONS = {1, PNG_METADATA_SCHEMA_VERSION}
 
 
 class ResourceFingerprintCache:
@@ -59,6 +60,7 @@ def build_generation_metadata(
         "parameters": {
             "mode": command["mode"],
             "prompt": command["prompt"],
+            "negative_prompt": command.get("negative_prompt", ""),
             "width": int(command["width"]),
             "height": int(command["height"]),
             "steps": int(command["steps"]),
@@ -67,7 +69,11 @@ def build_generation_metadata(
             "sampler": command["sampler"],
             "scheduler": command["scheduler"],
             "denoise": 1.0,
-            "negative_conditioning": "zeroed_positive",
+            "negative_conditioning": (
+                "encoded_negative_prompt"
+                if command["mode"] == "zib" or float(command["cfg"]) != 1.0
+                else "positive_reused"
+            ),
         },
         "resources": {
             "diffusion_model": _resource_or_default(
@@ -111,7 +117,7 @@ def read_generation_metadata(path: str | Path) -> dict[str, Any] | None:
     if not isinstance(metadata, dict):
         raise ValueError("PNG 中的 diffusion-workbench 元数据必须是对象")
     schema_version = metadata.get("schema_version")
-    if schema_version != PNG_METADATA_SCHEMA_VERSION:
+    if schema_version not in SUPPORTED_PNG_METADATA_SCHEMA_VERSIONS:
         raise ValueError(
             "不支持的 diffusion-workbench PNG 元数据版本: "
             f"{schema_version!r}"

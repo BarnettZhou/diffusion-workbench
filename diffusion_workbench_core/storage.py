@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     daily_index INTEGER NOT NULL,
     mode TEXT NOT NULL,
     prompt TEXT NOT NULL,
+    negative_prompt TEXT NOT NULL DEFAULT '',
     model TEXT NOT NULL,
     vae TEXT NOT NULL,
     text_encoder TEXT NOT NULL,
@@ -55,6 +56,13 @@ class JobStore:
         self._lock = threading.RLock()
         with self._connection() as connection:
             connection.executescript(SCHEMA)
+            columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(jobs)")
+            }
+            if "negative_prompt" not in columns:
+                connection.execute(
+                    "ALTER TABLE jobs ADD COLUMN negative_prompt TEXT NOT NULL DEFAULT ''"
+                )
 
     def recover_incomplete_jobs(self) -> None:
         with self._lock, self._connection() as connection:
@@ -150,6 +158,7 @@ class JobStore:
                     daily_index,
                     settings.mode.value,
                     settings.prompt,
+                    settings.negative_prompt,
                     str(settings.model.path.resolve()),
                     str(settings.vae.path.resolve()),
                     str(settings.text_encoder.resolve()),
@@ -165,9 +174,9 @@ class JobStore:
                     """
                     INSERT INTO jobs(
                         id, batch_id, status, submitted_at, output_path, output_date,
-                        daily_index, mode, prompt, model, vae, text_encoder, sampler,
+                        daily_index, mode, prompt, negative_prompt, model, vae, text_encoder, sampler,
                         scheduler, width, height, steps, seed, cfg
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     values,
                 )
@@ -257,6 +266,7 @@ class JobStore:
             output_path=Path(row["output_path"]),
             mode=Mode(row["mode"]),
             prompt=row["prompt"],
+            negative_prompt=row["negative_prompt"],
             model_path=Path(row["model"]),
             vae_path=Path(row["vae"]),
             text_encoder_path=Path(row["text_encoder"]),

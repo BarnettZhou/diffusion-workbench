@@ -16,12 +16,14 @@ from io import BytesIO
 from pathlib import Path
 
 try:
+    from .domain import SAMPLERS, SCHEDULERS, validate_sampling
     from .png_metadata import (
         ResourceFingerprintCache,
         build_generation_metadata,
         create_png_info,
     )
 except ImportError:  # The Comfy worker runs this module as a standalone script.
+    from domain import SAMPLERS, SCHEDULERS, validate_sampling
     from png_metadata import (
         ResourceFingerprintCache,
         build_generation_metadata,
@@ -104,10 +106,12 @@ class ComfyWorker:
         import torch
         from PIL import Image
 
-        if "euler" not in comfy.samplers.KSampler.SAMPLERS:
-            raise RuntimeError("当前 ComfyUI 不支持 Euler sampler")
-        if "simple" not in comfy.samplers.KSampler.SCHEDULERS:
-            raise RuntimeError("当前 ComfyUI 不支持 simple scheduler")
+        self.available_samplers = frozenset(comfy.samplers.KSampler.SAMPLERS)
+        self.available_schedulers = frozenset(comfy.samplers.KSampler.SCHEDULERS)
+        if "euler" not in self.available_samplers:
+            raise RuntimeError("当前 ComfyUI 不支持默认 sampler: euler")
+        if "simple" not in self.available_schedulers:
+            raise RuntimeError("当前 ComfyUI 不支持默认 scheduler: simple")
 
         self.folder_paths = folder_paths
         self.model_management = comfy.model_management
@@ -134,6 +138,7 @@ class ComfyWorker:
 
     def generate(self, command: dict) -> dict:
         self._validate(command)
+        self._validate_runtime_sampling(command)
         with self.torch.inference_mode():
             return self._generate(command)
 
@@ -176,7 +181,12 @@ class ComfyWorker:
             }
         )
         positive = self.nodes.CLIPTextEncode().encode(self.clip, command["prompt"])[0]
-        negative = self.nodes.ConditioningZeroOut().zero_out(positive)[0]
+        if command["mode"] != "zib" and float(command["cfg"]) == 1.0:
+            negative = positive
+        else:
+            negative = self.nodes.CLIPTextEncode().encode(
+                self.clip, command.get("negative_prompt", "")
+            )[0]
         load_seconds = time.perf_counter() - load_started
 
         emit(
@@ -323,9 +333,9 @@ class ComfyWorker:
             self.model,
             noise,
             int(command["steps"]),
-            1.0,
-            "euler",
-            "simple",
+            float(command["cfg"]),
+            command["sampler"],
+            command["scheduler"],
             positive,
             negative,
             latent_image,
@@ -425,18 +435,24 @@ class ComfyWorker:
 
     @staticmethod
     def _validate(command: dict) -> None:
-        if command.get("mode") not in {"zit", "krea2"}:
-            raise ValueError("mode 必须是 zit 或 krea2")
-        if command.get("sampler") != "euler" or command.get("scheduler") != "simple":
-            raise ValueError("当前只支持 Euler + simple")
-        if float(command.get("cfg", 0)) != 1.0:
-            raise ValueError("CFG 固定为 1")
+        if command.get("mode") not in {"zit", "krea2", "zib"}:
+            raise ValueError("mode 必须是 zit、krea2 或 zib")
+        cfg = float(command.get("cfg", 0))
+        steps = int(command["steps"])
+        validate_sampling(
+            steps, cfg, command.get("sampler"), command.get("scheduler")
+        )
         width, height = int(command["width"]), int(command["height"])
         if width <= 0 or height <= 0 or width % 16 or height % 16:
             raise ValueError("图片宽高必须为正数且是 16 的倍数")
-        steps = int(command["steps"])
-        if not 8 <= steps <= 20:
-            raise ValueError("steps 必须在 8 到 20 之间")
+
+    def _validate_runtime_sampling(self, command: dict) -> None:
+        sampler = command["sampler"]
+        scheduler = command["scheduler"]
+        if sampler not in self.available_samplers:
+            raise RuntimeError(f"当前 ComfyUI 不支持 sampler: {sampler}")
+        if scheduler not in self.available_schedulers:
+            raise RuntimeError(f"当前 ComfyUI 不支持 scheduler: {scheduler}")
 
 
 def main() -> None:

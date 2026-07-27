@@ -5,6 +5,10 @@ from diffusion_workbench_core.domain import (
     Mode,
     ResourceItem,
     ResourceKind,
+    SAMPLERS,
+    SCHEDULERS,
+    validate_cfg,
+    validate_steps,
 )
 
 
@@ -19,10 +23,14 @@ class CommandSession:
         self.core = core
         self.mode = Mode.ZIT
         self.prompt = ""
+        self.negative_prompt = ""
         self.width = 576
         self.height = 576
         self.steps = 8
         self.seed = -1
+        self.cfg = 1.0
+        self.sampler = "euler"
+        self.scheduler = "simple"
         self._models: dict[Mode, ResourceItem | None] = {mode: None for mode in Mode}
         self._vaes: dict[Mode, ResourceItem | None] = {mode: None for mode in Mode}
 
@@ -54,12 +62,21 @@ class CommandSession:
             if command == "prompt":
                 self.prompt = command_line[len(parts[0]) :].strip()
                 return CommandResponse(("prompt 已更新",))
+            if command in {"negative", "negative-prompt"}:
+                self.negative_prompt = command_line[len(parts[0]) :].strip()
+                return CommandResponse(("negative prompt 已更新",))
             if command == "size":
                 return self._size(args)
             if command == "steps":
                 return self._steps(args)
             if command == "seed":
                 return self._seed(args)
+            if command == "cfg":
+                return self._cfg(args)
+            if command == "sampler":
+                return self._choice("sampler", SAMPLERS, args)
+            if command == "scheduler":
+                return self._choice("scheduler", SCHEDULERS, args, direct_set=True)
             if command == "start":
                 return self._start(args)
             if command == "status":
@@ -77,7 +94,8 @@ class CommandSession:
             if command == "help":
                 return CommandResponse((
                     "/mode  /model list|set|set-alias  /vae list|set|set-alias",
-                    "/prompt  /size  /steps  /seed  /start  /status  /skip  /stop  /exit",
+                    "/prompt  /negative  /size  /steps  /seed  /cfg  /sampler  /scheduler",
+                    "/start  /status  /skip  /stop  /exit",
                 ))
             return CommandResponse((f"错误: 未知命令 /{command}",))
         except (ValueError, IndexError, RuntimeError) as exc:
@@ -85,11 +103,12 @@ class CommandSession:
 
     def _mode(self, args: list[str]) -> CommandResponse:
         if len(args) > 1:
-            raise ValueError("用法: /mode [zit|krea2]")
+            raise ValueError("用法: /mode [zit|krea2|zib]")
         if args:
             self.mode = Mode(args[0].lower())
         else:
-            self.mode = Mode.KREA2 if self.mode == Mode.ZIT else Mode.ZIT
+            modes = tuple(Mode)
+            self.mode = modes[(modes.index(self.mode) + 1) % len(modes)]
         return CommandResponse((f"mode 已切换为 {self.mode.value}",))
 
     def _resource(self, kind: ResourceKind, args: list[str]) -> CommandResponse:
@@ -143,10 +162,9 @@ class CommandSession:
 
     def _steps(self, args: list[str]) -> CommandResponse:
         if len(args) != 1:
-            raise ValueError("用法: /steps <8-20>")
+            raise ValueError("用法: /steps <1-100>")
         steps = int(args[0])
-        if not 8 <= steps <= 20:
-            raise ValueError("steps 必须在 8 到 20 之间")
+        validate_steps(steps)
         self.steps = steps
         return CommandResponse((f"steps 已设置为 {steps}",))
 
@@ -158,6 +176,51 @@ class CommandSession:
             raise ValueError("seed 必须为 -1 或非负整数")
         self.seed = seed
         return CommandResponse((f"seed 已设置为 {seed}",))
+
+    def _cfg(self, args: list[str]) -> CommandResponse:
+        if len(args) != 1:
+            raise ValueError("用法: /cfg <正数>")
+        cfg = float(args[0])
+        validate_cfg(cfg)
+        self.cfg = cfg
+        return CommandResponse((f"cfg 已设置为 {cfg:g}",))
+
+    def _choice(
+        self,
+        label: str,
+        choices: tuple[str, ...],
+        args: list[str],
+        *,
+        direct_set: bool = False,
+    ) -> CommandResponse:
+        if len(args) == 1 and args[0].lower() == "list":
+            return CommandResponse(
+                tuple(f"[{index}] {name}" for index, name in enumerate(choices, 1))
+            )
+        value_args = args if direct_set else args[1:]
+        if not direct_set and (not args or args[0].lower() != "set"):
+            raise ValueError(f"用法: /{label} list | set <name|index>")
+        if direct_set and value_args and value_args[0].lower() == "set":
+            value_args = value_args[1:]
+        if len(value_args) != 1:
+            suffix = "list | [set] <name|index>" if direct_set else "list | set <name|index>"
+            raise ValueError(f"用法: /{label} {suffix}")
+        selected = self._choice_at(label, choices, value_args[0])
+        setattr(self, label, selected)
+        return CommandResponse((f"{label} 已设置为 {selected}",))
+
+    @staticmethod
+    def _choice_at(label: str, choices: tuple[str, ...], value: str) -> str:
+        try:
+            index = int(value)
+        except ValueError:
+            normalized = value.lower()
+            if normalized in choices:
+                return normalized
+        else:
+            if 1 <= index <= len(choices):
+                return choices[index - 1]
+        raise ValueError(f"找不到 {label}: {value}")
 
     def _start(self, args: list[str]) -> CommandResponse:
         if len(args) > 1:
@@ -177,10 +240,14 @@ class CommandSession:
             text_encoder=resources.text_encoder,
             clip_type=resources.clip_type,
             prompt=self.prompt,
+            negative_prompt=self.negative_prompt,
             width=self.width,
             height=self.height,
             steps=self.steps,
             seed=self.seed,
+            cfg=self.cfg,
+            sampler=self.sampler,
+            scheduler=self.scheduler,
         )
         settings.validate()
         jobs = self.core.submit(settings, count)
@@ -190,6 +257,11 @@ class CommandSession:
         runtime = self.core.runtime_status()
         resources = self.core.config.resources[self.mode]
         prompt = self.prompt if len(self.prompt) <= 12 else self.prompt[:12] + "..."
+        negative = (
+            self.negative_prompt
+            if len(self.negative_prompt) <= 12
+            else self.negative_prompt[:12] + "..."
+        )
         model = self.selected_model.display_name if self.selected_model else "未选择"
         vae = self.selected_vae.display_name if self.selected_vae else "未选择"
         lines = (
@@ -198,9 +270,10 @@ class CommandSession:
             f"vae: {vae}",
             f"text encoder: {resources.text_encoder.name}",
             f"prompt: {prompt or '未设置'}",
+            f"negative: {negative or '未设置'}",
             f"size: {self.width}*{self.height}",
-            f"steps: {self.steps}  seed: {self.seed}  cfg: 1",
-            "sampler: euler  scheduler: simple",
+            f"steps: {self.steps}  seed: {self.seed}  cfg: {self.cfg:g}",
+            f"sampler: {self.sampler}  scheduler: {self.scheduler}",
             f"queue: {runtime.get('queue', 0)}  running: {runtime.get('running') or '无'}",
             f"worker: {runtime.get('worker', 'stopped')}  pid: {runtime.get('pid') or '无'}",
             f"gpu: {runtime.get('gpu', '不可用')}",

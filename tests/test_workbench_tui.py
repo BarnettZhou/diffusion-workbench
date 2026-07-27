@@ -27,6 +27,9 @@ class TuiCore:
                 Mode.KREA2: ModeResources(
                     (), (), root / "krea-te.safetensors", "krea2"
                 ),
+                Mode.ZIB: ModeResources(
+                    (), (), root / "zib-te.safetensors", "stable_diffusion"
+                ),
             },
             output_dir=root / "output",
             database=root / "jobs.sqlite3",

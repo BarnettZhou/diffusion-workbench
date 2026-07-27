@@ -24,6 +24,7 @@ class PngMetadataTests(unittest.TestCase):
                 "workbench_version": "0.1.0",
                 "mode": "krea2",
                 "prompt": "一幅雨夜肖像",
+                "negative_prompt": "模糊，水印",
                 "width": 960,
                 "height": 1280,
                 "steps": 8,
@@ -58,6 +59,7 @@ class PngMetadataTests(unittest.TestCase):
 
             self.assertEqual(loaded, metadata)
             self.assertEqual(loaded["parameters"]["prompt"], "一幅雨夜肖像")
+            self.assertEqual(loaded["parameters"]["negative_prompt"], "模糊，水印")
             self.assertEqual(loaded["parameters"]["seed"], 42)
             self.assertEqual(
                 loaded["resources"]["diffusion_model"]["filename"],
@@ -73,6 +75,16 @@ class PngMetadataTests(unittest.TestCase):
             Image.new("RGB", (8, 8)).save(output)
 
             self.assertIsNone(read_generation_metadata(output))
+
+    def test_reads_legacy_v1_metadata(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output = Path(temp_dir) / "legacy.png"
+            legacy = {"schema_version": 1, "parameters": {"prompt": "portrait"}}
+            Image.new("RGB", (8, 8)).save(
+                output, format="PNG", pnginfo=create_png_info(legacy)
+            )
+
+            self.assertEqual(read_generation_metadata(output), legacy)
 
     def test_resource_fingerprint_cache_invalidates_replaced_files(self):
         with tempfile.TemporaryDirectory() as temp_dir:

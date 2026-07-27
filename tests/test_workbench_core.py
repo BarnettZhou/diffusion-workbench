@@ -50,6 +50,11 @@ resources:
     vae: [{vae.as_posix()}]
     text_encoder: {text_encoder.as_posix()}
     clip_type: krea2
+  zib:
+    diffusion: [{first.as_posix()}]
+    vae: [{vae.as_posix()}]
+    text_encoder: {text_encoder.as_posix()}
+    clip_type: stable_diffusion
 output_dir: output
 database: jobs.sqlite3
 worker_timeout_seconds: 300
@@ -68,6 +73,10 @@ worker_timeout_seconds: 300
             self.assertEqual(reloaded.list(Mode.ZIT, ResourceKind.DIFFUSION)[0].alias, "fast")
             self.assertEqual(config.output_dir, root / "output")
             self.assertEqual(config.database, root / "jobs.sqlite3")
+            self.assertEqual(
+                [item.path.name for item in catalog.list(Mode.ZIB, ResourceKind.DIFFUSION)],
+                ["zeta.safetensors"],
+            )
 
     def test_alias_must_be_unique_within_mode_and_kind(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -100,6 +109,7 @@ class JobStoreTests(unittest.TestCase):
                 text_encoder=root / "te.safetensors",
                 clip_type="krea2",
                 prompt="portrait",
+                negative_prompt="blurry",
                 width=576,
                 height=576,
                 steps=8,
@@ -118,6 +128,7 @@ class JobStoreTests(unittest.TestCase):
             self.assertEqual(first_batch[1].output_path.name, "krea2-00002.png")
             self.assertEqual(next_batch[0].output_path.name, "krea2-00003.png")
             self.assertEqual(persisted.prompt, "portrait")
+            self.assertEqual(persisted.negative_prompt, "blurry")
             self.assertEqual(persisted.model_path, model)
             self.assertEqual(persisted.status, "queued")
 

@@ -93,6 +93,7 @@ class PersistentComfyRuntime:
             "text_encoder_path": str(job.text_encoder_path.resolve()),
             "clip_type": self.config.resources[job.mode].clip_type,
             "prompt": job.prompt,
+            "negative_prompt": job.negative_prompt,
             "width": job.width,
             "height": job.height,
             "steps": job.steps,

@@ -30,6 +30,33 @@ class FakeTorch:
 
 
 class ComfyWorkerTests(unittest.TestCase):
+    def test_zib_sampling_settings_are_valid(self):
+        ComfyWorker._validate(
+            {
+                "mode": "zib",
+                "width": 1024,
+                "height": 1024,
+                "steps": 40,
+                "cfg": 4,
+                "sampler": "dpmpp_2m_sde",
+                "scheduler": "sgm_uniform",
+            }
+        )
+
+    def test_rejects_unknown_sampling_options(self):
+        command = {
+            "mode": "zib",
+            "width": 1024,
+            "height": 1024,
+            "steps": 10,
+            "cfg": 1,
+            "sampler": "unknown",
+            "scheduler": "simple",
+        }
+
+        with self.assertRaisesRegex(ValueError, "sampler"):
+            ComfyWorker._validate(command)
+
     def test_sampling_progress_contains_speed_and_eta(self):
         progress = sampling_progress_payload(
             step=2,
@@ -62,6 +89,8 @@ class ComfyWorkerTests(unittest.TestCase):
         worker = object.__new__(ComfyWorker)
         worker.torch = FakeTorch()
         worker._validate = lambda _command: None
+        worker.available_samplers = {"euler"}
+        worker.available_schedulers = {"simple"}
 
         def generate_inside_mode(_command):
             self.assertTrue(worker.torch.enabled)
@@ -69,7 +98,10 @@ class ComfyWorkerTests(unittest.TestCase):
 
         worker._generate = generate_inside_mode
 
-        self.assertEqual(worker.generate({}), {"type": "result"})
+        self.assertEqual(
+            worker.generate({"sampler": "euler", "scheduler": "simple"}),
+            {"type": "result"},
+        )
         self.assertFalse(worker.torch.enabled)
 
 
