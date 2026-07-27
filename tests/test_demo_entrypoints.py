@@ -2,11 +2,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import demo_krea2
-import demo_zit
+from demo import demo_krea2, demo_zit
 import comfyui_krea2_runner
 from krea2_config import KREA2_MODEL_PATH
-from demo_txt2img import (
+from demo.demo_txt2img import (
     MODELS,
     load_pipeline,
     run_demo,
@@ -25,7 +24,7 @@ class DemoEntrypointTests(unittest.TestCase):
     def test_krea2_uses_comfyui_quantized_backend(self):
         self.assertEqual(MODELS["krea2"]["backend"], "comfyui")
 
-    @patch("demo_txt2img.load_comfy_state_dict")
+    @patch("demo.demo_txt2img.load_comfy_state_dict")
     def test_legacy_loader_rejects_krea2_before_reading_weights(self, load_state_dict):
         with self.assertRaisesRegex(ValueError, "ComfyUI"):
             load_pipeline("krea2")
@@ -54,7 +53,7 @@ class DemoEntrypointTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "steps"):
             simple_sigmas(0)
 
-    @patch("demo_txt2img.load_pipeline")
+    @patch("demo.demo_txt2img.load_pipeline")
     def test_invalid_steps_fail_before_loading_model(self, load_pipeline):
         with self.assertRaisesRegex(ValueError, "steps"):
             run_demo("krea2", "test", "", 576, 576, 0, 42)

@@ -86,7 +86,7 @@ def main() -> None:
             f"resolved={resolved_model_path} expected={expected_model_path}"
         )
     if not args.benchmark_any_format:
-        from demo_txt2img import validate_krea2_scaled_fp8
+        from demo.demo_txt2img import validate_krea2_scaled_fp8
 
         validate_krea2_scaled_fp8(str(resolved_model_path))
 

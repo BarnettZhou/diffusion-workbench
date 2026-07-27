@@ -3,13 +3,17 @@
 import argparse
 import os
 import subprocess
+import sys
 from pathlib import Path
 
-from demo_txt2img import validate_krea2_scaled_fp8
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from demo.demo_txt2img import validate_krea2_scaled_fp8
 from krea2_config import KREA2_MODEL_PATH
 
 
-WORKSPACE_ROOT = Path(__file__).resolve().parent
+WORKSPACE_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_COMFY_ROOT = Path(r"C:\App\ComfyUI-aki-v1.6\ComfyUI")
 RUNNER_PATH = WORKSPACE_ROOT / "comfyui_krea2_runner.py"
 

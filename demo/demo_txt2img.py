@@ -1,8 +1,8 @@
 """Z-Image-Turbo 加载实现，以及 Krea2 checkpoint 格式校验。
 
 可执行入口已经拆分：
-    uv run demo_zit.py --prompt "一只赛博朋克风格的猫"
-    uv run demo_krea2.py --prompt "a fox in the snow"
+    uv run python -m demo.demo_zit --prompt "一只赛博朋克风格的猫"
+    uv run python -m demo.demo_krea2 --prompt "a fox in the snow"
 
 说明：
 - 权重全部使用本地 ComfyUI 目录下的 safetensors，不重复下载大文件；
@@ -17,9 +17,13 @@ import hashlib
 import json
 import math
 import os
+import sys
 import time
 from collections import Counter
 from pathlib import Path
+
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import torch
 from safetensors import safe_open
@@ -37,7 +41,8 @@ from krea2_config import KREA2_MODEL_PATH
 # ---------------------------------------------------------------------------
 QUANT_SKIP_SUFFIXES = ("_scale", ".comfy_quant")
 CACHE_VERSION = 7
-CHECKPOINT_CACHE_PATH = Path(__file__).resolve().parent / ".cache" / "krea2_checkpoint_formats.json"
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+CHECKPOINT_CACHE_PATH = PROJECT_ROOT / ".cache" / "krea2_checkpoint_formats.json"
 KREA2_STANDARD_FP8_WEIGHTS = 256
 KREA2_STANDARD_BF16_TENSORS = 174
 KREA2_STRUCTURE_SIGNATURE = "4c302c490305dfb3b59ec31a49c5108da24ed04e6e42c8423752d8974e187f11"
@@ -337,7 +342,7 @@ def remap_te_keys(state_dict: dict, te_kind: str) -> dict:
 def load_pipeline(model_key: str):
     cfg = MODELS[model_key]
     if cfg.get("backend") == "comfyui":
-        raise ValueError("Krea2 必须通过 demo_krea2.py 使用 ComfyUI 量化后端")
+        raise ValueError("Krea2 必须通过 python -m demo.demo_krea2 使用 ComfyUI 量化后端")
     cfg_dir = cfg["config_dir"]
     dtype = torch.bfloat16
 
@@ -445,4 +450,4 @@ def run_demo(
 
 
 if __name__ == "__main__":
-    raise SystemExit("请使用 demo_krea2.py 或 demo_zit.py")
+    raise SystemExit("请使用 python -m demo.demo_krea2 或 python -m demo.demo_zit")

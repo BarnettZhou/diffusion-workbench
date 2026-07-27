@@ -1,8 +1,13 @@
 """Z-Image-Turbo 单模型文生图基准入口。"""
 
 import argparse
+import sys
+from pathlib import Path
 
-from demo_txt2img import run_demo
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from demo.demo_txt2img import run_demo
 
 
 def build_parser() -> argparse.ArgumentParser:

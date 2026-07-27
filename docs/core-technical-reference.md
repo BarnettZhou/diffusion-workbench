@@ -539,7 +539,7 @@ metadata = read_generation_metadata("output.png")
 ```
 
 ```powershell
-uv run python demo_png_metadata.py output.png
+uv run python -m demo.demo_png_metadata output.png
 ```
 
 当前 SQLite schema 没有版本号和迁移框架。修改数据库字段前必须先引入

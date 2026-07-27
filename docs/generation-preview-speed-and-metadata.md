@@ -142,7 +142,7 @@ if metadata is None:
 技术验证 demo：
 
 ```powershell
-uv run python demo_png_metadata.py output.png
+uv run python -m demo.demo_png_metadata output.png
 ```
 
 恢复任务时必须用资源 SHA-256 在服务端资源目录中匹配 checkpoint，再构造

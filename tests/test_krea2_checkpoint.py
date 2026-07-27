@@ -8,7 +8,7 @@ from unittest.mock import patch
 import torch
 from safetensors.torch import save_file
 
-from demo_txt2img import validate_krea2_scaled_fp8
+from demo.demo_txt2img import validate_krea2_scaled_fp8
 
 
 def quant_metadata(**overrides) -> torch.Tensor:
@@ -65,7 +65,7 @@ class Krea2CheckpointValidationTests(unittest.TestCase):
         tensors = standard_checkpoint_tensors()
         write_checkpoint(self.path, tensors)
 
-        with patch("demo_txt2img.KREA2_STRUCTURE_SIGNATURE", structure_signature(tensors)):
+        with patch("demo.demo_txt2img.KREA2_STRUCTURE_SIGNATURE", structure_signature(tensors)):
             first_report = validate_krea2_scaled_fp8(str(self.path), cache_path=self.cache_path)
             second_report = validate_krea2_scaled_fp8(str(self.path), cache_path=self.cache_path)
 
@@ -82,7 +82,7 @@ class Krea2CheckpointValidationTests(unittest.TestCase):
         original_tensors = standard_checkpoint_tensors()
         write_checkpoint(self.path, original_tensors)
         with patch(
-            "demo_txt2img.KREA2_STRUCTURE_SIGNATURE", structure_signature(original_tensors)
+            "demo.demo_txt2img.KREA2_STRUCTURE_SIGNATURE", structure_signature(original_tensors)
         ):
             validate_krea2_scaled_fp8(str(self.path), cache_path=self.cache_path)
 

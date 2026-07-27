@@ -59,7 +59,7 @@ TUI 底部状态栏按真实执行事件显示“启动推理 Worker”“加载
 
 输出写入 `output/YYYY-MM-DD/<mode>-NNNNN.png`。每张 PNG 的
 `diffusion_workbench` iTXt 块包含实际 seed、prompt、尺寸、采样参数、资源路径/SHA-256
-和运行时版本；可通过 `uv run python demo_png_metadata.py <image.png>` 验证读取。任务和别名仍会
+和运行时版本；可通过 `uv run python -m demo.demo_png_metadata <image.png>` 验证读取。任务和别名仍会
 存入 `.cache/diffusion_workbench.sqlite3`。
 
 同一个 SQLite 数据库同一时间只允许一个 core 实例持有；TUI 与未来 HTTP 接口应共享
