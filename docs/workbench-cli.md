@@ -22,7 +22,7 @@ encoder 都在 `configs/workbench.yaml` 中设置；`diffusion` 与 `vae` 都接
 ## 命令
 
 ```text
-/mode [zit|krea2]
+/mode [zit|krea2|zib]
 /model list
 /model set <index>
 /model set-alias <index> <alias-name>
@@ -30,9 +30,15 @@ encoder 都在 `configs/workbench.yaml` 中设置；`diffusion` 与 `vae` 都接
 /vae set <index>
 /vae set-alias <index> <alias-name>
 /prompt <prompt>
+/negative <negative-prompt>
 /size <width>*<height>
-/steps <8-20>
+/steps <1-100>
 /seed <-1|非负整数>
+/cfg <positive-number>
+/sampler list
+/sampler set <name|index>
+/scheduler list
+/scheduler set <name|index>
 /start [num]
 /status
 /skip
@@ -40,8 +46,10 @@ encoder 都在 `configs/workbench.yaml` 中设置；`diffusion` 与 `vae` 都接
 /exit
 ```
 
-当前固定为 Euler + simple、CFG 1。默认模式为 ZIT，默认尺寸为 576×576、8 步、
-随机 seed。模型和 VAE 默认不选择。`/start` 省略 `num` 时默认提交 1 个任务。
+默认使用 Euler + simple、CFG 1。`/sampler list` 和 `/scheduler list` 显示 Core
+开放的 ComfyUI 选项；Worker 执行任务前还会确认当前安装的 ComfyUI 是否支持所选名称。
+默认模式为 ZIT，默认尺寸为 576×576、8 步、随机 seed。模型和 VAE 默认不选择。
+`/start` 省略 `num` 时默认提交 1 个任务。
 
 TUI 底部状态栏按真实执行事件显示“启动推理 Worker”“加载模型资源”“编码提示词”
 “准备 latent”“采样中”“VAE 解码”“保存图片”“图片已保存”等阶段。采样步数始终

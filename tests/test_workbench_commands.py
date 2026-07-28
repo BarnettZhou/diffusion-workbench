@@ -164,8 +164,10 @@ class CommandSessionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             session = CommandSession(FakeCore(Path(temp_dir)))
 
-            self.assertIn("euler", "\n".join(session.handle("/sampler set euler").lines))
-            self.assertIn("beta", "\n".join(session.handle("/scheduler set 3").lines))
+            self.assertIn("ddim", "\n".join(session.handle("/sampler list").lines))
+            self.assertIn("karras", "\n".join(session.handle("/scheduler list").lines))
+            self.assertIn("ddim", "\n".join(session.handle("/sampler set ddim").lines))
+            self.assertIn("karras", "\n".join(session.handle("/scheduler set karras").lines))
             self.assertIn("大于 0", "\n".join(session.handle("/cfg 0").lines))
             self.assertIn("找不到 sampler", "\n".join(session.handle("/sampler set nope").lines))
 
