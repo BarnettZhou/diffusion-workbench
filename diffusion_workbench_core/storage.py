@@ -1,3 +1,4 @@
+import json
 import sqlite3
 import threading
 import uuid
@@ -5,7 +6,7 @@ from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
-from .domain import GenerationSettings, JobRecord, Mode, ResourceKind
+from .domain import GenerationSettings, JobRecord, Mode, ResourceKind, UpscaleSettings
 
 
 SCHEMA = """
@@ -27,6 +28,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     completed_at TEXT,
     duration_seconds REAL,
     output_path TEXT NOT NULL,
+    upscaled_output_path TEXT,
     output_date TEXT NOT NULL,
     daily_index INTEGER NOT NULL,
     mode TEXT NOT NULL,
@@ -42,6 +44,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     steps INTEGER NOT NULL,
     seed INTEGER NOT NULL,
     cfg REAL NOT NULL,
+    upscale_json TEXT NOT NULL DEFAULT '{}',
     error TEXT,
     UNIQUE (output_date, mode, daily_index)
 );
@@ -62,6 +65,14 @@ class JobStore:
             if "negative_prompt" not in columns:
                 connection.execute(
                     "ALTER TABLE jobs ADD COLUMN negative_prompt TEXT NOT NULL DEFAULT ''"
+                )
+            if "upscaled_output_path" not in columns:
+                connection.execute(
+                    "ALTER TABLE jobs ADD COLUMN upscaled_output_path TEXT"
+                )
+            if "upscale_json" not in columns:
+                connection.execute(
+                    "ALTER TABLE jobs ADD COLUMN upscale_json TEXT NOT NULL DEFAULT '{}'"
                 )
 
     def recover_incomplete_jobs(self) -> None:
@@ -148,12 +159,18 @@ class JobStore:
                     / output_date
                     / f"{settings.mode.value}-{daily_index:05d}.png"
                 ).resolve()
+                upscaled_output_path = (
+                    output_path.with_name(f"{output_path.stem}-upscale.png")
+                    if settings.upscale.enabled
+                    else None
+                )
                 values = (
                     job_id,
                     batch_id,
                     "queued",
                     submitted_iso,
                     str(output_path),
+                    str(upscaled_output_path) if upscaled_output_path else None,
                     output_date,
                     daily_index,
                     settings.mode.value,
@@ -169,14 +186,19 @@ class JobStore:
                     settings.steps,
                     settings.seed,
                     settings.cfg,
+                    json.dumps(
+                        settings.upscale.to_dict(),
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    ),
                 )
                 connection.execute(
                     """
                     INSERT INTO jobs(
-                        id, batch_id, status, submitted_at, output_path, output_date,
+                        id, batch_id, status, submitted_at, output_path, upscaled_output_path, output_date,
                         daily_index, mode, prompt, negative_prompt, model, vae, text_encoder, sampler,
-                        scheduler, width, height, steps, seed, cfg
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        scheduler, width, height, steps, seed, cfg, upscale_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     values,
                 )
@@ -264,6 +286,11 @@ class JobStore:
             completed_at=parse_time(row["completed_at"]),
             duration_seconds=row["duration_seconds"],
             output_path=Path(row["output_path"]),
+            upscaled_output_path=(
+                Path(row["upscaled_output_path"])
+                if row["upscaled_output_path"]
+                else None
+            ),
             mode=Mode(row["mode"]),
             prompt=row["prompt"],
             negative_prompt=row["negative_prompt"],
@@ -278,4 +305,5 @@ class JobStore:
             seed=row["seed"],
             cfg=row["cfg"],
             error=row["error"],
+            upscale=UpscaleSettings.from_dict(json.loads(row["upscale_json"])),
         )

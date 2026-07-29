@@ -39,6 +39,26 @@ encoder 都在 `configs/workbench.yaml` 中设置；`diffusion` 与 `vae` 都接
 /sampler set <name|index>
 /scheduler list
 /scheduler set <name|index>
+/upscale on|off
+/upscale method list
+/upscale method set <resize|upscale_model|latent_hires|index>
+/upscale scale <factor>
+/upscale interpolation list
+/upscale interpolation set <name|index>
+/upscale model list
+/upscale model set <name|index>
+/upscale tile <size>
+/upscale overlap <size>
+/upscale steps <1-100>
+/upscale start-step <0..steps-1>
+/upscale cfg <positive-number|inherit>
+/upscale sampler list
+/upscale sampler set <name|index|inherit>
+/upscale scheduler list
+/upscale scheduler set <name|index|inherit>
+/upscale seed <inherit|非负整数>
+/upscale status
+/upscale reset
 /start [num]
 /status
 /skip
@@ -50,6 +70,40 @@ encoder 都在 `configs/workbench.yaml` 中设置；`diffusion` 与 `vae` 都接
 开放的 ComfyUI 选项；Worker 执行任务前还会确认当前安装的 ComfyUI 是否支持所选名称。
 默认模式为 ZIT，默认尺寸为 576×576、8 步、随机 seed。模型和 VAE 默认不选择。
 `/start` 省略 `num` 时默认提交 1 个任务。
+
+## 图片放大
+
+放大默认关闭。`/upscale on` 开启后，每个任务先保存原图，再保存文件名带
+`-upscale` 后缀的放大图。`/upscale off` 只关闭开关，不清除已经设置的参数；
+`/upscale reset` 恢复默认值并关闭放大。
+
+可用方法：
+
+- `resize`：普通图片插值，资源占用最低，不加载额外模型。
+- `upscale_model`：Real-ESRGAN、ESRGAN、SwinIR 等像素超分模型；模型从
+  `workbench.yaml` 的全局 `upscaling.models` 目录读取。
+- `latent_hires`：放大首次采样得到的 latent，再用当前 diffusion 模型二次采样。
+
+`resize` 和 `upscale_model` 可用 interpolation 为 `nearest-exact`、`bilinear`、
+`area`、`bicubic`、`lanczos`；`latent_hires` 可用 `nearest-exact`、`bilinear`、
+`area`、`bicubic`、`bislerp`。
+
+模型超分的 `tile` 默认 512，范围 128～1024 且必须是 32 的倍数；`overlap` 默认 32，
+必须小于 tile 的一半。执行时如果显存不足，Worker 会自动把 tile 逐次减半，最低 128。
+超分模型执行后移回 CPU，后续任务可复用。
+
+Latent 二次采样直接使用 `steps` 与 `start-step`。例如：
+
+```text
+/upscale steps 9
+/upscale start-step 4
+```
+
+表示总采样时间表为 9 步，跳过前 4 步，从人类计数的第 5 步开始，实际执行 5 步。
+CFG、sampler、scheduler 和 seed 使用 `inherit` 时继承首次采样的实际值。
+
+`/upscale status` 会显示开关、方法、预计尺寸，以及 latent 方法的实际执行步数。
+`/start` 提交的是完整不可变快照；提交后继续修改放大参数不会改变已排队任务。
 
 TUI 底部状态栏按真实执行事件显示“启动推理 Worker”“加载模型资源”“编码提示词”
 “准备 latent”“采样中”“VAE 解码”“保存图片”“图片已保存”等阶段。采样步数始终
@@ -65,7 +119,8 @@ TUI 底部状态栏按真实执行事件显示“启动推理 Worker”“加载
 取消失败会直接显示错误。`/stop` 会终止当前 Worker 并清空队列，下一次 `/start` 会创建
 干净的 Worker；`/exit` 释放全部资源。
 
-输出写入 `output/YYYY-MM-DD/<mode>-NNNNN.png`。每张 PNG 的
+输出写入 `output/YYYY-MM-DD/<mode>-NNNNN.png`。开启放大时还会写入
+`output/YYYY-MM-DD/<mode>-NNNNN-upscale.png`。每张 PNG 的
 `diffusion_workbench` iTXt 块包含实际 seed、prompt、尺寸、采样参数、资源路径/SHA-256
 和运行时版本；可通过 `uv run python -m demo.demo_png_metadata <image.png>` 验证读取。任务和别名仍会
 存入 `.cache/diffusion_workbench.sqlite3`。

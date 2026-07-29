@@ -61,6 +61,9 @@ class PngMetadataTests(unittest.TestCase):
             self.assertEqual(loaded["parameters"]["prompt"], "一幅雨夜肖像")
             self.assertEqual(loaded["parameters"]["negative_prompt"], "模糊，水印")
             self.assertEqual(loaded["parameters"]["seed"], 42)
+            self.assertEqual(loaded["schema_version"], 3)
+            self.assertEqual(loaded["artifact"]["kind"], "original")
+            self.assertFalse(loaded["parameters"]["upscale"]["enabled"])
             self.assertEqual(
                 loaded["resources"]["diffusion_model"]["filename"],
                 "model.safetensors",

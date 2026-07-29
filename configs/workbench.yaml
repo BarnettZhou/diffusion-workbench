@@ -17,6 +17,9 @@ resources:
       - E:\Documents\ComfyUI\models\vae\krea2
     text_encoder: E:\Documents\ComfyUI\models\text_encoders\qwen3vl_4b_fp8_scaled.safetensors
     clip_type: krea2
+upscaling:
+  models:
+    - E:\Documents\ComfyUI\models\upscale_models
 
 output_dir: output
 database: .cache\diffusion_workbench.sqlite3

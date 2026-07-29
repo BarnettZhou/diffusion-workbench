@@ -25,6 +25,11 @@ class WorkbenchApp(App):
         "vae": "VAE 解码",
         "saving": "保存图片",
         "saved": "图片已保存",
+        "upscale_preparing": "准备放大",
+        "upscale_sampling": "放大重绘采样",
+        "upscale_decoding": "解码放大图",
+        "upscale_saving": "保存放大图",
+        "upscale_saved": "放大图已保存",
         "failed": "生成失败",
         "cancelled": "任务已取消",
     }
@@ -147,10 +152,20 @@ class WorkbenchApp(App):
             self.stage = str(event.get("stage", "idle"))
             if event.get("total") is not None:
                 self.total_steps = int(event["total"])
-            if self.stage in {"vae", "saving", "saved"}:
+            if self.stage == "upscale_sampling":
+                self.step = 0
+                self._reset_sampling_metrics()
+            if self.stage in {
+                "vae",
+                "saving",
+                "saved",
+                "upscale_decoding",
+                "upscale_saving",
+                "upscale_saved",
+            }:
                 self.step = self.total_steps
         elif event_type == "step_progress":
-            self.stage = "sampling"
+            self.stage = str(event.get("stage", "sampling"))
             self.step = int(event.get("step", 0))
             self.total_steps = int(event.get("total", 0))
             self.seconds_per_step = self._optional_float(
@@ -185,9 +200,16 @@ class WorkbenchApp(App):
 
     def _render_progress(self) -> None:
         total = self.total_steps or self.session.steps
-        if self.stage == "sampling":
+        if self.stage in {"sampling", "upscale_sampling"}:
             sample = f"{self.step}/{total}"
-        elif self.stage in {"vae", "saving", "saved"}:
+        elif self.stage in {
+            "vae",
+            "saving",
+            "saved",
+            "upscale_decoding",
+            "upscale_saving",
+            "upscale_saved",
+        }:
             sample = f"{total}/{total}"
         elif self.stage in {"failed", "cancelled"} and self.step:
             sample = f"{self.step}/{total}"
@@ -213,7 +235,10 @@ class WorkbenchApp(App):
         self.query_one("#progress", Static).update(text)
 
     def _sampling_metrics_text(self) -> str:
-        if self.stage != "sampling" or self.seconds_per_step is None:
+        if (
+            self.stage not in {"sampling", "upscale_sampling"}
+            or self.seconds_per_step is None
+        ):
             return ""
         if self.steps_per_second is not None and self.steps_per_second >= 1:
             speed = f"{self.steps_per_second:.2f} 步/秒"

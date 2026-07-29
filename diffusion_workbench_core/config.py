@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
@@ -21,6 +21,11 @@ class ModeResources:
 
 
 @dataclass(frozen=True)
+class UpscalingConfig:
+    models: tuple[Path, ...] = ()
+
+
+@dataclass(frozen=True)
 class WorkbenchConfig:
     path: Path
     comfyui: ComfyConfig
@@ -28,6 +33,7 @@ class WorkbenchConfig:
     output_dir: Path
     database: Path
     worker_timeout_seconds: float
+    upscaling: UpscalingConfig = field(default_factory=UpscalingConfig)
 
 
 def _resolve(value: str, base: Path) -> Path:
@@ -56,6 +62,12 @@ def load_config(path: str | Path) -> WorkbenchConfig:
     timeout = float(raw.get("worker_timeout_seconds", 300))
     if timeout <= 0:
         raise ValueError("worker_timeout_seconds 必须大于 0")
+    upscaling_raw = raw.get("upscaling") or {}
+    if not isinstance(upscaling_raw, dict):
+        raise ValueError("upscaling 必须是映射")
+    models_raw = upscaling_raw.get("models", ())
+    if not isinstance(models_raw, (list, tuple)):
+        raise ValueError("upscaling.models 必须是目录列表")
     return WorkbenchConfig(
         path=config_path,
         comfyui=ComfyConfig(
@@ -66,4 +78,7 @@ def load_config(path: str | Path) -> WorkbenchConfig:
         output_dir=_resolve(raw.get("output_dir", "output"), base),
         database=_resolve(raw.get("database", ".cache/diffusion_workbench.sqlite3"), base),
         worker_timeout_seconds=timeout,
+        upscaling=UpscalingConfig(
+            models=tuple(_resolve(value, base) for value in models_raw)
+        ),
     )

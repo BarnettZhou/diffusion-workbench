@@ -301,11 +301,12 @@ class GenerationController:
                 ) or {}
                 self._logger.info(
                     "job worker result job_id=%s load_seconds=%s sampling_seconds=%s "
-                    "vae_seconds=%s generation_seconds=%s",
+                    "vae_seconds=%s upscale_seconds=%s generation_seconds=%s",
                     job.id,
                     result.get("load_seconds"),
                     result.get("sampling_seconds"),
                     result.get("vae_seconds"),
+                    result.get("upscale_seconds"),
                     result.get("generation_seconds"),
                 )
                 duration = time.perf_counter() - started_clock
@@ -391,6 +392,11 @@ class GenerationController:
                         "job_id": job.id,
                         "status": status,
                         "output_path": str(job.output_path),
+                        "upscaled_output_path": (
+                            str(job.upscaled_output_path)
+                            if job.upscaled_output_path is not None
+                            else None
+                        ),
                         "steps": job.steps,
                     }
                 )

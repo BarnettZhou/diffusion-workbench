@@ -7,8 +7,8 @@ from PIL import Image, PngImagePlugin
 
 
 PNG_METADATA_KEY = "diffusion_workbench"
-PNG_METADATA_SCHEMA_VERSION = 2
-SUPPORTED_PNG_METADATA_SCHEMA_VERSIONS = {1, PNG_METADATA_SCHEMA_VERSION}
+PNG_METADATA_SCHEMA_VERSION = 3
+SUPPORTED_PNG_METADATA_SCHEMA_VERSIONS = {1, 2, PNG_METADATA_SCHEMA_VERSION}
 
 
 class ResourceFingerprintCache:
@@ -44,9 +44,15 @@ def build_generation_metadata(
     runtime_versions: Mapping[str, str | None],
     performance: Mapping[str, float] | None = None,
     resources: Mapping[str, Mapping[str, str | int]] | None = None,
+    artifact_kind: str = "original",
+    artifact_size: tuple[int, int] | None = None,
 ) -> dict[str, Any]:
     """Build the stable, versioned payload embedded in generated PNG files."""
 
+    artifact_width, artifact_height = artifact_size or (
+        int(command["width"]),
+        int(command["height"]),
+    )
     metadata = {
         "schema_version": PNG_METADATA_SCHEMA_VERSION,
         "generator": {
@@ -56,6 +62,11 @@ def build_generation_metadata(
         "job": {
             "id": command["job_id"],
             "batch_id": command.get("batch_id"),
+        },
+        "artifact": {
+            "kind": artifact_kind,
+            "width": int(artifact_width),
+            "height": int(artifact_height),
         },
         "parameters": {
             "mode": command["mode"],
@@ -74,6 +85,7 @@ def build_generation_metadata(
                 if command["mode"] == "zib" or float(command["cfg"]) != 1.0
                 else "positive_reused"
             ),
+            "upscale": dict(command.get("upscale") or {"enabled": False}),
         },
         "resources": {
             "diffusion_model": _resource_or_default(
@@ -89,6 +101,8 @@ def build_generation_metadata(
     }
     if performance is not None:
         metadata["performance"] = dict(performance)
+    if resources is not None and "upscale_model" in resources:
+        metadata["resources"]["upscale_model"] = dict(resources["upscale_model"])
     return metadata
 
 

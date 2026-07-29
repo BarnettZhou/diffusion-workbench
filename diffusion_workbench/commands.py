@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from diffusion_workbench_core.domain import (
     GenerationSettings,
@@ -7,6 +7,10 @@ from diffusion_workbench_core.domain import (
     ResourceKind,
     SAMPLERS,
     SCHEDULERS,
+    IMAGE_UPSCALE_INTERPOLATIONS,
+    LATENT_UPSCALE_INTERPOLATIONS,
+    UpscaleMethod,
+    UpscaleSettings,
     validate_cfg,
     validate_steps,
 )
@@ -31,6 +35,7 @@ class CommandSession:
         self.cfg = 1.0
         self.sampler = "euler"
         self.scheduler = "simple"
+        self.upscale = UpscaleSettings()
         self._models: dict[Mode, ResourceItem | None] = {mode: None for mode in Mode}
         self._vaes: dict[Mode, ResourceItem | None] = {mode: None for mode in Mode}
 
@@ -77,6 +82,8 @@ class CommandSession:
                 return self._choice("sampler", SAMPLERS, args)
             if command == "scheduler":
                 return self._choice("scheduler", SCHEDULERS, args)
+            if command == "upscale":
+                return self._upscale(args)
             if command == "start":
                 return self._start(args)
             if command == "status":
@@ -95,7 +102,7 @@ class CommandSession:
                 return CommandResponse((
                     "/mode  /model list|set|set-alias  /vae list|set|set-alias",
                     "/prompt  /negative  /size  /steps  /seed  /cfg  /sampler  /scheduler",
-                    "/start  /status  /skip  /stop  /exit",
+                    "/upscale ...  /start  /status  /skip  /stop  /exit",
                 ))
             return CommandResponse((f"错误: 未知命令 /{command}",))
         except (ValueError, IndexError, RuntimeError) as exc:
@@ -243,10 +250,172 @@ class CommandSession:
             cfg=self.cfg,
             sampler=self.sampler,
             scheduler=self.scheduler,
+            upscale=self.upscale,
         )
         settings.validate()
         jobs = self.core.submit(settings, count)
         return CommandResponse((f"已加入队列: {len(jobs)} 个任务",))
+
+    def _upscale(self, args: list[str]) -> CommandResponse:
+        if not args:
+            raise ValueError("用法: /upscale on|off|status|reset|<参数>")
+        action = args[0].lower()
+        rest = args[1:]
+        if action in {"on", "off"} and not rest:
+            self._set_upscale(enabled=action == "on")
+            return CommandResponse((f"图片放大已{('开启' if action == 'on' else '关闭')}",))
+        if action == "status" and not rest:
+            return self._upscale_status()
+        if action == "reset" and not rest:
+            self.upscale = UpscaleSettings()
+            return CommandResponse(("图片放大设置已重置",))
+        if action == "method":
+            if rest == ["list"]:
+                return self._list_choices(tuple(method.value for method in UpscaleMethod))
+            selected = self._set_choice(
+                "upscale method",
+                tuple(method.value for method in UpscaleMethod),
+                rest,
+            )
+            method = UpscaleMethod(selected)
+            interpolation = self.upscale.interpolation
+            if method == UpscaleMethod.LATENT_HIRES:
+                if interpolation not in LATENT_UPSCALE_INTERPOLATIONS:
+                    interpolation = "bislerp"
+            elif interpolation not in IMAGE_UPSCALE_INTERPOLATIONS:
+                interpolation = "lanczos"
+            self.upscale = replace(
+                self.upscale, method=method, interpolation=interpolation
+            )
+            return CommandResponse((f"放大方法已设置为 {method.value}",))
+        if action == "scale" and len(rest) == 1:
+            self._set_upscale(scale=float(rest[0]))
+            return CommandResponse((f"放大倍数已设置为 {self.upscale.scale:g}",))
+        if action == "interpolation":
+            choices = (
+                LATENT_UPSCALE_INTERPOLATIONS
+                if self.upscale.method == UpscaleMethod.LATENT_HIRES
+                else IMAGE_UPSCALE_INTERPOLATIONS
+            )
+            if rest == ["list"]:
+                return self._list_choices(choices)
+            selected = self._set_choice("interpolation", choices, rest)
+            self.upscale = replace(self.upscale, interpolation=selected)
+            return CommandResponse((f"放大插值已设置为 {selected}",))
+        if action == "model":
+            models = self.core.list_upscale_models()
+            if rest == ["list"]:
+                if not models:
+                    return CommandResponse(("没有可用的放大模型",))
+                return CommandResponse(
+                    tuple(f"[{item.index}] {item.display_name}" for item in models)
+                )
+            if len(rest) == 2 and rest[0].lower() == "set":
+                item = self._resource_at(models, rest[1])
+                self.upscale = replace(self.upscale, model=item)
+                return CommandResponse((f"放大模型已设置为 {item.display_name}",))
+            raise ValueError("用法: /upscale model list | set <name|index>")
+        if action == "tile" and len(rest) == 1:
+            self._set_upscale(tile=int(rest[0]))
+            return CommandResponse((f"tile 已设置为 {self.upscale.tile}",))
+        if action == "overlap" and len(rest) == 1:
+            self._set_upscale(overlap=int(rest[0]))
+            return CommandResponse((f"overlap 已设置为 {self.upscale.overlap}",))
+        if action == "steps" and len(rest) == 1:
+            self._set_upscale(steps=int(rest[0]))
+            return CommandResponse((f"二次采样总步数已设置为 {self.upscale.steps}",))
+        if action == "start-step" and len(rest) == 1:
+            self._set_upscale(start_step=int(rest[0]))
+            return CommandResponse((f"二次采样开始步已设置为 {self.upscale.start_step}",))
+        if action == "cfg" and len(rest) == 1:
+            value = None if rest[0].lower() == "inherit" else float(rest[0])
+            self._set_upscale(cfg=value)
+            return CommandResponse((f"二次采样 CFG 已设置为 {self._inherit(value)}",))
+        if action in {"sampler", "scheduler"}:
+            choices = SAMPLERS if action == "sampler" else SCHEDULERS
+            if rest == ["list"]:
+                return CommandResponse(("[0] inherit",) + self._list_choices(choices).lines)
+            if len(rest) != 2 or rest[0].lower() != "set":
+                raise ValueError(
+                    f"用法: /upscale {action} list | set <name|index|inherit>"
+                )
+            value = (
+                None
+                if rest[1].lower() == "inherit" or rest[1] == "0"
+                else self._choice_at(action, choices, rest[1])
+            )
+            self.upscale = replace(self.upscale, **{action: value})
+            return CommandResponse((f"二次采样 {action} 已设置为 {self._inherit(value)}",))
+        if action == "seed" and len(rest) == 1:
+            value = None if rest[0].lower() == "inherit" else int(rest[0])
+            self._set_upscale(seed=value)
+            return CommandResponse((f"放大 seed 已设置为 {self._inherit(value)}",))
+        raise ValueError("无效的 /upscale 命令；使用 /upscale status 查看当前设置")
+
+    def _upscale_status(self) -> CommandResponse:
+        value = self.upscale
+        target_width = round(self.width * value.scale)
+        target_height = round(self.height * value.scale)
+        lines = [
+            f"放大: {'开启' if value.enabled else '关闭'}  方法: {value.method.value}",
+            f"倍数: {value.scale:g}  预计尺寸: {self.width}*{self.height} -> {target_width}*{target_height}",
+            f"插值: {value.interpolation}",
+        ]
+        if value.method == UpscaleMethod.UPSCALE_MODEL:
+            lines.extend(
+                (
+                    f"模型: {value.model.display_name if value.model else '未选择'}",
+                    f"tile: {value.tile}  overlap: {value.overlap}",
+                )
+            )
+        elif value.method == UpscaleMethod.LATENT_HIRES:
+            lines.extend(
+                (
+                    f"二次采样: steps={value.steps}  start-step={value.start_step}  实际执行: {value.executed_steps} 步",
+                    f"CFG: {self._inherit(value.cfg)}  sampler: {self._inherit(value.sampler)}  scheduler: {self._inherit(value.scheduler)}",
+                    f"seed: {self._inherit(value.seed)}",
+                )
+            )
+        return CommandResponse(tuple(lines))
+
+    @staticmethod
+    def _list_choices(choices: tuple[str, ...]) -> CommandResponse:
+        return CommandResponse(
+            tuple(f"[{index}] {name}" for index, name in enumerate(choices, 1))
+        )
+
+    def _set_choice(
+        self, label: str, choices: tuple[str, ...], args: list[str]
+    ) -> str:
+        if len(args) != 2 or args[0].lower() != "set":
+            raise ValueError(f"用法: set <name|index>")
+        return self._choice_at(label, choices, args[1])
+
+    @staticmethod
+    def _resource_at(items: list[ResourceItem], value: str) -> ResourceItem:
+        try:
+            index = int(value)
+        except ValueError:
+            normalized = value.casefold()
+            for item in items:
+                if item.path.name.casefold() == normalized:
+                    return item
+        else:
+            for item in items:
+                if item.index == index:
+                    return item
+        raise ValueError(f"找不到放大模型: {value}")
+
+    @staticmethod
+    def _inherit(value) -> str:
+        if value is None:
+            return "inherit"
+        return f"{value:g}" if isinstance(value, float) else str(value)
+
+    def _set_upscale(self, **changes) -> None:
+        candidate = replace(self.upscale, **changes)
+        candidate.validate()
+        self.upscale = candidate
 
     def _status(self) -> CommandResponse:
         runtime = self.core.runtime_status()

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from pathlib import Path
 
 from .config import WorkbenchConfig
@@ -30,3 +32,18 @@ class ResourceCatalog:
         self, mode: Mode, kind: ResourceKind, path: Path, alias: str
     ) -> None:
         self.store.set_alias(mode, kind, path, alias)
+
+    def list_upscale_models(self) -> list[ResourceItem]:
+        paths: dict[Path, Path] = {}
+        extensions = ("*.pth", "*.pt", "*.safetensors", "*.sft")
+        for directory in self.config.upscaling.models:
+            if not directory.is_dir():
+                continue
+            for pattern in extensions:
+                for path in directory.glob(pattern):
+                    paths[path.resolve()] = path.resolve()
+        ordered = sorted(paths.values(), key=lambda path: path.name.casefold())
+        return [
+            ResourceItem(index=index, path=path)
+            for index, path in enumerate(ordered, start=1)
+        ]

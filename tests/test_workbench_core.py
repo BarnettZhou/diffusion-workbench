@@ -9,7 +9,12 @@ from unittest.mock import patch
 from diffusion_workbench_core.catalog import ResourceCatalog
 from diffusion_workbench_core.config import load_config
 from diffusion_workbench_core.domain import Mode, ResourceKind
-from diffusion_workbench_core.domain import GenerationSettings, ResourceItem
+from diffusion_workbench_core.domain import (
+    GenerationSettings,
+    ResourceItem,
+    UpscaleMethod,
+    UpscaleSettings,
+)
 from diffusion_workbench_core.storage import JobStore
 from diffusion_workbench_core.controller import GenerationController
 from diffusion_workbench_core.runtime import GenerationCancelled
@@ -25,13 +30,17 @@ class ResourceCatalogTests(unittest.TestCase):
             first = root / "models-a"
             second = root / "models-b"
             vae = root / "vae"
+            upscale_models = root / "upscale-models"
             first.mkdir()
             second.mkdir()
             vae.mkdir()
+            upscale_models.mkdir()
             (first / "zeta.safetensors").touch()
             (second / "alpha.safetensors").touch()
             (second / "ignore.txt").touch()
             (vae / "ae.safetensors").touch()
+            (upscale_models / "4x-UltraSharp.pth").touch()
+            (upscale_models / "realesrgan.safetensors").touch()
             text_encoder = root / "te.safetensors"
             text_encoder.touch()
             config_path = root / "workbench.yaml"
@@ -56,6 +65,8 @@ resources:
     vae: [{vae.as_posix()}]
     text_encoder: {text_encoder.as_posix()}
     clip_type: stable_diffusion
+upscaling:
+  models: [{upscale_models.as_posix()}]
 output_dir: output
 database: jobs.sqlite3
 worker_timeout_seconds: 300
@@ -77,6 +88,10 @@ worker_timeout_seconds: 300
             self.assertEqual(
                 [item.path.name for item in catalog.list(Mode.ZIB, ResourceKind.DIFFUSION)],
                 ["zeta.safetensors"],
+            )
+            self.assertEqual(
+                [item.path.name for item in catalog.list_upscale_models()],
+                ["4x-UltraSharp.pth", "realesrgan.safetensors"],
             )
 
     def test_alias_must_be_unique_within_mode_and_kind(self):
@@ -115,6 +130,14 @@ class JobStoreTests(unittest.TestCase):
                 height=576,
                 steps=8,
                 seed=-1,
+                upscale=UpscaleSettings(
+                    enabled=True,
+                    method=UpscaleMethod.LATENT_HIRES,
+                    scale=2.0,
+                    interpolation="bislerp",
+                    steps=9,
+                    start_step=4,
+                ),
             )
             submitted = datetime(2026, 7, 26, 12, 30, tzinfo=timezone.utc)
 
@@ -126,11 +149,19 @@ class JobStoreTests(unittest.TestCase):
             self.assertIsNotNone(first_batch[0].batch_id)
             self.assertIsNone(next_batch[0].batch_id)
             self.assertEqual(first_batch[0].output_path, root / "output" / "2026-07-26" / "krea2-00001.png")
+            self.assertEqual(
+                first_batch[0].upscaled_output_path,
+                root / "output" / "2026-07-26" / "krea2-00001-upscale.png",
+            )
             self.assertEqual(first_batch[1].output_path.name, "krea2-00002.png")
             self.assertEqual(next_batch[0].output_path.name, "krea2-00003.png")
             self.assertEqual(persisted.prompt, "portrait")
             self.assertEqual(persisted.negative_prompt, "blurry")
             self.assertEqual(persisted.model_path, model)
+            self.assertTrue(persisted.upscale.enabled)
+            self.assertEqual(persisted.upscale.method, UpscaleMethod.LATENT_HIRES)
+            self.assertEqual(persisted.upscale.steps, 9)
+            self.assertEqual(persisted.upscale.start_step, 4)
             self.assertEqual(persisted.status, "queued")
 
     def test_existing_output_files_are_never_reused_after_database_reset(self):

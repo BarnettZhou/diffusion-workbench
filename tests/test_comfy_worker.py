@@ -6,6 +6,7 @@ from PIL import Image
 from diffusion_workbench_core.comfy_worker import (
     ComfyWorker,
     encode_preview_image,
+    resolve_upscale_settings,
     sampling_progress_payload,
 )
 
@@ -30,6 +31,31 @@ class FakeTorch:
 
 
 class ComfyWorkerTests(unittest.TestCase):
+    def test_latent_upscale_inherits_sampling_values_and_reports_actual_steps(self):
+        resolved = resolve_upscale_settings(
+            {
+                "cfg": 1.5,
+                "sampler": "euler",
+                "scheduler": "simple",
+                "seed": 42,
+                "upscale": {
+                    "enabled": True,
+                    "method": "latent_hires",
+                    "scale": 2,
+                    "interpolation": "bislerp",
+                    "steps": 9,
+                    "start_step": 4,
+                },
+            }
+        )
+
+        self.assertEqual(resolved["cfg"], 1.5)
+        self.assertEqual(resolved["sampler"], "euler")
+        self.assertEqual(resolved["scheduler"], "simple")
+        self.assertEqual(resolved["seed"], 42)
+        self.assertTrue(resolved["seed_inherited"])
+        self.assertEqual(resolved["steps"] - resolved["start_step"], 5)
+
     def test_zib_sampling_settings_are_valid(self):
         ComfyWorker._validate(
             {

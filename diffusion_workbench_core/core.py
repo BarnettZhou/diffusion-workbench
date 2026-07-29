@@ -3,7 +3,7 @@ from pathlib import Path
 from .catalog import ResourceCatalog
 from .config import WorkbenchConfig, load_config
 from .controller import GenerationController
-from .domain import GenerationSettings, Mode, ResourceKind
+from .domain import GenerationSettings, Mode, ResourceKind, UpscaleMethod
 from .instance_lock import InstanceLock
 from .logging_config import CoreLogManager
 from .persistent_runtime import PersistentComfyRuntime
@@ -57,6 +57,9 @@ class WorkbenchCore:
     def set_alias(self, mode: Mode, kind: ResourceKind, path: Path, alias: str) -> None:
         self.catalog.set_alias(mode, kind, path, alias)
 
+    def list_upscale_models(self):
+        return self.catalog.list_upscale_models()
+
     def submit(self, settings: GenerationSettings, count: int):
         resources = self.config.resources[settings.mode]
         if settings.text_encoder.resolve() != resources.text_encoder.resolve():
@@ -81,6 +84,15 @@ class WorkbenchCore:
         }
         if settings.vae.path.resolve() not in vae_paths:
             raise ValueError(f"VAE 不属于 {settings.mode.value} 配置的 vae 目录")
+        if settings.upscale.enabled and settings.upscale.method == UpscaleMethod.UPSCALE_MODEL:
+            upscale_model_paths = {
+                item.path.resolve() for item in self.catalog.list_upscale_models()
+            }
+            if (
+                settings.upscale.model is None
+                or settings.upscale.model.path.resolve() not in upscale_model_paths
+            ):
+                raise ValueError("放大模型不属于配置的 upscaling.models 目录")
         return self.controller.submit(settings, count)
 
     def stop(self) -> None:

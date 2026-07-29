@@ -34,6 +34,7 @@ class FakeCore:
             (Mode.ZIB, ResourceKind.VAE): [ResourceItem(1, root / "zib-vae.safetensors")],
         }
         self.submitted = []
+        self.upscale_models = [ResourceItem(1, root / "4x-UltraSharp.pth")]
         self.stopped = False
         self.skipped_job_id = None
         self.skip_error = None
@@ -41,6 +42,9 @@ class FakeCore:
 
     def list_resources(self, mode, kind):
         return self.items[(mode, kind)]
+
+    def list_upscale_models(self):
+        return self.upscale_models
 
     def set_alias(self, mode, kind, path, alias):
         items = self.items[(mode, kind)]
@@ -170,6 +174,52 @@ class CommandSessionTests(unittest.TestCase):
             self.assertIn("karras", "\n".join(session.handle("/scheduler set karras").lines))
             self.assertIn("大于 0", "\n".join(session.handle("/cfg 0").lines))
             self.assertIn("找不到 sampler", "\n".join(session.handle("/sampler set nope").lines))
+
+    def test_upscale_commands_submit_latent_hires_snapshot(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            core = FakeCore(Path(temp_dir))
+            session = CommandSession(core)
+            session.handle("/model set 1")
+            session.handle("/vae set 1")
+            session.handle("/prompt portrait")
+
+            session.handle("/upscale on")
+            session.handle("/upscale method set latent_hires")
+            session.handle("/upscale scale 2")
+            session.handle("/upscale interpolation set bislerp")
+            session.handle("/upscale steps 9")
+            session.handle("/upscale start-step 4")
+            session.handle("/upscale cfg 1")
+            session.handle("/upscale sampler set dpmpp_2m_sde")
+            session.handle("/upscale scheduler set sgm_uniform")
+            session.handle("/upscale seed inherit")
+            session.handle("/start")
+
+            settings, _count = core.submitted[0]
+            self.assertTrue(settings.upscale.enabled)
+            self.assertEqual(settings.upscale.method.value, "latent_hires")
+            self.assertEqual(settings.upscale.scale, 2.0)
+            self.assertEqual(settings.upscale.steps, 9)
+            self.assertEqual(settings.upscale.start_step, 4)
+            self.assertEqual(settings.upscale.sampler, "dpmpp_2m_sde")
+            self.assertEqual(settings.upscale.scheduler, "sgm_uniform")
+            status = "\n".join(session.handle("/upscale status").lines)
+            self.assertIn("实际执行: 5 步", status)
+            self.assertIn("预计尺寸: 576*576 -> 1152*1152", status)
+
+    def test_upscale_model_can_be_selected_by_name(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            session = CommandSession(FakeCore(Path(temp_dir)))
+
+            session.handle("/upscale method set upscale_model")
+            session.handle("/upscale model set 4x-UltraSharp.pth")
+            enabled = session.handle("/upscale on")
+
+            self.assertIn("开启", "\n".join(enabled.lines))
+            self.assertIn(
+                "4x-UltraSharp.pth",
+                "\n".join(session.handle("/upscale status").lines),
+            )
 
     def test_rejects_invalid_settings_and_exit_defers_core_shutdown_to_tui(self):
         with tempfile.TemporaryDirectory() as temp_dir:

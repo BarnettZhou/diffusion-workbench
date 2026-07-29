@@ -102,6 +102,12 @@ class PersistentComfyRuntime:
             "sampler": job.sampler,
             "scheduler": job.scheduler,
             "output_path": str(job.output_path.resolve()),
+            "upscaled_output_path": (
+                str(job.upscaled_output_path.resolve())
+                if job.upscaled_output_path is not None
+                else None
+            ),
+            "upscale": job.upscale.to_dict(),
             "preview_enabled": self._preview_enabled,
             "workbench_version": _workbench_version(),
         }
@@ -140,6 +146,7 @@ class PersistentComfyRuntime:
                         "seconds_per_step",
                         "steps_per_second",
                         "eta_seconds",
+                        "stage",
                     )
                 }
                 progress(int(event["step"]), int(event["total"]), metrics)
