@@ -13,14 +13,20 @@ class ResourceCatalog:
         self.store = store
 
     def list(self, mode: Mode, kind: ResourceKind) -> list[ResourceItem]:
-        directories = getattr(self.config.resources[mode], kind.value)
+        if mode not in self.config.resources:
+            return []
+        configured_paths = getattr(self.config.resources[mode], kind.value)
         paths: dict[Path, Path] = {}
-        for directory in directories:
-            if directory.is_dir():
-                for path in directory.glob("*.safetensors"):
-                    paths[path.resolve()] = path.resolve()
-                for path in directory.glob("*.sft"):
-                    paths[path.resolve()] = path.resolve()
+        for configured_path in configured_paths:
+            if configured_path.is_file() and configured_path.suffix.casefold() in {
+                ".safetensors",
+                ".sft",
+            }:
+                paths[configured_path.resolve()] = configured_path.resolve()
+            elif configured_path.is_dir():
+                for pattern in ("*.safetensors", "*.sft"):
+                    for path in configured_path.glob(pattern):
+                        paths[path.resolve()] = path.resolve()
         aliases = self.store.get_aliases(mode, kind)
         ordered = sorted(paths.values(), key=lambda path: path.name.casefold())
         return [

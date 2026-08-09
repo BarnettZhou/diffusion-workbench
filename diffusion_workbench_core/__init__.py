@@ -3,6 +3,7 @@
 from .domain import (
     GenerationSettings,
     Mode,
+    ModelLoader,
     ResourceKind,
     UpscaleMethod,
     UpscaleSettings,
@@ -13,6 +14,7 @@ from .png_metadata import read_generation_metadata
 __all__ = [
     "GenerationSettings",
     "Mode",
+    "ModelLoader",
     "ResourceKind",
     "UpscaleMethod",
     "UpscaleSettings",

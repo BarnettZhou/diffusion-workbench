@@ -5,6 +5,9 @@
 [生成预览、速度与 PNG 元数据](generation-preview-speed-and-metadata.md)。本文不重复内部
 推理实现。
 
+> 实现已完成：包 `diffusion_workbench_api`，面向客户端的端点与事件契约见
+> [api/](api/README.md)。
+
 ## 1. 设计结论
 
 FastAPI 只能作为 Core 的调用端，不应重新实现以下能力：
@@ -176,6 +179,7 @@ Core 不是 request-scoped 对象，不允许在 dependency 中重复构造。
 | `GET` | `/api/v1/health` | 进程存活；Worker stopped 也可健康 |
 | `GET` | `/api/v1/status` | 队列、running job、Worker、GPU |
 | `GET` | `/api/v1/resources/{mode}/{kind}` | 模型或 VAE 列表 |
+| `GET` | `/api/v1/modes` | 实际启用的 mode 与 loader 能力 |
 | `PUT` | `/api/v1/resources/{mode}/{kind}/{index}/alias` | 设置 alias |
 | `POST` | `/api/v1/jobs` | 提交一张或一批任务 |
 | `GET` | `/api/v1/jobs/{job_id}` | 读取持久化状态 |
@@ -189,8 +193,9 @@ Core 不是 request-scoped 对象，不允许在 dependency 中重复构造。
 
 ## 7. DTO 与资源选择
 
-客户端只提交 mode、资源引用和生成参数。text encoder、clip type、sampler、scheduler、
-CFG 由服务器固定，不接受客户端路径或覆盖值。
+客户端只提交 mode、资源引用和生成参数。text encoder 与 clip type 由服务器按 mode
+固定，不接受客户端路径或覆盖值；`negative_prompt`、`steps`、`cfg`、`sampler`、
+`scheduler` 是任务级参数，客户端按任务提交，省略时取默认值。
 
 ```python
 from typing import Literal
@@ -199,15 +204,28 @@ from pydantic import BaseModel, Field
 
 
 class CreateJobsRequest(BaseModel):
-    mode: Literal["zit", "krea2"] = "zit"
+    mode: Literal["zit", "krea2", "zib", "sdxl"] = "zit"
     model_index: int = Field(ge=1)
-    vae_index: int = Field(ge=1)
+    vae_index: int | None = Field(default=None, ge=1)
     prompt: str = Field(min_length=1, max_length=16_000)
+    negative_prompt: str = Field(default="", max_length=16_000)
     width: int = 576
     height: int = 576
-    steps: int = Field(default=8, ge=8, le=20)
+    steps: int = Field(default=8, ge=1, le=100)
     seed: int = Field(default=-1, ge=-1)
     count: int = Field(default=1, ge=1, le=32)
+    cfg: float = Field(default=1.0, gt=0, allow_inf_nan=False)
+    sampler: str = "euler"
+    scheduler: str = "simple"
+
+    # 合法值以 core domain 的 SAMPLERS/SCHEDULERS 为唯一事实来源
+    @field_validator("sampler")
+    @classmethod
+    def _check_sampler(cls, value: str) -> str:
+        if value not in SAMPLERS:
+            raise ValueError(f"不支持 sampler: {value}")
+        return value
+    # scheduler 同理
 ```
 
 `count <= 32` 只是建议的 HTTP admission limit，不是 Core 限制。根据磁盘和服务策略调整。
@@ -217,7 +235,7 @@ class CreateJobsRequest(BaseModel):
 从 Core 返回列表中解析：
 
 ```python
-from diffusion_workbench_core import GenerationSettings, Mode, ResourceKind
+from diffusion_workbench_core import GenerationSettings, Mode, ModelLoader, ResourceKind
 
 
 def _resource_at(core, mode: Mode, kind: ResourceKind, index: int):
@@ -230,22 +248,32 @@ def _resource_at(core, mode: Mode, kind: ResourceKind, index: int):
 def submit_jobs(core, payload: CreateJobsRequest):
     mode = Mode(payload.mode)
     model = _resource_at(core, mode, ResourceKind.DIFFUSION, payload.model_index)
-    vae = _resource_at(core, mode, ResourceKind.VAE, payload.vae_index)
     fixed = core.config.resources[mode]
+    if fixed.model_loader == ModelLoader.COMPONENTS:
+        vae = _resource_at(core, mode, ResourceKind.VAE, payload.vae_index)
+    else:
+        vae = None
     settings = GenerationSettings(
         mode=mode,
         model=model,
         vae=vae,
         text_encoder=fixed.text_encoder,
         clip_type=fixed.clip_type,
+        model_loader=fixed.model_loader,
         prompt=payload.prompt,
+        negative_prompt=payload.negative_prompt,
         width=payload.width,
         height=payload.height,
         steps=payload.steps,
         seed=payload.seed,
+        cfg=payload.cfg,
+        sampler=payload.sampler,
+        scheduler=payload.scheduler,
     )
     return core.submit(settings, payload.count)
 ```
+
+请求模型应令 SDXL 的 `vae_index` 可空，并拒绝向 checkpoint loader 传外置 VAE。
 
 HTTP handler 使用线程执行：
 
@@ -294,33 +322,17 @@ async def create_jobs(payload: CreateJobsRequest, core=Depends(get_core)):
 实际随机 seed 在 `job_started` 中公布并写回 SQLite。批量固定 seed 会让所有任务使用同
 一个 seed；批量 `seed=-1` 会为每个任务分别生成随机 seed。
 
-## 9. 任务读取接口的当前缺口
+## 9. 任务读取接口
 
-当前 `WorkbenchCore` 没有正式的 `get_job/list_jobs` 方法。FastAPI MVP 有两个选择：
-
-### 临时桥接
-
-```python
-job = await asyncio.to_thread(core.store.get_job, job_id)
-```
-
-这是当前代码可运行的最短路径，但 `store` 是内部组件。只能集中封装在 backend service
-中，router 和前端不得直接依赖它。
-
-### 推荐修复
-
-先在 Core 增加：
+Core 已提供正式任务读取方法：
 
 ```python
 def get_job(self, job_id: str) -> JobRecord: ...
 def list_jobs(self, *, status=None, mode=None, limit=50, cursor=None): ...
 ```
 
-分页使用稳定 cursor，例如 `(submitted_at, id)`，不要使用 offset 作为长期方案。数据库
-访问仍由 `JobStore` 实现，FastAPI 不应自行拼 SQLite SQL。
-
-如果下一阶段只实现生成与实时状态，可以暂时不做历史列表，但必须保留 `GET /jobs/{id}`，
-否则客户端断线后无法恢复任务结果。
+分页使用 `(submitted_at, id)` keyset cursor。数据库访问仍由 `JobStore` 实现，FastAPI
+不应自行拼 SQLite SQL，也不应通过检查图片存在性来过滤任务历史。
 
 ## 10. WebSocket 事件流
 
@@ -427,6 +439,10 @@ if not path.is_relative_to(output_root):
 不要增加任意 `/files?path=...` 接口。最终输出由 Worker 原子创建，读取 completed job 时不
 会看到半张 PNG。
 
+`output_path` 只是生成时的历史路径快照。图片之后被移动或删除时，图片端点返回
+`410 Gone`，但 `GET /jobs/{id}` 和 `GET /jobs` 仍必须返回完整任务审计记录。不要把任务
+状态改为 failed，也不要删除 SQLite 记录。
+
 ## 13. stop 与服务退出
 
 `POST /control/stop` 是管理员级全局操作，应明确返回：
@@ -466,7 +482,7 @@ if not path.is_relative_to(output_root):
 ```powershell
 uv run uvicorn diffusion_workbench_api.app:app `
   --host 127.0.0.1 `
-  --port 8000 `
+  --port 8188 `
   --workers 1
 ```
 
@@ -484,6 +500,18 @@ gunicorn -w 4 ...
 
 `--reload` 只用于开发。重载会关闭并重建 Core，运行中任务将被恢复为 cancelled，模型
 缓存也会丢失。
+
+### 终端进度状态栏
+
+API 进程在 TTY 终端运行时，lifespan 会启动一个基于 rich Live 的底部常驻状态栏
+（`diffusion_workbench_api/console_status.py`），实时展示当前任务阶段、采样进度、
+采样速度/ETA 和队列剩余数。事件来自 Core event sink 的扇出（sink 先喂 WebSocket
+`EventHub`，再喂状态栏的 `StatusTracker`）；状态更新只写共享状态，重绘由 Live 定时
+刷新完成，二者解耦。启用时 root 与 uvicorn 日志会被切到同一 console 的 RichHandler，
+日志从状态栏上方滚出，服务关闭时恢复原 logging 配置。
+
+非 TTY 环境（日志重定向、CI、进程管理器）下状态栏整体为 no-op，不会污染日志输出；
+也可用 `DWB_CONSOLE_STATUS=0` 显式关闭。
 
 ## 16. 安全边界
 
@@ -503,16 +531,20 @@ Core 不含内容审核，不能因为本地 TUI 可用就直接暴露到公网�
 
 ## 17. 可观测性
 
-建议记录结构化日志：
+Core 已在数据库同目录写入独立的 UTF-8 轮转日志，例如数据库
+`diffusion-workbench.sqlite3` 对应 `diffusion-workbench.log`。日志采用 `[INFO]`、`[WARN]`、
+`[ERROR]` 级别，记录任务生命周期、每步速度/ETA、Worker 生命周期和 Worker stdout/stderr；
+不记录 prompt。详见 [Core 日志与任务审计记录](core-logging-and-job-audit.md)。
 
-- request id、job id、batch id；
-- submitted/started/completed 与 queue wait duration；
-- mode、资源 alias/文件名、size、steps、seed；
-- Worker PID 变化和模型切换；
-- stage 与 step，不记录每次 GPU probe 为 info；
-- load/generation duration；
-- CUDA peak allocated/reserved（当前 Worker result 已提供，但尚未提升到公共事件/DB）；
-- job error 的完整 traceback 仅服务端保存。
+Core 当前日志已记录 job id、任务生命周期、mode、模型文件名、尺寸、steps、seed、Worker
+PID、stage、逐步速度/ETA、Worker result 耗时和完整错误 traceback。后端可另外记录以下
+尚未由 Core 覆盖的数据，并通过 job id 与 Core 日志关联：
+
+- HTTP request id 和调用方身份；
+- queue wait duration；
+- 资源 alias；
+- 明确的模型切换事件；
+- CUDA peak allocated/reserved。
 
 不要从 event sink 执行同步日志网络上传。先入本地非阻塞队列，再由独立任务批量输出。
 
@@ -555,7 +587,7 @@ FastAPI 第一版至少需要：
 1. 新建 `diffusion_workbench_api` 包与 FastAPI lifespan；
 2. 实现显式 Pydantic DTO 和资源解析；
 3. 实现 POST jobs、GET status/resources；
-4. 把 `get_job/list_jobs` 提升为 Core 公共方法；
+4. 使用 Core 的 `get_job/list_jobs` 实现任务读取；
 5. 实现 GET job/history/image；
 6. 实现单 sink EventHub 和 WebSocket；
 7. 实现全局 stop；

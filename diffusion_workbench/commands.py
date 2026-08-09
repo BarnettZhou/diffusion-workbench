@@ -3,6 +3,7 @@ from dataclasses import dataclass, replace
 from diffusion_workbench_core.domain import (
     GenerationSettings,
     Mode,
+    ModelLoader,
     ResourceItem,
     ResourceKind,
     SAMPLERS,
@@ -25,7 +26,11 @@ class CommandResponse:
 class CommandSession:
     def __init__(self, core):
         self.core = core
-        self.mode = Mode.ZIT
+        self.mode = (
+            Mode.ZIT
+            if Mode.ZIT in core.config.resources
+            else next(iter(core.config.resources))
+        )
         self.prompt = ""
         self.negative_prompt = ""
         self.width = 576
@@ -110,11 +115,14 @@ class CommandSession:
 
     def _mode(self, args: list[str]) -> CommandResponse:
         if len(args) > 1:
-            raise ValueError("用法: /mode [zit|krea2|zib]")
+            raise ValueError("用法: /mode [mode]")
         if args:
-            self.mode = Mode(args[0].lower())
+            mode = Mode(args[0].lower())
+            if mode not in self.core.config.resources:
+                raise ValueError(f"未配置 mode: {mode.value}")
+            self.mode = mode
         else:
-            modes = tuple(Mode)
+            modes = tuple(self.core.config.resources)
             self.mode = modes[(modes.index(self.mode) + 1) % len(modes)]
         return CommandResponse((f"mode 已切换为 {self.mode.value}",))
 
@@ -232,9 +240,12 @@ class CommandSession:
             raise ValueError("任务数量必须大于 0")
         if self.selected_model is None:
             raise ValueError("请先使用 /model set <index> 选择模型")
-        if self.selected_vae is None:
-            raise ValueError("请先使用 /vae set <index> 选择 VAE")
         resources = self.core.config.resources[self.mode]
+        if (
+            resources.model_loader == ModelLoader.COMPONENTS
+            and self.selected_vae is None
+        ):
+            raise ValueError("请先使用 /vae set <index> 选择 VAE")
         settings = GenerationSettings(
             mode=self.mode,
             model=self.selected_model,
@@ -251,6 +262,7 @@ class CommandSession:
             sampler=self.sampler,
             scheduler=self.scheduler,
             upscale=self.upscale,
+            model_loader=resources.model_loader,
         )
         settings.validate()
         jobs = self.core.submit(settings, count)
@@ -427,12 +439,21 @@ class CommandSession:
             else self.negative_prompt[:12] + "..."
         )
         model = self.selected_model.display_name if self.selected_model else "未选择"
-        vae = self.selected_vae.display_name if self.selected_vae else "未选择"
+        vae = (
+            "checkpoint 内嵌"
+            if resources.model_loader == ModelLoader.CHECKPOINT
+            else self.selected_vae.display_name if self.selected_vae else "未选择"
+        )
+        text_encoder = (
+            resources.text_encoder.name
+            if resources.text_encoder is not None
+            else "checkpoint 内嵌"
+        )
         lines = (
             f"mode: {self.mode.value}",
             f"model: {model}",
             f"vae: {vae}",
-            f"text encoder: {resources.text_encoder.name}",
+            f"text encoder: {text_encoder}",
             f"prompt: {prompt or '未设置'}",
             f"negative: {negative or '未设置'}",
             f"size: {self.width}*{self.height}",

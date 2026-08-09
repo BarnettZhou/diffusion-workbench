@@ -3,7 +3,7 @@ from pathlib import Path
 
 import yaml
 
-from .domain import Mode
+from .domain import Mode, ModelLoader
 
 
 @dataclass(frozen=True)
@@ -16,8 +16,9 @@ class ComfyConfig:
 class ModeResources:
     diffusion: tuple[Path, ...]
     vae: tuple[Path, ...]
-    text_encoder: Path
-    clip_type: str
+    text_encoder: Path | None
+    clip_type: str | None
+    model_loader: ModelLoader = ModelLoader.COMPONENTS
 
 
 @dataclass(frozen=True)
@@ -50,15 +51,30 @@ def load_config(path: str | Path) -> WorkbenchConfig:
     if base.name == "configs":
         base = base.parent
     comfy_raw = raw["comfyui"]
+    resources_raw = raw["resources"]
     resources = {}
     for mode in Mode:
-        item = raw["resources"][mode.value]
+        if mode.value not in resources_raw:
+            continue
+        item = resources_raw[mode.value]
+        model_loader = ModelLoader(item.get("model_loader", ModelLoader.COMPONENTS))
+        if model_loader == ModelLoader.COMPONENTS:
+            vae = tuple(_resolve(value, base) for value in item["vae"])
+            text_encoder = _resolve(item["text_encoder"], base)
+            clip_type = str(item["clip_type"])
+        else:
+            vae = ()
+            text_encoder = None
+            clip_type = None
         resources[mode] = ModeResources(
             diffusion=tuple(_resolve(value, base) for value in item["diffusion"]),
-            vae=tuple(_resolve(value, base) for value in item["vae"]),
-            text_encoder=_resolve(item["text_encoder"], base),
-            clip_type=str(item["clip_type"]),
+            vae=vae,
+            text_encoder=text_encoder,
+            clip_type=clip_type,
+            model_loader=model_loader,
         )
+    if not resources:
+        raise ValueError("resources 至少必须配置一种 mode")
     timeout = float(raw.get("worker_timeout_seconds", 300))
     if timeout <= 0:
         raise ValueError("worker_timeout_seconds 必须大于 0")

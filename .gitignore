@@ -39,8 +39,12 @@ Thumbs.db
 
 # Project specific
 .cache/
+.pytest_cache/
+configs/workbench.yaml
+docs/
 output/
 outputs/
+archive/
 
 # Secrets / local config
 .env

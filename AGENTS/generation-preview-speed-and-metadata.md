@@ -75,12 +75,13 @@ IPC 的开销。开关在任务开始时写入 Worker 命令；切换只影响�
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 4,
   "generator": {"name": "diffusion-workbench", "version": "0.1.0"},
   "job": {"id": "job-uuid", "batch_id": null},
   "parameters": {
     "mode": "krea2",
     "prompt": "portrait",
+    "negative_prompt": "",
     "width": 576,
     "height": 576,
     "steps": 8,
@@ -89,7 +90,7 @@ IPC 的开销。开关在任务开始时写入 Worker 命令；切换只影响�
     "sampler": "euler",
     "scheduler": "simple",
     "denoise": 1.0,
-    "negative_conditioning": "zeroed_positive"
+    "negative_conditioning": "positive_reused"
   },
   "resources": {
     "diffusion_model": {
@@ -101,7 +102,8 @@ IPC 的开销。开关在任务开始时写入 Worker 命令；切换只影响�
     },
     "vae": {},
     "text_encoder": {},
-    "clip_type": "krea2"
+    "clip_type": "krea2",
+    "model_loader": "components"
   },
   "runtime": {
     "comfyui": "0.28.0",
@@ -120,9 +122,16 @@ IPC 的开销。开关在任务开始时写入 Worker 命令；切换只影响�
 }
 ```
 
-随机 seed 在任务开始时解析，因此 PNG 保存的是实际 seed，不是 `-1`。三类资源都包含
+随机 seed 在任务开始时解析，因此 PNG 保存的是实际 seed，不是 `-1`。外置资源都包含
 完整 SHA-256；Worker 按绝对路径、大小和纳秒修改时间缓存哈希。同一 Worker 内未变化的
-资源不会重复哈希，首次使用或文件被替换后会完整读取一次。
+资源不会重复哈希，首次使用或文件被替换后会完整读取一次。SDXL 的
+`model_loader` 为 `checkpoint`，`vae`/`text_encoder` 为 `null`，checkpoint 的完整哈希
+记录在 `diffusion_model`。
+
+`negative_conditioning` 取值为 `encoded_negative_prompt`(mode 为 `zib`，或 CFG ≠ 1
+时 Core 实际编码了负面提示词）或 `positive_reused`（复用正面条件）。读取仍兼容
+schema v1-v3 的旧 PNG 仍可读取；v1 没有 `negative_prompt`/`negative_conditioning` 字段，消费方
+应按缺失处理（空字符串 / `null`)。
 
 旧 PNG 不会自动补写元数据。图片编辑器、聊天软件或图床可能删除 PNG 文本块，SQLite
 仍是本机历史记录的最终事实来源。

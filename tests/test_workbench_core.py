@@ -24,6 +24,29 @@ from diffusion_workbench_core.config import ComfyConfig, ModeResources, Workbenc
 
 
 class ResourceCatalogTests(unittest.TestCase):
+    def test_config_can_omit_modes_that_are_not_enabled(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            config_path = root / "workbench.yaml"
+            config_path.write_text(
+                f"""
+comfyui:
+  root: {root.as_posix()}
+  python: {(root / 'python.exe').as_posix()}
+resources:
+  zit:
+    diffusion: [{root.as_posix()}]
+    vae: [{root.as_posix()}]
+    text_encoder: {(root / 'te.safetensors').as_posix()}
+    clip_type: stable_diffusion
+""",
+                encoding="utf-8",
+            )
+
+            config = load_config(config_path)
+
+            self.assertEqual(tuple(config.resources), (Mode.ZIT,))
+
     def test_yaml_catalog_supports_multiple_paths_and_persistent_aliases(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -65,6 +88,9 @@ resources:
     vae: [{vae.as_posix()}]
     text_encoder: {text_encoder.as_posix()}
     clip_type: stable_diffusion
+  sdxl:
+    model_loader: checkpoint
+    diffusion: [{(first / 'zeta.safetensors').as_posix()}]
 upscaling:
   models: [{upscale_models.as_posix()}]
 output_dir: output
@@ -87,6 +113,10 @@ worker_timeout_seconds: 300
             self.assertEqual(config.database, root / "jobs.sqlite3")
             self.assertEqual(
                 [item.path.name for item in catalog.list(Mode.ZIB, ResourceKind.DIFFUSION)],
+                ["zeta.safetensors"],
+            )
+            self.assertEqual(
+                [item.path.name for item in catalog.list(Mode.SDXL, ResourceKind.DIFFUSION)],
                 ["zeta.safetensors"],
             )
             self.assertEqual(

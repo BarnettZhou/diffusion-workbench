@@ -11,6 +11,10 @@ dependencies = [
     "pillow",
     "pyyaml>=6.0",
     "textual>=3.0",
+    "fastapi>=0.115",
+    "httpx>=0.28",
+    "uvicorn>=0.30",
+    "websockets>=12.0",
     # Krea2Pipeline 需要源码版 diffusers（尚未随正式版发布）
     "diffusers @ git+https://github.com/huggingface/diffusers.git",
 ]
@@ -22,8 +26,11 @@ diffusion-workbench = "diffusion_workbench.cli:main"
 requires = ["setuptools>=81"]
 build-backend = "setuptools.build_meta"
 
+[dependency-groups]
+dev = ["pytest>=8.0", "httpx2>=0.28"]
+
 [tool.setuptools.packages.find]
-include = ["diffusion_workbench", "diffusion_workbench_core"]
+include = ["diffusion_workbench", "diffusion_workbench_core", "diffusion_workbench_api"]
 
 [tool.setuptools.package-data]
 diffusion_workbench = ["workbench.yaml"]

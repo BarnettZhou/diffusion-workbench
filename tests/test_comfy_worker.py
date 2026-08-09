@@ -69,6 +69,23 @@ class ComfyWorkerTests(unittest.TestCase):
             }
         )
 
+    def test_sdxl_checkpoint_command_rejects_external_components(self):
+        command = {
+            "mode": "sdxl",
+            "model_loader": "checkpoint",
+            "vae_path": "vae.safetensors",
+            "text_encoder_path": None,
+            "width": 1024,
+            "height": 1024,
+            "steps": 20,
+            "cfg": 7,
+            "sampler": "euler",
+            "scheduler": "simple",
+        }
+
+        with self.assertRaisesRegex(ValueError, "checkpoint loader"):
+            ComfyWorker._validate(command)
+
     def test_rejects_unknown_sampling_options(self):
         command = {
             "mode": "zib",

@@ -1,0 +1,50 @@
+# diffusion-workbench 主配置模板。
+# 使用方法:复制本文件为 configs/workbench.yaml,再把路径改成本机实际位置。
+# configs/workbench.yaml 含本机绝对路径,已被 .gitignore 忽略,不会提交。
+
+comfyui:
+  # ComfyUI 安装根目录与自带的 Python 解释器(Worker 子进程必须用它运行)
+  root: C:\path\to\ComfyUI
+  python: C:\path\to\ComfyUI\python\python.exe
+
+resources:
+  # 每种模式的模型资源。diffusion / vae 是目录列表(可多个,扫描其中的模型文件);
+  # text_encoder 是单个文件;clip_type 决定文本编码器类型。
+  zit:
+    diffusion:
+      - D:\models\diffusion_models\zit
+    vae:
+      - D:\models\vae\zit
+    text_encoder: D:\models\text_encoders\qwen_3_4b.safetensors
+    clip_type: stable_diffusion
+  krea2:
+    diffusion:
+      - D:\models\diffusion_models\krea2
+    vae:
+      - D:\models\vae\krea2
+    text_encoder: D:\models\text_encoders\qwen3vl_4b_fp8_scaled.safetensors
+    clip_type: krea2
+  zib:
+    diffusion:
+      - D:\models\diffusion_models\zib
+    vae:
+      - D:\models\vae\zit
+    text_encoder: D:\models\text_encoders\qwen_3_4b.safetensors
+    clip_type: stable_diffusion
+  # sdxl 使用完整 checkpoint(model_loader: checkpoint),只需配置 checkpoint 目录
+  sdxl:
+    model_loader: checkpoint
+    diffusion:
+      - D:\models\checkpoints
+
+upscaling:
+  # 放大模型目录(可选)
+  models:
+    - D:\models\upscale_models
+
+# 生成图片输出目录(相对项目根目录)
+output_dir: output
+# SQLite 任务库路径
+database: .cache\diffusion_workbench.sqlite3
+# Worker 子进程无响应超时(秒)
+worker_timeout_seconds: 300

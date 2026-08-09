@@ -7,8 +7,8 @@ from PIL import Image, PngImagePlugin
 
 
 PNG_METADATA_KEY = "diffusion_workbench"
-PNG_METADATA_SCHEMA_VERSION = 3
-SUPPORTED_PNG_METADATA_SCHEMA_VERSIONS = {1, 2, PNG_METADATA_SCHEMA_VERSION}
+PNG_METADATA_SCHEMA_VERSION = 4
+SUPPORTED_PNG_METADATA_SCHEMA_VERSIONS = {1, 2, 3, PNG_METADATA_SCHEMA_VERSION}
 
 
 class ResourceFingerprintCache:
@@ -91,11 +91,14 @@ def build_generation_metadata(
             "diffusion_model": _resource_or_default(
                 resources, "diffusion_model", command["model_path"]
             ),
-            "vae": _resource_or_default(resources, "vae", command["vae_path"]),
-            "text_encoder": _resource_or_default(
-                resources, "text_encoder", command["text_encoder_path"]
+            "vae": _optional_resource_or_default(
+                resources, "vae", command.get("vae_path")
+            ),
+            "text_encoder": _optional_resource_or_default(
+                resources, "text_encoder", command.get("text_encoder_path")
             ),
             "clip_type": command["clip_type"],
+            "model_loader": command.get("model_loader", "components"),
         },
         "runtime": dict(runtime_versions),
     }
@@ -150,6 +153,17 @@ def _resource_or_default(
     value: str | Path,
 ) -> dict[str, str | int]:
     return dict(resources[key]) if resources is not None else _resource(value)
+
+
+def _optional_resource_or_default(
+    resources: Mapping[str, Mapping[str, str | int]] | None,
+    key: str,
+    value: str | Path | None,
+) -> dict[str, str | int] | None:
+    if resources is not None:
+        resource = resources.get(key)
+        return dict(resource) if resource is not None else None
+    return _resource(value) if value else None
 
 
 def _sha256_file(path: Path) -> str:

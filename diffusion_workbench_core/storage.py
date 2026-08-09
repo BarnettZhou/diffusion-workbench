@@ -6,7 +6,14 @@ from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
-from .domain import GenerationSettings, JobRecord, Mode, ResourceKind, UpscaleSettings
+from .domain import (
+    GenerationSettings,
+    JobRecord,
+    Mode,
+    ModelLoader,
+    ResourceKind,
+    UpscaleSettings,
+)
 
 
 SCHEMA = """
@@ -44,6 +51,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     steps INTEGER NOT NULL,
     seed INTEGER NOT NULL,
     cfg REAL NOT NULL,
+    model_loader TEXT NOT NULL DEFAULT 'components',
     upscale_json TEXT NOT NULL DEFAULT '{}',
     error TEXT,
     UNIQUE (output_date, mode, daily_index)
@@ -73,6 +81,10 @@ class JobStore:
             if "upscale_json" not in columns:
                 connection.execute(
                     "ALTER TABLE jobs ADD COLUMN upscale_json TEXT NOT NULL DEFAULT '{}'"
+                )
+            if "model_loader" not in columns:
+                connection.execute(
+                    "ALTER TABLE jobs ADD COLUMN model_loader TEXT NOT NULL DEFAULT 'components'"
                 )
 
     def recover_incomplete_jobs(self) -> None:
@@ -177,8 +189,8 @@ class JobStore:
                     settings.prompt,
                     settings.negative_prompt,
                     str(settings.model.path.resolve()),
-                    str(settings.vae.path.resolve()),
-                    str(settings.text_encoder.resolve()),
+                    str(settings.vae.path.resolve()) if settings.vae else "",
+                    str(settings.text_encoder.resolve()) if settings.text_encoder else "",
                     settings.sampler,
                     settings.scheduler,
                     settings.width,
@@ -186,6 +198,7 @@ class JobStore:
                     settings.steps,
                     settings.seed,
                     settings.cfg,
+                    settings.model_loader.value,
                     json.dumps(
                         settings.upscale.to_dict(),
                         ensure_ascii=False,
@@ -197,8 +210,8 @@ class JobStore:
                     INSERT INTO jobs(
                         id, batch_id, status, submitted_at, output_path, upscaled_output_path, output_date,
                         daily_index, mode, prompt, negative_prompt, model, vae, text_encoder, sampler,
-                        scheduler, width, height, steps, seed, cfg, upscale_json
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        scheduler, width, height, steps, seed, cfg, model_loader, upscale_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     values,
                 )
@@ -228,6 +241,50 @@ class JobStore:
         if row is None:
             raise KeyError(job_id)
         return self._job_from_row(row)
+
+    def list_jobs(
+        self,
+        *,
+        status: str | None = None,
+        mode: Mode | None = None,
+        limit: int = 50,
+        cursor: str | None = None,
+    ) -> tuple[list[JobRecord], str | None]:
+        """Keyset 分页读取任务，按 submitted_at DESC, id DESC 排序。
+
+        cursor 编码为 ``submitted_at|id``，由上一页最后一条记录生成。
+        返回 (jobs, next_cursor)；next_cursor 为 None 表示没有更多记录。
+        """
+        if limit <= 0:
+            raise ValueError("limit 必须大于 0")
+        clauses = []
+        values: list = []
+        if status is not None:
+            clauses.append("status = ?")
+            values.append(status)
+        if mode is not None:
+            clauses.append("mode = ?")
+            values.append(mode.value)
+        if cursor is not None:
+            try:
+                cursor_submitted, cursor_id = cursor.rsplit("|", 1)
+            except ValueError:
+                raise ValueError(f"无效的分页 cursor: {cursor!r}") from None
+            clauses.append("(submitted_at, id) < (?, ?)")
+            values.extend([cursor_submitted, cursor_id])
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self._connection() as connection:
+            rows = connection.execute(
+                f"SELECT * FROM jobs {where} "
+                "ORDER BY submitted_at DESC, id DESC LIMIT ?",
+                (*values, limit + 1),
+            ).fetchall()
+        jobs = [self._job_from_row(row) for row in rows[:limit]]
+        next_cursor = None
+        if len(rows) > limit and jobs:
+            last = jobs[-1]
+            next_cursor = f"{last.submitted_at.isoformat()}|{last.id}"
+        return jobs, next_cursor
 
     def mark_running(self, job_id: str, seed: int, started_at: datetime) -> JobRecord:
         self._update_job(
@@ -295,8 +352,8 @@ class JobStore:
             prompt=row["prompt"],
             negative_prompt=row["negative_prompt"],
             model_path=Path(row["model"]),
-            vae_path=Path(row["vae"]),
-            text_encoder_path=Path(row["text_encoder"]),
+            vae_path=Path(row["vae"]) if row["vae"] else None,
+            text_encoder_path=(Path(row["text_encoder"]) if row["text_encoder"] else None),
             sampler=row["sampler"],
             scheduler=row["scheduler"],
             width=row["width"],
@@ -306,4 +363,5 @@ class JobStore:
             cfg=row["cfg"],
             error=row["error"],
             upscale=UpscaleSettings.from_dict(json.loads(row["upscale_json"])),
+            model_loader=ModelLoader(row["model_loader"]),
         )

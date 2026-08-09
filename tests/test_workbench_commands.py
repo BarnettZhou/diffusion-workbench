@@ -8,7 +8,7 @@ from diffusion_workbench_core.config import (
     ModeResources,
     WorkbenchConfig,
 )
-from diffusion_workbench_core.domain import Mode, ResourceItem, ResourceKind
+from diffusion_workbench_core.domain import Mode, ModelLoader, ResourceItem, ResourceKind
 
 
 class FakeCore:
@@ -20,6 +20,7 @@ class FakeCore:
                 Mode.ZIT: ModeResources((), (), root / "zit-te.safetensors", "stable_diffusion"),
                 Mode.KREA2: ModeResources((), (), root / "krea-te.safetensors", "krea2"),
                 Mode.ZIB: ModeResources((), (), root / "zib-te.safetensors", "stable_diffusion"),
+                Mode.SDXL: ModeResources((), (), None, None, ModelLoader.CHECKPOINT),
             },
             output_dir=root / "output",
             database=root / "jobs.sqlite3",
@@ -32,6 +33,8 @@ class FakeCore:
             (Mode.KREA2, ResourceKind.VAE): [ResourceItem(1, root / "krea-vae.safetensors")],
             (Mode.ZIB, ResourceKind.DIFFUSION): [ResourceItem(1, root / "zib.safetensors")],
             (Mode.ZIB, ResourceKind.VAE): [ResourceItem(1, root / "zib-vae.safetensors")],
+            (Mode.SDXL, ResourceKind.DIFFUSION): [ResourceItem(1, root / "sdxl.safetensors")],
+            (Mode.SDXL, ResourceKind.VAE): [],
         }
         self.submitted = []
         self.upscale_models = [ResourceItem(1, root / "4x-UltraSharp.pth")]
@@ -132,6 +135,22 @@ class CommandSessionTests(unittest.TestCase):
 
             self.assertIn("zib", "\n".join(selected.lines))
             self.assertIn("zib.safetensors", "\n".join(models.lines))
+
+    def test_sdxl_starts_without_selecting_external_vae(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            core = FakeCore(Path(temp_dir))
+            session = CommandSession(core)
+            session.handle("/mode sdxl")
+            session.handle("/model set 1")
+            session.handle("/prompt portrait")
+
+            response = session.handle("/start")
+
+            self.assertIn("已加入队列", "\n".join(response.lines))
+            settings, _count = core.submitted[0]
+            self.assertIsNone(settings.vae)
+            self.assertEqual(settings.model_loader, ModelLoader.CHECKPOINT)
+            self.assertIn("checkpoint 内嵌", "\n".join(session.handle("/status").lines))
 
     def test_sampling_commands_update_submitted_settings(self):
         with tempfile.TemporaryDirectory() as temp_dir:

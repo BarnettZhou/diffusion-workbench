@@ -103,6 +103,12 @@ class Mode(StrEnum):
     ZIT = "zit"
     KREA2 = "krea2"
     ZIB = "zib"
+    SDXL = "sdxl"
+
+
+class ModelLoader(StrEnum):
+    COMPONENTS = "components"
+    CHECKPOINT = "checkpoint"
 
 
 class ResourceKind(StrEnum):
@@ -230,9 +236,9 @@ class UpscaleSettings:
 class GenerationSettings:
     mode: Mode
     model: ResourceItem
-    vae: ResourceItem
-    text_encoder: Path
-    clip_type: str
+    vae: ResourceItem | None
+    text_encoder: Path | None
+    clip_type: str | None
     prompt: str
     negative_prompt: str = ""
     width: int = 576
@@ -243,10 +249,16 @@ class GenerationSettings:
     scheduler: str = "simple"
     cfg: float = 1.0
     upscale: UpscaleSettings = field(default_factory=UpscaleSettings)
+    model_loader: ModelLoader = ModelLoader.COMPONENTS
 
     def validate(self) -> None:
         if not self.prompt.strip():
             raise ValueError("prompt 不能为空")
+        if self.model_loader == ModelLoader.COMPONENTS:
+            if self.vae is None or self.text_encoder is None or not self.clip_type:
+                raise ValueError("components loader 必须提供 VAE、文本编码器和 clip type")
+        elif self.vae is not None or self.text_encoder is not None or self.clip_type is not None:
+            raise ValueError("checkpoint loader 不接受外置 VAE、文本编码器或 clip type")
         if self.width <= 0 or self.height <= 0 or self.width % 16 or self.height % 16:
             raise ValueError("size 必须为正数且是 16 的倍数")
         if self.seed < -1:
@@ -265,8 +277,8 @@ class JobRecord:
     mode: Mode
     prompt: str
     model_path: Path
-    vae_path: Path
-    text_encoder_path: Path
+    vae_path: Path | None
+    text_encoder_path: Path | None
     sampler: str
     scheduler: str
     width: int
@@ -281,3 +293,4 @@ class JobRecord:
     error: str | None = None
     upscaled_output_path: Path | None = None
     upscale: UpscaleSettings = field(default_factory=UpscaleSettings)
+    model_loader: ModelLoader = ModelLoader.COMPONENTS

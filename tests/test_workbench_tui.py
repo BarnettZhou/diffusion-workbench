@@ -12,7 +12,7 @@ from diffusion_workbench_core.config import (
     ModeResources,
     WorkbenchConfig,
 )
-from diffusion_workbench_core.domain import Mode
+from diffusion_workbench_core.domain import Mode, ModelLoader
 
 
 class TuiCore:
@@ -30,6 +30,7 @@ class TuiCore:
                 Mode.ZIB: ModeResources(
                     (), (), root / "zib-te.safetensors", "stable_diffusion"
                 ),
+                Mode.SDXL: ModeResources((), (), None, None, ModelLoader.CHECKPOINT),
             },
             output_dir=root / "output",
             database=root / "jobs.sqlite3",

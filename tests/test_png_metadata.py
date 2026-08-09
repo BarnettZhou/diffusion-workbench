@@ -14,6 +14,31 @@ from diffusion_workbench_core.png_metadata import (
 
 
 class PngMetadataTests(unittest.TestCase):
+    def test_checkpoint_metadata_records_embedded_resources_as_null(self):
+        command = {
+            "job_id": "sdxl-job",
+            "mode": "sdxl",
+            "model_loader": "checkpoint",
+            "prompt": "portrait",
+            "width": 1024,
+            "height": 1024,
+            "steps": 20,
+            "seed": 42,
+            "cfg": 7,
+            "sampler": "euler",
+            "scheduler": "simple",
+            "model_path": Path("sdxl.safetensors"),
+            "vae_path": None,
+            "text_encoder_path": None,
+            "clip_type": None,
+        }
+
+        metadata = build_generation_metadata(command, {})
+
+        self.assertEqual(metadata["resources"]["model_loader"], "checkpoint")
+        self.assertIsNone(metadata["resources"]["vae"])
+        self.assertIsNone(metadata["resources"]["text_encoder"])
+
     def test_round_trips_all_generation_settings_as_unicode_itxt(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -61,7 +86,7 @@ class PngMetadataTests(unittest.TestCase):
             self.assertEqual(loaded["parameters"]["prompt"], "一幅雨夜肖像")
             self.assertEqual(loaded["parameters"]["negative_prompt"], "模糊，水印")
             self.assertEqual(loaded["parameters"]["seed"], 42)
-            self.assertEqual(loaded["schema_version"], 3)
+            self.assertEqual(loaded["schema_version"], 4)
             self.assertEqual(loaded["artifact"]["kind"], "original")
             self.assertFalse(loaded["parameters"]["upscale"]["enabled"])
             self.assertEqual(

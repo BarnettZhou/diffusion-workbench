@@ -1,0 +1,99 @@
+import { useMemo, useState } from "react";
+import { api } from "../api/client";
+import Lightbox from "./Lightbox";
+import StatusChip from "./StatusChip";
+
+// 只展示最新一个 batch 的结果:新 batch 生成出图片后,整体替换掉上一批。
+// 每组:主图(默认最新一张)+ 按时间正序的缩略图;主图可点开全屏预览。
+// 历史相册见 AlbumPage。
+export default function ResultGallery({ jobs }) {
+  const latestGroup = useMemo(() => {
+    const finished = jobs
+      .filter((job) => ["completed", "failed", "cancelled"].includes(job.status))
+      .slice()
+      .reverse();
+    const byBatch = new Map();
+    for (const job of finished) {
+      const key = job.batch_id ?? job.id;
+      if (!byBatch.has(key)) byBatch.set(key, []);
+      byBatch.get(key).push(job);
+    }
+    const first = byBatch.entries().next().value;
+    if (!first) return null;
+    const [key, group] = first;
+    return { key, isBatch: group[0].batch_id !== null, jobs: group.slice().reverse() };
+  }, [jobs]);
+
+  if (!latestGroup) {
+    return <div id="empty-hint" className="empty-hint">本次生成的图片会显示在这里</div>;
+  }
+
+  return (
+    <div id="result-gallery">
+      <BatchGroup key={latestGroup.key} group={latestGroup} />
+    </div>
+  );
+}
+
+function BatchGroup({ group }) {
+  const [selectedId, setSelectedId] = useState(null);
+  const [lightbox, setLightbox] = useState(false);
+
+  const completed = group.jobs.filter((job) => job.status === "completed");
+  const selected =
+    completed.find((job) => job.id === selectedId) ??
+    completed[completed.length - 1] ??
+    null;
+
+  return (
+    <section className="batch-group" id={`batch-${group.key}`}>
+      {group.isBatch && <h3 className="batch-title">批次 {group.jobs.length} 张</h3>}
+
+      <div className="batch-main" id={`batch-main-${group.key}`}>
+        {selected ? (
+          <img
+            id={`main-image-${group.key}`}
+            src={api.imageUrl(selected.id)}
+            alt={selected.prompt}
+            onClick={() => setLightbox(true)}
+          />
+        ) : (
+          <div className="batch-main-placeholder">
+            <StatusChip status={group.jobs[group.jobs.length - 1].status} />
+          </div>
+        )}
+      </div>
+
+      {group.jobs.length > 1 && (
+        <div className="thumb-row" id={`thumb-row-${group.key}`}>
+          {group.jobs.map((job) => (
+            <button
+              key={job.id}
+              id={`thumb-${job.id}`}
+              type="button"
+              className={`thumb ${selected?.id === job.id ? "active" : ""}`}
+              disabled={job.status !== "completed"}
+              onClick={() => setSelectedId(job.id)}
+              title={job.prompt}
+            >
+              {job.status === "completed" ? (
+                <img src={api.imageUrl(job.id)} alt="" loading="lazy" />
+              ) : (
+                <StatusChip status={job.status} />
+              )}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {lightbox && selected && (
+        <Lightbox
+          imageUrl={api.imageUrl(selected.id)}
+          metadataUrl={`/api/v1/images/${selected.id}/metadata`}
+          fallback={selected}
+          onClose={() => setLightbox(false)}
+        />
+      )}
+    </section>
+  );
+}

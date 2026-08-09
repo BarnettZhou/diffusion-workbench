@@ -24,6 +24,10 @@ resources:
       - E:\Documents\ComfyUI\models\vae\zit
     text_encoder: E:\Documents\ComfyUI\models\text_encoders\qwen_3_4b.safetensors
     clip_type: stable_diffusion
+  sdxl:
+    model_loader: checkpoint
+    diffusion:
+      - E:\Documents\ComfyUI\models\checkpoints\pornmaster_proSDXLV8.safetensors
 
 output_dir: output
 database: .cache\diffusion_workbench.sqlite3

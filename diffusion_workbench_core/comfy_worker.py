@@ -19,6 +19,8 @@ try:
     from .domain import (
         SAMPLERS,
         SCHEDULERS,
+        Mode,
+        ModelLoader,
         UpscaleMethod,
         UpscaleSettings,
         validate_sampling,
@@ -32,6 +34,8 @@ except ImportError:  # The Comfy worker runs this module as a standalone script.
     from domain import (
         SAMPLERS,
         SCHEDULERS,
+        Mode,
+        ModelLoader,
         UpscaleMethod,
         UpscaleSettings,
         validate_sampling,
@@ -167,6 +171,7 @@ class ComfyWorker:
         self.vae = None
         self.vae_path: Path | None = None
         self.mode: str | None = None
+        self.checkpoint_path: Path | None = None
         self.upscale_model = None
         self.upscale_model_path: Path | None = None
 
@@ -185,8 +190,13 @@ class ComfyWorker:
             self.release()
         self.mode = requested_mode
         model_path = Path(command["model_path"]).resolve()
-        vae_path = Path(command["vae_path"]).resolve()
-        text_encoder_path = Path(command["text_encoder_path"]).resolve()
+        model_loader = ModelLoader(command.get("model_loader", ModelLoader.COMPONENTS))
+        vae_path = Path(command["vae_path"]).resolve() if command.get("vae_path") else None
+        text_encoder_path = (
+            Path(command["text_encoder_path"]).resolve()
+            if command.get("text_encoder_path")
+            else None
+        )
         clip_type = command["clip_type"]
         load_started = time.perf_counter()
         stage_total = int(command["steps"])
@@ -198,14 +208,22 @@ class ComfyWorker:
                 "total": stage_total,
             }
         )
-        loaded_model = self._ensure_model(model_path)
-        loaded_clip = self._ensure_clip(text_encoder_path, clip_type)
-        loaded_vae = self._ensure_vae(vae_path)
-        resource_metadata = {
-            "diffusion_model": self.resource_fingerprints.describe(model_path),
-            "vae": self.resource_fingerprints.describe(vae_path),
-            "text_encoder": self.resource_fingerprints.describe(text_encoder_path),
-        }
+        if model_loader == ModelLoader.CHECKPOINT:
+            loaded_model = self._ensure_checkpoint(model_path)
+            loaded_clip = loaded_vae = loaded_model
+            resource_metadata = {
+                "diffusion_model": self.resource_fingerprints.describe(model_path)
+            }
+        else:
+            assert vae_path is not None and text_encoder_path is not None
+            loaded_model = self._ensure_model(model_path)
+            loaded_clip = self._ensure_clip(text_encoder_path, clip_type)
+            loaded_vae = self._ensure_vae(vae_path)
+            resource_metadata = {
+                "diffusion_model": self.resource_fingerprints.describe(model_path),
+                "vae": self.resource_fingerprints.describe(vae_path),
+                "text_encoder": self.resource_fingerprints.describe(text_encoder_path),
+            }
         previewer = self._create_previewer() if command.get("preview_enabled") else None
 
         emit(
@@ -234,13 +252,16 @@ class ComfyWorker:
             }
         )
         width, height = int(command["width"]), int(command["height"])
+        latent_format = self.model.model.latent_format
+        latent_channels = int(latent_format.latent_channels)
+        downscale_ratio = int(latent_format.spacial_downscale_ratio)
         latent = {
             "samples": self.torch.zeros(
-                [1, 16, height // 8, width // 8],
+                [1, latent_channels, height // downscale_ratio, width // downscale_ratio],
                 device=self.model_management.intermediate_device(),
                 dtype=self.model_management.intermediate_dtype(),
             ),
-            "downscale_ratio_spacial": 8,
+            "downscale_ratio_spacial": downscale_ratio,
         }
         self.torch.cuda.reset_peak_memory_stats()
 
@@ -467,7 +488,7 @@ class ComfyWorker:
             "type": "result",
             "job_id": job_id,
             "model_path": str(model_path),
-            "vae_path": str(vae_path),
+            "vae_path": str(vae_path) if vae_path else None,
             "output_path": str(output_path),
             "upscaled_output_path": (
                 str(upscaled_output_path) if upscaled_output_path else None
@@ -616,6 +637,26 @@ class ComfyWorker:
         self.model_path = path
         return True
 
+    def _ensure_checkpoint(self, path: Path) -> bool:
+        if (
+            self.checkpoint_path == path
+            and self.model is not None
+            and self.clip is not None
+            and self.vae is not None
+        ):
+            return False
+        self._unload_gpu()
+        self.model = self.clip = self.vae = None
+        self.model_path = self.clip_path = self.vae_path = None
+        self.checkpoint_path = None
+        gc.collect()
+        name = self._register_exact("checkpoints", path)
+        loader = self.nodes.CheckpointLoaderSimple()
+        self.model, self.clip, self.vae = loader.load_checkpoint(name)
+        self.model_path = path
+        self.checkpoint_path = path
+        return True
+
     def _create_previewer(self):
         latent_format = self.model.model.latent_format
         factors = latent_format.latent_rgb_factors
@@ -681,6 +722,7 @@ class ComfyWorker:
         self.clip = None
         self.vae = None
         self.model_path = self.clip_path = self.vae_path = None
+        self.checkpoint_path = None
         self.upscale_model_path = None
         self.clip_type = None
         self.mode = None
@@ -691,8 +733,17 @@ class ComfyWorker:
 
     @staticmethod
     def _validate(command: dict) -> None:
-        if command.get("mode") not in {"zit", "krea2", "zib"}:
-            raise ValueError("mode 必须是 zit、krea2 或 zib")
+        try:
+            Mode(command.get("mode"))
+        except ValueError:
+            raise ValueError(f"不支持 mode: {command.get('mode')}") from None
+        if "model_loader" in command:
+            model_loader = ModelLoader(command["model_loader"])
+            if model_loader == ModelLoader.CHECKPOINT:
+                if command.get("vae_path") or command.get("text_encoder_path"):
+                    raise ValueError("checkpoint loader 不接受外置 VAE 或文本编码器")
+            elif not command.get("vae_path") or not command.get("text_encoder_path"):
+                raise ValueError("components loader 必须提供 VAE 和文本编码器")
         cfg = float(command.get("cfg", 0))
         steps = int(command["steps"])
         validate_sampling(

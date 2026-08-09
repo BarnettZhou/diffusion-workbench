@@ -16,13 +16,13 @@ uv run diffusion-workbench --config .\configs\workbench.yaml
 
 激活 `.venv` 后也可以直接运行 `diffusion-workbench`。
 
-默认配置使用本机 ComfyUI 的 Python。模型目录、VAE 目录和每种模式固定的 text
-encoder 都在 `configs/workbench.yaml` 中设置；`diffusion` 与 `vae` 都接受多个目录。
+默认配置使用本机 ComfyUI 的 Python。拆分模型的模型目录、VAE 目录和固定 text
+encoder 都在 `configs/workbench.yaml` 中设置；SDXL 则配置完整 checkpoint 文件。
 
 ## 命令
 
 ```text
-/mode [zit|krea2|zib]
+/mode [zit|krea2|zib|sdxl]
 /model list
 /model set <index>
 /model set-alias <index> <alias-name>
@@ -68,7 +68,8 @@ encoder 都在 `configs/workbench.yaml` 中设置；`diffusion` 与 `vae` 都接
 
 默认使用 Euler + simple、CFG 1。`/sampler list` 和 `/scheduler list` 显示 Core
 开放的 ComfyUI 选项；Worker 执行任务前还会确认当前安装的 ComfyUI 是否支持所选名称。
-默认模式为 ZIT，默认尺寸为 576×576、8 步、随机 seed。模型和 VAE 默认不选择。
+默认模式为 ZIT，默认尺寸为 576×576、8 步、随机 seed。模型和 VAE 默认不选择；
+SDXL 的 VAE 内嵌在 checkpoint 中，只需选择模型。
 `/start` 省略 `num` 时默认提交 1 个任务。
 
 ## 图片放大
@@ -113,7 +114,8 @@ TUI 底部状态栏按真实执行事件显示“启动推理 Worker”“加载
 详细错误同时写入对应任务的 SQLite 记录。
 
 任务按提交时的设置快照依次执行。Worker 在 TUI 存活期间保留已加载资源；同模式
-切换 diffusion 时复用 text encoder 和 VAE，跨模式时先释放旧模式资源。`/skip`
+切换 diffusion 时复用 text encoder 和 VAE；同一 SDXL checkpoint 会整体复用；跨模式时
+先释放旧模式资源。`/skip`
 只终止当前任务，等待队列不变；若仍有任务，Core 会重启 Worker 并继续下一项，若没有
 等待任务则进入空闲状态。任务尚在准备或已经进入完成落库阶段时不会误报跳过；Worker
 取消失败会直接显示错误。`/stop` 会终止当前 Worker 并清空队列，下一次 `/start` 会创建

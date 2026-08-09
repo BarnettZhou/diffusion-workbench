@@ -9,14 +9,14 @@ FastAPI 服务共同复用的核心层，不包含 HTTP、WebSocket 或界面状
 - [CLI/TUI 使用说明](workbench-cli.md)
 - [生成预览、速度与 PNG 元数据](generation-preview-speed-and-metadata.md)
 - [Core 日志与任务审计记录](core-logging-and-job-audit.md)
-- [Krea2 非 ComfyUI 后端研究](krea2-alternative-backends.md)
 
 ## 1. 当前能力与边界
 
 核心目前支持：
 
-- ZIT 与 Krea2 两种模式；
-- 每种模式独立的 diffusion、VAE 目录和固定 text encoder；
+- ZIT、Krea2、ZIB 与 SDXL 四种模式；
+- ZIT/Krea2/ZIB 使用独立 diffusion、VAE 和固定 text encoder；SDXL 使用内嵌
+  MODEL、双 CLIP 与 VAE 的标准 checkpoint；
 - Euler sampler + simple scheduler，CFG 固定为 1；
 - 576x576 默认尺寸，宽高必须是 16 的倍数；
 - 8 到 20 步；
@@ -34,7 +34,6 @@ FastAPI 服务共同复用的核心层，不包含 HTTP、WebSocket 或界面状
 - 任意 ComfyUI workflow；
 - 并行 GPU 推理或多个 GPU Worker；
 - 按任意 job id 取消；当前只支持跳过正在运行的任务或全局停止；
-- 稳定的分页历史查询 API；当前只有 `JobStore.get_job()`；
 - 持久化事件流；事件只在进程内实时投递，SQLite 才是最终事实来源。
 
 ## 2. 进程与模块架构
@@ -57,8 +56,8 @@ flowchart LR
 环境通过换行分隔的 JSON 通信，不共享 Python 对象。
 
 这不是向 ComfyUI HTTP 服务提交 workflow，也不会启动 ComfyUI Web UI。Worker
-直接调用 `UNETLoader`、`CLIPLoader`、`VAELoader`、`CLIPTextEncode`、`VAEDecode`
-以及 `comfy.sample.sample()`。
+直接调用 `UNETLoader`、`CLIPLoader`、`VAELoader` 或 `CheckpointLoaderSimple`，并调用
+`CLIPTextEncode`、`VAEDecode` 以及 `comfy.sample.sample()`。
 
 ### 2.1 包内职责
 
@@ -124,13 +123,14 @@ finally:
 | `runtime_status()` | `dict` | GPU 数据最多约 2 秒陈旧 |
 | `set_event_sink(callback)` | 无 | 只有一个 sink，后设置会覆盖前一个 |
 | `set_preview_enabled(enabled)` | 无 | 默认关闭；FastAPI 启用后发送 base64 JPEG 预览事件 |
+| `get_job(job_id)` | `JobRecord` | 读取任务审计记录，不检查图片是否存在 |
+| `list_jobs(...)` | `(list[JobRecord], cursor)` | 按提交时间/id 做稳定 keyset 分页 |
 | `skip_current()` | `str | None` | 接受时返回 job id；无可跳过任务时返回 `None`；失败时抛 `RuntimeError` |
 | `stop()` | 无 | 取消当前任务并清空全部等待任务 |
 | `shutdown()` | 无 | 永久关闭该实例并释放资源 |
 
 `core.store`、`core.catalog`、`core.controller` 和 `core.runtime` 当前可访问，但属于内部
-组件。后端第一版若必须读取单个任务，只能临时使用 `core.store.get_job(job_id)`；长期
-应把 `get_job()`、`list_jobs()` 提升为 `WorkbenchCore` 的正式公共方法。
+组件。调用端应通过 `WorkbenchCore.get_job()` 和 `list_jobs()` 读取任务。
 `core.log_path` 是本实例 Core 诊断日志的绝对路径。
 
 ## 4. 配置契约
@@ -155,18 +155,34 @@ resources:
       - D:\models\vae\krea2
     text_encoder: D:\models\text_encoders\qwen3vl_4b_fp8_scaled.safetensors
     clip_type: krea2
+  zib:
+    diffusion:
+      - D:\models\diffusion_models\zib
+    vae:
+      - D:\models\vae\zit
+    text_encoder: D:\models\text_encoders\qwen_3_4b.safetensors
+    clip_type: stable_diffusion
+  sdxl:
+    model_loader: checkpoint
+    diffusion:
+      - D:\models\checkpoints\sdxl-model.safetensors
 
 output_dir: output
 database: .cache\diffusion_workbench.sqlite3
 worker_timeout_seconds: 300
 ```
 
-`diffusion` 和 `vae` 接受多个目录。相对路径通常相对于 YAML 所在目录；当 YAML 的
+`diffusion` 和 `vae` 接受多个目录；也可配置单个 `.safetensors`/`.sft` 文件以限制
+可选资源。`model_loader: checkpoint` 表示模型文件内嵌 CLIP 和 VAE，此时不配置
+`vae`、`text_encoder` 或 `clip_type`。相对路径通常相对于 YAML 所在目录；当 YAML 的
 父目录名恰好是 `configs` 时，基准目录会上移到项目根目录。服务部署建议对 ComfyUI、
 模型、output 和 database 使用明确的绝对路径，避免工作目录变化改变数据位置。
 
 `worker_timeout_seconds` 同时限定单任务等待时间；Worker 启动等待时间为该值与 60 秒
 中的较小值。
+
+`resources` 可以只包含实际启用的 mode；未配置的 mode 不会出现在客户端能力列表中，
+旧配置无需为了新增 mode 立即迁移。
 
 ## 5. 领域对象与校验
 
@@ -175,6 +191,8 @@ worker_timeout_seconds: 300
 ```python
 Mode.ZIT     # "zit"
 Mode.KREA2   # "krea2"
+Mode.ZIB     # "zib"
+Mode.SDXL    # "sdxl"
 
 ResourceKind.DIFFUSION  # "diffusion"
 ResourceKind.VAE        # "vae"
@@ -211,17 +229,17 @@ settings = GenerationSettings(
 
 - prompt 去除空白后不能为空；
 - 宽高为正数且是 16 的倍数；
-- steps 在 8 到 20 之间；
+- steps 在 1 到 100 之间；
 - seed 为 `-1` 或非负整数；
-- sampler 必须为 `euler`；
-- scheduler 必须为 `simple`；
-- CFG 必须为 `1.0`。
+- sampler 必须在 `SAMPLERS`（44 个，对齐 ComfyUI `KSampler.SAMPLERS`）内；
+- scheduler 必须在 `SCHEDULERS`（9 个，对齐 `KSampler.SCHEDULERS`）内；
+- CFG 为大于 0 的有限数值。
 
 `WorkbenchCore.submit()` 还会校验：
 
-- text encoder 和 clip type 必须等于该 mode 的固定配置；
-- model 必须来自该 mode 配置的 diffusion 目录；
-- VAE 必须来自该 mode 配置的 VAE 目录。
+- model 必须来自该 mode 配置的 diffusion 目录或文件；
+- `components` loader 的 text encoder、clip type 和 VAE 必须来自该 mode 的固定配置；
+- `checkpoint` loader 不接受外置 VAE、text encoder 或 clip type。
 
 调用端不得接受客户端传来的任意绝对路径后自行构造 `ResourceItem`。必须从
 `list_resources()` 返回值中选择，避免越权读取服务器文件。
@@ -317,7 +335,7 @@ sequenceDiagram
 Worker 是长生命周期子进程：
 
 - 第一次任务惰性启动；
-- 同路径 diffusion/text encoder/VAE 复用已加载 Python 对象；
+- 同路径 diffusion/text encoder/VAE 或 SDXL checkpoint 复用已加载 Python 对象；
 - 同 mode 切换 diffusion 时释放 GPU 已加载模型，再载入新 checkpoint；
 - 跨 mode 时调用完整 `release()`；
 - 成功任务结束后保留资源，以加速下一张；
@@ -337,9 +355,9 @@ Worker 完整生成路径运行在 `torch.inference_mode()` 中，与 ComfyUI �
 | stage | 含义 |
 |---|---|
 | `starting_worker` | Runtime 正在确认或启动子进程 |
-| `loading_model` | diffusion、text encoder、VAE 对象检查/加载 |
+| `loading_model` | 拆分资源或完整 checkpoint 对象检查/加载 |
 | `prompt` | CLIP/Qwen text encoder 编码 prompt |
-| `latent` | 创建 `[1, 16, H/8, W/8]` latent |
+| `latent` | 按模型 latent format 动态创建 latent；SDXL 为 `[1, 4, H/8, W/8]` |
 | `sampling` | Euler + simple 采样 |
 | `vae` | VAE 解码 |
 | `saving` | 转换并写入 PNG |
@@ -502,7 +520,7 @@ step 从 1 开始。进入 sampling 但尚无 step callback 时，调用端可�
 
 | 字段 | 含义 |
 |---|---|
-| `mode` | `zit` / `krea2` |
+| `mode` | `zit` / `krea2` / `zib` / `sdxl` |
 | `kind` | `diffusion` / `vae` |
 | `path` | 解析后的绝对路径 |
 | `alias` | mode/kind 内唯一名称 |
@@ -510,8 +528,8 @@ step 从 1 开始。进入 sampling 但尚无 step callback 时，调用端可�
 ### `jobs`
 
 持久化字段包括：id、batch_id、status、提交/开始/完成时间、用时、output path/date/index、
-mode、prompt、model、VAE、text encoder、sampler、scheduler、width、height、steps、seed、
-CFG 和 error。
+mode、prompt、model、可选 VAE/text encoder、model loader、sampler、scheduler、width、
+height、steps、seed、CFG 和 error。
 
 状态转换和最终 seed 都会写回数据库。启动恢复会把遗留 `queued`/`running` 统一标记为
 `cancelled`，错误信息为“Workbench 上次退出时任务未完成”。
@@ -584,11 +602,13 @@ migration/version 策略，不能
 - stop、shutdown 和前置异常不会卡死队列线程；
 - TUI 跨线程事件非阻塞；
 - 资源目录、别名、输出编号和实例锁；
-- 当前完整 unittest 套件通过。
+- 指定 SDXL checkpoint 的完整加载、双 CLIP 编码、4 通道 latent、采样、VAE 解码和
+  PNG 元数据真实 smoke test。
+- 当前完整 pytest 套件通过。
 
 真实模型能力依赖配置指向的 ComfyUI 版本、bundled Python、custom patches 和 checkpoint。
-升级 ComfyUI 或 PyTorch 后应至少回归 ZIT/Krea2 各一张、同模型第二张、切模、stop 和
-960x1280 大尺寸任务。
+升级 ComfyUI 或 PyTorch 后应至少回归 ZIT/Krea2/ZIB/SDXL 各一张、同模型第二张、切模、
+stop 和 960x1280 大尺寸任务。
 
 ## 17. 后续扩展原则
 

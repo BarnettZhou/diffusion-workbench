@@ -88,9 +88,12 @@ class PersistentComfyRuntime:
             "job_id": job.id,
             "batch_id": job.batch_id,
             "mode": job.mode.value,
+            "model_loader": job.model_loader.value,
             "model_path": str(job.model_path.resolve()),
-            "vae_path": str(job.vae_path.resolve()),
-            "text_encoder_path": str(job.text_encoder_path.resolve()),
+            "vae_path": str(job.vae_path.resolve()) if job.vae_path else None,
+            "text_encoder_path": (
+                str(job.text_encoder_path.resolve()) if job.text_encoder_path else None
+            ),
             "clip_type": self.config.resources[job.mode].clip_type,
             "prompt": job.prompt,
             "negative_prompt": job.negative_prompt,
