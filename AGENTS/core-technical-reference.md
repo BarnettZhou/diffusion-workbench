@@ -123,7 +123,8 @@ finally:
 | `set_alias(mode, kind, path, alias)` | 无 | 同 mode/kind 内 alias 唯一 |
 | `submit(settings, count)` | `list[JobRecord]` | 只入队，不等待图片完成 |
 | `list_video_models(video_model)` | `list[ResourceItem]` | 扫描已配置视频类型的 diffusion 目录 |
-| `submit_video(settings, count)` | `list[VideoJobRecord]` | 只入队；VAE/text encoder 固定由配置校验 |
+| `list_video_vaes(video_model)` | `list[ResourceItem]` | 扫描已配置视频类型的 VAE 目录 |
+| `submit_video(settings, count)` | `list[VideoJobRecord]` | 只入队；模型/VAE 受目录约束，text encoder 固定 |
 | `runtime_status()` | `dict` | GPU 数据最多约 2 秒陈旧 |
 | `release_resources()` | 无 | 仅队列空闲时调用，主动卸载 Worker 模型并清空显存 |
 | `set_event_sink(callback)` | 无 | 只有一个 sink，后设置会覆盖前一个 |
@@ -187,7 +188,7 @@ worker_timeout_seconds: 300
 `worker_timeout_seconds` 同时限定单任务等待时间；Worker 启动等待时间为该值与 60 秒
 中的较小值。
 
-视频资源使用独立的 `video_resources` 配置段：`diffusion` 为目录列表，`vae` 与
+视频资源使用独立的 `video_resources` 配置段：`diffusion` 与 `vae` 为目录列表，
 `text_encoder` 为固定文件，`clip_type` 必须是 `wan`；视频任务使用
 `video_worker_timeout_seconds`。
 

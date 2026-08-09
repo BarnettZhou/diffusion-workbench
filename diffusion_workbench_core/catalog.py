@@ -58,8 +58,18 @@ class ResourceCatalog:
         resources = self.config.video_resources.get(video_model)
         if resources is None:
             return []
+        return self._list_model_files(resources.diffusion)
+
+    def list_video_vaes(self, video_model: VideoModel) -> list[ResourceItem]:
+        resources = self.config.video_resources.get(video_model)
+        if resources is None:
+            return []
+        return self._list_model_files(resources.vae)
+
+    @staticmethod
+    def _list_model_files(configured_paths: tuple[Path, ...]) -> list[ResourceItem]:
         paths: dict[Path, Path] = {}
-        for configured_path in resources.diffusion:
+        for configured_path in configured_paths:
             if configured_path.is_file() and configured_path.suffix.casefold() in {
                 ".safetensors",
                 ".sft",

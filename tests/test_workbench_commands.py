@@ -34,7 +34,7 @@ class FakeCore:
             worker_timeout_seconds=300,
             video_resources={
                 VideoModel.WAN22_TI2V_5B: VideoResources(
-                    (root,), root / "wan-vae.safetensors", root / "umt5.safetensors"
+                    (root,), (root,), root / "umt5.safetensors"
                 )
             },
         )
@@ -51,6 +51,7 @@ class FakeCore:
         self.submitted = []
         self.submitted_videos = []
         self.video_items = [ResourceItem(1, root / "wan5b.safetensors")]
+        self.video_vae_items = [ResourceItem(1, root / "wan-vae.safetensors")]
         self.upscale_models = [ResourceItem(1, root / "4x-UltraSharp.pth")]
         self.stopped = False
         self.skipped_job_id = None
@@ -66,6 +67,9 @@ class FakeCore:
 
     def list_video_models(self, _video_model):
         return self.video_items
+
+    def list_video_vaes(self, _video_model):
+        return self.video_vae_items
 
     def set_alias(self, mode, kind, path, alias):
         items = self.items[(mode, kind)]
@@ -114,6 +118,7 @@ class CommandSessionTests(unittest.TestCase):
             session = CommandSession(core)
 
             session.handle("/video model set 1")
+            session.handle("/video vae set 1")
             session.handle("/video prompt camera pans across a city")
             session.handle("/video duration 5")
             session.handle("/video fps 24")

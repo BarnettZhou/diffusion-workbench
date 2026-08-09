@@ -64,6 +64,9 @@ class CommandSession:
         self._video_models: dict[VideoModel, ResourceItem | None] = {
             model: None for model in VideoModel
         }
+        self._video_vaes: dict[VideoModel, ResourceItem | None] = {
+            model: None for model in VideoModel
+        }
 
     @property
     def selected_model(self) -> ResourceItem | None:
@@ -155,7 +158,7 @@ class CommandSession:
     def _video(self, args: list[str], command_line: str) -> CommandResponse:
         if not args:
             raise ValueError(
-                "用法: /video type|model|prompt|negative|size|duration|fps|steps|"
+                "用法: /video type|model|vae|prompt|negative|size|duration|fps|steps|"
                 "seed|cfg|sampler|scheduler|image|status|start"
             )
         action = args[0].lower()
@@ -175,6 +178,7 @@ class CommandSession:
                 raise ValueError(f"未配置视频模型: {model.value}")
             self.video_model = model
             self._video_models[model] = None
+            self._video_vaes[model] = None
             return CommandResponse((f"video type 已设置为 {model.value}",))
         if action == "model":
             items = self.core.list_video_models(self.video_model)
@@ -188,6 +192,18 @@ class CommandSession:
                 self._video_models[self.video_model] = item
                 return CommandResponse((f"video model 已设置为 {item.display_name}",))
             raise ValueError("用法: /video model list | set <index>")
+        if action == "vae":
+            items = self.core.list_video_vaes(self.video_model)
+            if rest == ["list"]:
+                lines = tuple(
+                    f"[{item.index}] {item.display_name}" for item in items
+                )
+                return CommandResponse(lines or ("没有可用视频 VAE",))
+            if len(rest) == 2 and rest[0].lower() == "set":
+                item = self._item_at(items, rest[1])
+                self._video_vaes[self.video_model] = item
+                return CommandResponse((f"video VAE 已设置为 {item.display_name}",))
+            raise ValueError("用法: /video vae list | set <index>")
         if action in {"prompt", "negative"}:
             value = command_line.split(None, 2)[2] if len(command_line.split(None, 2)) > 2 else ""
             if action == "prompt":
@@ -242,10 +258,12 @@ class CommandSession:
             raise ValueError("用法: /video image set <path> | clear")
         if action == "status":
             model = self._video_models[self.video_model]
+            vae = self._video_vaes[self.video_model]
             image = str(self.video_image) if self.video_image else "无（T2V）"
             return CommandResponse((
                 f"video type: {self.video_model.value} ({'I2V' if self.video_image else 'T2V'})",
                 f"model: {model.display_name if model else '未选择'}",
+                f"vae: {vae.display_name if vae else '未选择'}",
                 f"prompt: {self.video_prompt or '未设置'}",
                 f"size: {self.video_width}*{self.video_height}  "
                 f"duration: {self.video_duration}s  fps: {self.video_fps}  "
@@ -272,11 +290,14 @@ class CommandSession:
         model = self._video_models[self.video_model]
         if model is None:
             raise ValueError("请先使用 /video model set <index> 选择模型")
+        vae = self._video_vaes[self.video_model]
+        if vae is None:
+            raise ValueError("请先使用 /video vae set <index> 选择 VAE")
         resources = self.core.config.video_resources[self.video_model]
         settings = VideoGenerationSettings(
             video_model=self.video_model,
             model=model,
-            vae=resources.vae,
+            vae=vae,
             text_encoder=resources.text_encoder,
             prompt=self.video_prompt,
             negative_prompt=self.video_negative_prompt,

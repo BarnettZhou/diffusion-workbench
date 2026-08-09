@@ -4,12 +4,13 @@
 
 ## 配置与模型
 
-`WorkbenchConfig.video_resources` 按 `VideoModel` 分类。当前唯一支持值为 `wan2.2-ti2v-5b`，每个类型包含一个或多个 `diffusion` 目录、固定 `vae` 文件、固定 `text_encoder` 文件和固定 `clip_type: wan`。客户端只能使用 Core 返回的资源 index/受控资源引用，不应提交模型路径。
+`WorkbenchConfig.video_resources` 按 `VideoModel` 分类。当前唯一支持值为 `wan2.2-ti2v-5b`，每个类型包含一个或多个 `diffusion` 目录、一个或多个 `vae` 目录、固定 `text_encoder` 文件和固定 `clip_type: wan`。客户端只能使用 Core 返回的资源 index/受控资源引用，不应提交模型或 VAE 路径。
 
 ## Core 调用
 
 ```python
 core.list_video_models(VideoModel.WAN22_TI2V_5B)
+core.list_video_vaes(VideoModel.WAN22_TI2V_5B)
 core.submit_video(VideoGenerationSettings(...), count)
 core.get_video_job(job_id)
 core.runtime_status()
@@ -28,4 +29,4 @@ core.release_resources()
 
 ## TUI 参考
 
-视频命令组包括 `/video type`、`/video model`、`/video prompt`、`/video image set|clear`、`/video size`、`/video duration`、`/video fps`、`/video steps`、`/video seed`、`/video cfg`、`/video sampler`、`/video scheduler`、`/video status`、`/video start`。资源诊断命令为 `/resources status` 和 `/resources release`。
+视频命令组包括 `/video type`、`/video model`、`/video vae`、`/video prompt`、`/video image set|clear`、`/video size`、`/video duration`、`/video fps`、`/video steps`、`/video seed`、`/video cfg`、`/video sampler`、`/video scheduler`、`/video status`、`/video start`。资源诊断命令为 `/resources status` 和 `/resources release`。

@@ -42,12 +42,13 @@ upscaling:
   models:
     - D:\models\upscale_models
 
-# Wan TI2V-5B 视频资源。diffusion 可配置多个目录，VAE/text_encoder 为固定文件。
+# Wan TI2V-5B 视频资源。diffusion / vae 为目录列表，text_encoder 为固定文件。
 video_resources:
   wan2.2-ti2v-5b:
     diffusion:
       - D:\models\diffusion_models\wan2.2
-    vae: D:\models\vae\wan2.2_vae.safetensors
+    vae:
+      - D:\models\vae\wan2.2
     text_encoder: D:\models\text_encoders\umt5_xxl_fp8_e4m3fn_scaled.safetensors
     clip_type: wan
 

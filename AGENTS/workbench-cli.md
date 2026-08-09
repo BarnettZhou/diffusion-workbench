@@ -79,6 +79,7 @@ SDXL 的 VAE 内嵌在 checkpoint 中，只需选择模型。
 ```text
 /video type list|set <wan2.2-ti2v-5b>
 /video model list|set <index>
+/video vae list|set <index>
 /video prompt <prompt>
 /video negative <negative-prompt>
 /video size <width>*<height>
@@ -95,7 +96,7 @@ SDXL 的 VAE 内嵌在 checkpoint 中，只需选择模型。
 /resources status|release
 ```
 
-默认视频为 704x960、5 秒、24 FPS（121 帧）、20 步、CFG 5、`uni_pc` + `simple`，denoise 固定为 1。设置图片是 I2V，不设置图片是 T2V。视频写入 `output/YYYY-MM-DD/wan2.2-ti2v-5b-NNNNN.mp4`。`/resources release` 只允许在队列空闲时执行。
+默认视频为 704x960、5 秒、24 FPS（121 帧）、20 步、CFG 5、`uni_pc` + `simple`，denoise 固定为 1。模型和 VAE 均从配置目录扫描并需要选择。设置图片是 I2V，不设置图片是 T2V。视频写入 `output/YYYY-MM-DD/wan2.2-ti2v-5b-NNNNN.mp4`。`/resources release` 只允许在队列空闲时执行。
 
 ## 图片放大
 

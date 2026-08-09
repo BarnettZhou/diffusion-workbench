@@ -71,6 +71,9 @@ class WorkbenchCore:
     def list_video_models(self, video_model: VideoModel):
         return self.catalog.list_video_models(video_model)
 
+    def list_video_vaes(self, video_model: VideoModel):
+        return self.catalog.list_video_vaes(video_model)
+
     def submit(self, settings: GenerationSettings, count: int):
         resources = self.config.resources.get(settings.mode)
         if resources is None:
@@ -122,8 +125,6 @@ class WorkbenchCore:
         resources = self.config.video_resources.get(settings.video_model)
         if resources is None:
             raise ValueError(f"未配置视频模型: {settings.video_model.value}")
-        if settings.vae.resolve() != resources.vae.resolve():
-            raise ValueError(f"{settings.video_model.value} VAE 固定为 {resources.vae}")
         if settings.text_encoder.resolve() != resources.text_encoder.resolve():
             raise ValueError(
                 f"{settings.video_model.value} text encoder 固定为 {resources.text_encoder}"
@@ -134,6 +135,13 @@ class WorkbenchCore:
         if settings.model.path.resolve() not in model_paths:
             raise ValueError(
                 f"model 不属于 {settings.video_model.value} 配置的 diffusion 目录或文件路径"
+            )
+        vae_paths = {
+            item.path.resolve() for item in self.list_video_vaes(settings.video_model)
+        }
+        if settings.vae.path.resolve() not in vae_paths:
+            raise ValueError(
+                f"VAE 不属于 {settings.video_model.value} 配置的 vae 目录或文件路径"
             )
         if settings.input_image is not None and not settings.input_image.is_file():
             raise FileNotFoundError(f"找不到输入图片: {settings.input_image}")

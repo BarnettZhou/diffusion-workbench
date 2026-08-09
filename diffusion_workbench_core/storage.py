@@ -290,7 +290,7 @@ class JobStore:
                     settings.prompt,
                     settings.negative_prompt,
                     str(settings.model.path.resolve()),
-                    str(settings.vae.resolve()),
+                    str(settings.vae.path.resolve()),
                     str(settings.text_encoder.resolve()),
                     settings.sampler,
                     settings.scheduler,

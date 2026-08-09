@@ -29,7 +29,7 @@ class UpscalingConfig:
 @dataclass(frozen=True)
 class VideoResources:
     diffusion: tuple[Path, ...]
-    vae: Path
+    vae: tuple[Path, ...]
     text_encoder: Path
     clip_type: str = "wan"
 
@@ -102,7 +102,7 @@ def load_config(path: str | Path) -> WorkbenchConfig:
             raise ValueError(f"{video_model.value} clip_type 固定为 wan")
         video_resources[video_model] = VideoResources(
             diffusion=tuple(_resolve(value, base) for value in item["diffusion"]),
-            vae=_resolve(item["vae"], base),
+            vae=tuple(_resolve(value, base) for value in item["vae"]),
             text_encoder=_resolve(item["text_encoder"], base),
             clip_type=clip_type,
         )

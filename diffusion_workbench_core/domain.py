@@ -304,7 +304,7 @@ class JobRecord:
 class VideoGenerationSettings:
     video_model: VideoModel
     model: ResourceItem
-    vae: Path
+    vae: ResourceItem
     text_encoder: Path
     prompt: str
     negative_prompt: str = ""
