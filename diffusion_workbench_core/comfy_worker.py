@@ -5,6 +5,7 @@ import base64
 import gc
 import json
 import logging
+import math
 import os
 import platform
 import queue
@@ -1051,6 +1052,9 @@ class ComfyWorker:
             raise ValueError("视频总帧数必须满足 length = 4n + 1")
         if float(command.get("denoise", 1.0)) != 1.0:
             raise ValueError("Wan TI2V-5B denoise 固定为 1")
+        shift = float(command.get("shift", 8.0))
+        if not math.isfinite(shift) or not 0.0 <= shift <= 100.0:
+            raise ValueError("shift 必须在 0 到 100 之间")
         validate_sampling(
             int(command["steps"]),
             float(command["cfg"]),

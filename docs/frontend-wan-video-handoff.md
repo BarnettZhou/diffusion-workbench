@@ -17,7 +17,7 @@ core.runtime_status()
 core.release_resources()
 ```
 
-`VideoGenerationSettings` 默认值为 704x960、5 秒、24 FPS、20 步、CFG 5、`uni_pc` + `simple`、seed -1、denoise 1。`length` 是 `duration_seconds * fps + 1`，宽高必须是 16 的倍数，Wan latent 还要求 `length = 4n + 1`。设置 `input_image` 时为 I2V，不设置时为 T2V。输入图片应先通过受控上传/资产接口落盘，再将服务端生成的资产 ID 映射为路径；不能让 HTTP 客户端直接提交任意服务器文件路径。
+`VideoGenerationSettings` 默认值为 704x960、5 秒、24 FPS、20 步、CFG 5、shift 8、`uni_pc` + `simple`、seed -1、denoise 1。`shift` 范围为 0 到 100，用于 ComfyUI 的 `ModelSamplingSD3`。`length` 是 `duration_seconds * fps + 1`，宽高必须是 16 的倍数，Wan latent 还要求 `length = 4n + 1`。设置 `input_image` 时为 I2V，不设置时为 T2V。输入图片应先通过受控上传/资产接口落盘，再将服务端生成的资产 ID 映射为路径；不能让 HTTP 客户端直接提交任意服务器文件路径。
 
 ## 任务与输出
 
@@ -29,4 +29,4 @@ core.release_resources()
 
 ## TUI 参考
 
-视频命令组包括 `/video type`、`/video model`、`/video vae`、`/video prompt`、`/video image set|clear`、`/video size`、`/video duration`、`/video fps`、`/video steps`、`/video seed`、`/video cfg`、`/video sampler`、`/video scheduler`、`/video status`、`/video start`。资源诊断命令为 `/resources status` 和 `/resources release`。
+视频命令组包括 `/video type`、`/video model`、`/video vae`、`/video prompt`、`/video image set|clear`、`/video size`、`/video duration`、`/video fps`、`/video steps`、`/video seed`、`/video cfg`、`/video shift`、`/video sampler`、`/video scheduler`、`/video status`、`/video start`。资源诊断命令为 `/resources status` 和 `/resources release`。

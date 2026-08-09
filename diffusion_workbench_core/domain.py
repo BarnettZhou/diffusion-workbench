@@ -319,6 +319,7 @@ class VideoGenerationSettings:
     scheduler: str = "simple"
     cfg: float = 5.0
     denoise: float = 1.0
+    shift: float = 8.0
 
     @property
     def length(self) -> int:
@@ -349,6 +350,8 @@ class VideoGenerationSettings:
             raise ValueError("seed 必须为 -1 或非负整数")
         if self.denoise != 1.0:
             raise ValueError("Wan TI2V-5B denoise 固定为 1")
+        if not math.isfinite(self.shift) or not 0.0 <= self.shift <= 100.0:
+            raise ValueError("shift 必须在 0 到 100 之间")
         validate_sampling(self.steps, self.cfg, self.sampler, self.scheduler)
 
 
@@ -375,6 +378,7 @@ class VideoJobRecord:
     seed: int
     cfg: float
     denoise: float = 1.0
+    shift: float = 8.0
     negative_prompt: str = ""
     input_image_path: Path | None = None
     started_at: datetime | None = None

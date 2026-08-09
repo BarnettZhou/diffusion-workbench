@@ -62,6 +62,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     fps INTEGER,
     frame_count INTEGER,
     denoise REAL NOT NULL DEFAULT 1.0,
+    shift REAL NOT NULL DEFAULT 8.0,
     error TEXT,
     UNIQUE (output_date, mode, daily_index)
 );
@@ -102,6 +103,7 @@ class JobStore:
                 "fps": "INTEGER",
                 "frame_count": "INTEGER",
                 "denoise": "REAL NOT NULL DEFAULT 1.0",
+                "shift": "REAL NOT NULL DEFAULT 8.0",
             }
             for name, declaration in migrations.items():
                 if name not in columns:
@@ -311,6 +313,7 @@ class JobStore:
                     settings.fps,
                     settings.length,
                     settings.denoise,
+                    settings.shift,
                 )
                 connection.execute(
                     """
@@ -319,8 +322,8 @@ class JobStore:
                         daily_index, mode, prompt, negative_prompt, model, vae,
                         text_encoder, sampler, scheduler, width, height, steps, seed,
                         cfg, model_loader, upscale_json, job_kind, input_image,
-                        video_duration_seconds, fps, frame_count, denoise
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        video_duration_seconds, fps, frame_count, denoise, shift
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     values,
                 )
@@ -542,5 +545,6 @@ class JobStore:
             seed=row["seed"],
             cfg=row["cfg"],
             denoise=row["denoise"],
+            shift=row["shift"],
             error=row["error"],
         )

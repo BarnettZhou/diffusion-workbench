@@ -58,6 +58,7 @@ class CommandSession:
         self.video_steps = 20
         self.video_seed = -1
         self.video_cfg = 5.0
+        self.video_shift = 8.0
         self.video_sampler = "uni_pc"
         self.video_scheduler = "simple"
         self.video_image: Path | None = None
@@ -159,7 +160,7 @@ class CommandSession:
         if not args:
             raise ValueError(
                 "用法: /video type|model|vae|prompt|negative|size|duration|fps|steps|"
-                "seed|cfg|sampler|scheduler|image|status|start"
+                "seed|cfg|shift|sampler|scheduler|image|status|start"
             )
         action = args[0].lower()
         rest = args[1:]
@@ -214,7 +215,7 @@ class CommandSession:
         if action == "size":
             self._set_video_size(rest)
             return CommandResponse((f"video size 已设置为 {self.video_width}*{self.video_height}",))
-        if action in {"duration", "fps", "steps", "seed", "cfg"}:
+        if action in {"duration", "fps", "steps", "seed", "cfg", "shift"}:
             if len(rest) != 1:
                 raise ValueError(f"用法: /video {action} <value>")
             value = float(rest[0]) if action == "cfg" else int(rest[0])
@@ -228,6 +229,8 @@ class CommandSession:
                 raise ValueError("seed 必须为 -1 或非负整数")
             if action == "cfg":
                 validate_cfg(value)
+            if action == "shift" and not 0.0 <= value <= 100.0:
+                raise ValueError("shift 必须在 0 到 100 之间")
             setattr(self, f"video_{action}", value)
             displayed = f"{value:g}" if isinstance(value, float) else str(value)
             return CommandResponse((f"video {action} 已设置为 {displayed}",))
@@ -268,7 +271,7 @@ class CommandSession:
                 f"size: {self.video_width}*{self.video_height}  "
                 f"duration: {self.video_duration}s  fps: {self.video_fps}  "
                 f"length: {self.video_duration * self.video_fps + 1}",
-                f"steps: {self.video_steps}  seed: {self.video_seed}  cfg: {self.video_cfg:g}",
+                f"steps: {self.video_steps}  seed: {self.video_seed}  cfg: {self.video_cfg:g}  shift: {self.video_shift:g}",
                 f"sampler: {self.video_sampler}  scheduler: {self.video_scheduler}  denoise: 1",
                 f"image: {image}",
             ))
@@ -309,6 +312,7 @@ class CommandSession:
             steps=self.video_steps,
             seed=self.video_seed,
             cfg=self.video_cfg,
+            shift=self.video_shift,
             sampler=self.video_sampler,
             scheduler=self.video_scheduler,
         )

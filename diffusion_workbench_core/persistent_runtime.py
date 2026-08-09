@@ -219,7 +219,7 @@ class PersistentComfyRuntime:
             "sampler": job.sampler,
             "scheduler": job.scheduler,
             "denoise": job.denoise,
-            "shift": 8.0,
+            "shift": job.shift,
             "output_path": str(job.output_path.resolve()),
             "preview_enabled": False,
             "workbench_version": _workbench_version(),

@@ -124,7 +124,7 @@ finally:
 | `submit(settings, count)` | `list[JobRecord]` | 只入队，不等待图片完成 |
 | `list_video_models(video_model)` | `list[ResourceItem]` | 扫描已配置视频类型的 diffusion 目录 |
 | `list_video_vaes(video_model)` | `list[ResourceItem]` | 扫描已配置视频类型的 VAE 目录 |
-| `submit_video(settings, count)` | `list[VideoJobRecord]` | 只入队；模型/VAE 受目录约束，text encoder 固定 |
+| `submit_video(settings, count)` | `list[VideoJobRecord]` | 只入队；模型/VAE 受目录约束，text encoder 固定，shift 默认 8 |
 | `runtime_status()` | `dict` | GPU 数据最多约 2 秒陈旧 |
 | `release_resources()` | 无 | 仅队列空闲时调用，主动卸载 Worker 模型并清空显存 |
 | `set_event_sink(callback)` | 无 | 只有一个 sink，后设置会覆盖前一个 |
@@ -212,6 +212,7 @@ ResourceKind.VAE        # "vae"
 视频类型由 `VideoModel` 表示，当前只有 `VideoModel.WAN22_TI2V_5B`（值为
 `wan2.2-ti2v-5b`）。`VideoGenerationSettings` 与 `VideoJobRecord` 是独立于图片 DTO
 的参数和持久化对象；`input_image`/`input_image_path` 存在时为 I2V，否则为 T2V。
+`shift` 默认 8，范围为 0 到 100，传给 ComfyUI `ModelSamplingSD3`。
 
 ### 5.2 `ResourceItem`
 
