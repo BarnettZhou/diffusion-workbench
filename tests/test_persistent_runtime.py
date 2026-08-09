@@ -30,6 +30,10 @@ for line in sys.stdin:
         emit({"type": "stopped"})
         print("worker shutdown tail", flush=True)
         break
+    if command["type"] == "release":
+        loaded = None
+        emit({"type": "released"})
+        continue
     loaded_now = loaded != command["model_path"]
     loaded = command["model_path"]
     emit({"type": "stage_progress", "job_id": command["job_id"], "stage": "sampling", "total": command["steps"]})
@@ -73,6 +77,40 @@ while True:
 
 
 class PersistentRuntimeTests(unittest.TestCase):
+    def test_release_resources_keeps_idle_worker_alive(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            worker_script = root / "fake_worker.py"
+            worker_script.write_text(FAKE_WORKER, encoding="utf-8")
+            config = WorkbenchConfig(
+                path=root / "config.yaml",
+                comfyui=ComfyConfig(root, Path(sys.executable)),
+                resources={
+                    Mode.ZIT: ModeResources(
+                        (), (), root / "te.safetensors", "stable_diffusion"
+                    )
+                },
+                output_dir=root / "output",
+                database=root / "jobs.sqlite3",
+                worker_timeout_seconds=10,
+            )
+            runtime = PersistentComfyRuntime(config, worker_script=worker_script)
+            try:
+                runtime.generate(
+                    self.make_job(root, "release"),
+                    lambda _step, _total, _metrics: None,
+                    lambda _stage, _total: None,
+                )
+                worker_pid = runtime.status()["pid"]
+
+                runtime.release_resources()
+
+                self.assertEqual(runtime.status()["pid"], worker_pid)
+                self.assertIsNone(runtime.status()["loaded_model"])
+                self.assertEqual(runtime.status()["loaded_resources"], {})
+            finally:
+                runtime.close()
+
     def test_cancel_keeps_worker_and_loaded_model_alive(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

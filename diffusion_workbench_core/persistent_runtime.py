@@ -10,7 +10,7 @@ from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
 from .config import WorkbenchConfig
-from .domain import JobRecord
+from .domain import JobRecord, VideoJobRecord
 from .logging_config import silent_logger, worker_output_level
 from .runtime import GenerationCancelled
 
@@ -26,6 +26,7 @@ WORKER_EVENT_REQUIRED_FIELDS = {
     "result": ("job_id",),
     "cancelled": ("job_id",),
     "error": ("job_id",),
+    "released": (),
     "stopped": (),
 }
 
@@ -55,6 +56,7 @@ class PersistentComfyRuntime:
         self._logs: deque[str] = deque(maxlen=100)
         self._reader_thread: threading.Thread | None = None
         self._loaded_model: str | None = None
+        self._loaded_resources: dict = {}
         self._active_job_id: str | None = None
         self._preview_enabled = False
         self._gpu_value = "查询中"
@@ -64,7 +66,9 @@ class PersistentComfyRuntime:
         atexit.register(self.close)
         self._request_gpu_probe()
 
-    def generate(self, job: JobRecord, progress, stage, preview=None) -> dict:
+    def generate(
+        self, job: JobRecord | VideoJobRecord, progress, stage, preview=None
+    ) -> dict:
         with self._generation_lock:
             if self._closed:
                 raise RuntimeError("GPU Worker 已关闭")
@@ -78,12 +82,85 @@ class PersistentComfyRuntime:
                     self._active_job_id = None
                 self._cancelled.clear()
 
-    def _generate(self, job: JobRecord, progress, stage, preview=None) -> dict:
+    def _generate(
+        self, job: JobRecord | VideoJobRecord, progress, stage, preview=None
+    ) -> dict:
         stage("starting_worker", job.steps)
         process = self._ensure_process()
         if self._cancelled.is_set():
             raise GenerationCancelled("任务在 Worker 启动期间已取消")
-        command = {
+        if isinstance(job, VideoJobRecord):
+            command = self._video_command(job)
+            timeout_seconds = self.config.video_worker_timeout_seconds
+        else:
+            command = self._image_command(job)
+            timeout_seconds = self.config.worker_timeout_seconds
+        with self._process_lock:
+            if self._cancelled.is_set():
+                raise GenerationCancelled("任务在 Worker 启动期间已取消")
+            self._active_job_id = job.id
+            try:
+                self._write_command(process, command)
+            except Exception:
+                self._active_job_id = None
+                raise
+        deadline = time.monotonic() + timeout_seconds
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                self._cancelled.set()
+                self._logger.warning("worker generation timed out; terminating process")
+                self._terminate_process()
+                raise TimeoutError(f"任务超过 Worker 超时 {timeout_seconds:.0f}s")
+            try:
+                event = self._events.get(timeout=min(remaining, 1.0))
+            except queue.Empty:
+                if process.poll() is not None:
+                    self._raise_worker_exit(process)
+                continue
+            event_type = event.get("type")
+            if event_type == "step_progress" and event.get("job_id") == job.id:
+                metrics = {
+                    key: event.get(key)
+                    for key in (
+                        "elapsed_seconds",
+                        "step_seconds",
+                        "seconds_per_step",
+                        "steps_per_second",
+                        "eta_seconds",
+                        "stage",
+                    )
+                }
+                progress(int(event["step"]), int(event["total"]), metrics)
+            elif event_type == "preview_image" and event.get("job_id") == job.id:
+                if preview is not None:
+                    preview(event)
+            elif event_type == "stage_progress" and event.get("job_id") == job.id:
+                total = event.get("total")
+                stage(str(event["stage"]), int(total) if total is not None else None)
+            elif event_type == "result" and event.get("job_id") == job.id:
+                self._loaded_model = event.get("model_path", command["model_path"])
+                self._loaded_resources = event.get("loaded_resources") or {
+                    "model": self._loaded_model
+                }
+                return event
+            elif event_type == "cancelled" and event.get("job_id") == job.id:
+                if event.get("model_path"):
+                    self._loaded_model = event["model_path"]
+                raise GenerationCancelled("任务已取消")
+            elif event_type == "error" and event.get("job_id") == job.id:
+                self._loaded_model = None
+                self._loaded_resources = {}
+                error = event.get("error", "GPU Worker 生成失败")
+                traceback_text = event.get("traceback")
+                raise RuntimeError(
+                    error + (f"\n{traceback_text}" if traceback_text else "")
+                )
+            elif event_type == "process_eof":
+                self._raise_worker_exit(process)
+
+    def _image_command(self, job: JobRecord) -> dict:
+        return {
             "type": "generate",
             "job_id": job.id,
             "batch_id": job.batch_id,
@@ -114,66 +191,39 @@ class PersistentComfyRuntime:
             "preview_enabled": self._preview_enabled,
             "workbench_version": _workbench_version(),
         }
-        with self._process_lock:
-            if self._cancelled.is_set():
-                raise GenerationCancelled("任务在 Worker 启动期间已取消")
-            self._active_job_id = job.id
-            try:
-                self._write_command(process, command)
-            except Exception:
-                self._active_job_id = None
-                raise
-        deadline = time.monotonic() + self.config.worker_timeout_seconds
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                self._cancelled.set()
-                self._logger.warning("worker generation timed out; terminating process")
-                self._terminate_process()
-                raise TimeoutError(
-                    f"任务超过 Worker 超时 {self.config.worker_timeout_seconds:.0f}s"
-                )
-            try:
-                event = self._events.get(timeout=min(remaining, 1.0))
-            except queue.Empty:
-                if process.poll() is not None:
-                    self._raise_worker_exit(process)
-                continue
-            event_type = event.get("type")
-            if event_type == "step_progress" and event.get("job_id") == job.id:
-                metrics = {
-                    key: event.get(key)
-                    for key in (
-                        "elapsed_seconds",
-                        "step_seconds",
-                        "seconds_per_step",
-                        "steps_per_second",
-                        "eta_seconds",
-                        "stage",
-                    )
-                }
-                progress(int(event["step"]), int(event["total"]), metrics)
-            elif event_type == "preview_image" and event.get("job_id") == job.id:
-                if preview is not None:
-                    preview(event)
-            elif event_type == "stage_progress" and event.get("job_id") == job.id:
-                total = event.get("total")
-                stage(str(event["stage"]), int(total) if total is not None else None)
-            elif event_type == "result" and event.get("job_id") == job.id:
-                self._loaded_model = event.get("model_path", command["model_path"])
-                return event
-            elif event_type == "cancelled" and event.get("job_id") == job.id:
-                if event.get("model_path"):
-                    self._loaded_model = event["model_path"]
-                raise GenerationCancelled("任务已取消")
-            elif event_type == "error" and event.get("job_id") == job.id:
-                error = event.get("error", "GPU Worker 生成失败")
-                traceback_text = event.get("traceback")
-                raise RuntimeError(
-                    error + (f"\n{traceback_text}" if traceback_text else "")
-                )
-            elif event_type == "process_eof":
-                self._raise_worker_exit(process)
+
+    @staticmethod
+    def _video_command(job: VideoJobRecord) -> dict:
+        return {
+            "type": "generate_video",
+            "job_id": job.id,
+            "batch_id": job.batch_id,
+            "video_model": job.video_model.value,
+            "model_path": str(job.model_path.resolve()),
+            "vae_path": str(job.vae_path.resolve()),
+            "text_encoder_path": str(job.text_encoder_path.resolve()),
+            "clip_type": "wan",
+            "prompt": job.prompt,
+            "negative_prompt": job.negative_prompt,
+            "input_image_path": (
+                str(job.input_image_path.resolve()) if job.input_image_path else None
+            ),
+            "width": job.width,
+            "height": job.height,
+            "duration_seconds": job.duration_seconds,
+            "fps": job.fps,
+            "length": job.length,
+            "steps": job.steps,
+            "seed": job.seed,
+            "cfg": job.cfg,
+            "sampler": job.sampler,
+            "scheduler": job.scheduler,
+            "denoise": job.denoise,
+            "shift": 8.0,
+            "output_path": str(job.output_path.resolve()),
+            "preview_enabled": False,
+            "workbench_version": _workbench_version(),
+        }
 
     def cancel(self) -> None:
         self._cancelled.set()
@@ -187,6 +237,37 @@ class PersistentComfyRuntime:
 
     def set_preview_enabled(self, enabled: bool) -> None:
         self._preview_enabled = bool(enabled)
+
+    def release_resources(self) -> None:
+        with self._generation_lock:
+            with self._process_lock:
+                process = self._process
+                if process is None or process.poll() is not None:
+                    self._loaded_model = None
+                    self._loaded_resources = {}
+                    return
+                if self._active_job_id is not None:
+                    raise RuntimeError("任务运行期间不能释放 Worker 资源")
+                self._write_command(process, {"type": "release"})
+            deadline = time.monotonic() + min(self.config.worker_timeout_seconds, 60)
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("释放 Worker 资源超时")
+                try:
+                    event = self._events.get(timeout=min(remaining, 1.0))
+                except queue.Empty:
+                    if process.poll() is not None:
+                        self._raise_worker_exit(process)
+                    continue
+                if event.get("type") == "released":
+                    self._loaded_model = None
+                    self._loaded_resources = {}
+                    return
+                if event.get("type") == "error" and event.get("job_id") is None:
+                    raise RuntimeError(event.get("error", "释放 Worker 资源失败"))
+                if event.get("type") == "process_eof":
+                    self._raise_worker_exit(process)
 
     def close(self) -> None:
         with self._process_lock:
@@ -211,6 +292,7 @@ class PersistentComfyRuntime:
         with self._process_lock:
             self._process = None
             self._loaded_model = None
+            self._loaded_resources = {}
             self._active_job_id = None
 
     def status(self) -> dict:
@@ -223,6 +305,7 @@ class PersistentComfyRuntime:
             "worker": "ready" if running else "stopped",
             "pid": pid,
             "loaded_model": self._loaded_model,
+            "loaded_resources": dict(self._loaded_resources),
             "preview_enabled": self._preview_enabled,
             "gpu": self._gpu_value,
         }
@@ -410,6 +493,7 @@ class PersistentComfyRuntime:
             if self._process is process:
                 self._process = None
                 self._loaded_model = None
+                self._loaded_resources = {}
                 self._active_job_id = None
 
     def _raise_worker_exit(self, process: subprocess.Popen) -> None:
@@ -419,6 +503,7 @@ class PersistentComfyRuntime:
             if self._process is process:
                 self._process = None
                 self._loaded_model = None
+                self._loaded_resources = {}
                 self._active_job_id = None
         if self._cancelled.is_set():
             self._logger.warning(

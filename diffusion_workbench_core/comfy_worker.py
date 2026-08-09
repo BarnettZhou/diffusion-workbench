@@ -12,6 +12,7 @@ import sys
 import threading
 import time
 import traceback
+from fractions import Fraction
 from io import BytesIO
 from pathlib import Path
 
@@ -23,6 +24,7 @@ try:
         ModelLoader,
         UpscaleMethod,
         UpscaleSettings,
+        VideoModel,
         validate_sampling,
     )
     from .png_metadata import (
@@ -38,6 +40,7 @@ except ImportError:  # The Comfy worker runs this module as a standalone script.
         ModelLoader,
         UpscaleMethod,
         UpscaleSettings,
+        VideoModel,
         validate_sampling,
     )
     from png_metadata import (
@@ -137,8 +140,12 @@ class ComfyWorker:
         import latent_preview
         import nodes
         import torch
+        import numpy
+        from comfy_api.latest import InputImpl, Types
+        from comfy_extras.nodes_model_advanced import ModelSamplingSD3
+        from comfy_extras.nodes_wan import Wan22ImageToVideoLatent
         from comfy_extras.nodes_upscale_model import UpscaleModelLoader
-        from PIL import Image
+        from PIL import Image, ImageOps
 
         self.available_samplers = frozenset(comfy.samplers.KSampler.SAMPLERS)
         self.available_schedulers = frozenset(comfy.samplers.KSampler.SCHEDULERS)
@@ -155,6 +162,12 @@ class ComfyWorker:
         self.nodes = nodes
         self.torch = torch
         self.Image = Image
+        self.ImageOps = ImageOps
+        self.numpy = numpy
+        self.InputImpl = InputImpl
+        self.Types = Types
+        self.ModelSamplingSD3 = ModelSamplingSD3
+        self.Wan22ImageToVideoLatent = Wan22ImageToVideoLatent
         self.UpscaleModelLoader = UpscaleModelLoader
         self.runtime_versions = {
             "comfyui": str(comfyui_version.__version__),
@@ -176,9 +189,14 @@ class ComfyWorker:
         self.upscale_model_path: Path | None = None
 
     def generate(self, command: dict) -> dict:
-        self._validate(command)
+        if command.get("type") == "generate_video":
+            self._validate_video(command)
+        else:
+            self._validate(command)
         self._validate_runtime_sampling(command)
         with self.torch.inference_mode():
+            if command.get("type") == "generate_video":
+                return self._generate_video(command)
             return self._generate(command)
 
     def _generate(self, command: dict) -> dict:
@@ -496,6 +514,7 @@ class ComfyWorker:
             "loaded_model": loaded_model,
             "loaded_clip": loaded_clip,
             "loaded_vae": loaded_vae,
+            "loaded_resources": self.resource_status(),
             **performance,
             "upscale_seconds": round(upscale_seconds, 3),
             "generation_seconds": round(
@@ -509,6 +528,192 @@ class ComfyWorker:
             ),
         }
 
+    def _generate_video(self, command: dict) -> dict:
+        command = dict(command)
+        job_id = command["job_id"]
+        requested_mode = command["video_model"]
+        if self.mode is not None and self.mode != requested_mode:
+            self.release()
+        self.mode = requested_mode
+        model_path = Path(command["model_path"]).resolve()
+        vae_path = Path(command["vae_path"]).resolve()
+        text_encoder_path = Path(command["text_encoder_path"]).resolve()
+        load_started = time.perf_counter()
+        stage_total = int(command["steps"])
+        emit(
+            {
+                "type": "stage_progress",
+                "job_id": job_id,
+                "stage": "loading_model",
+                "total": stage_total,
+            }
+        )
+        loaded_model = self._ensure_model(model_path)
+        loaded_clip = self._ensure_clip(text_encoder_path, "wan")
+        loaded_vae = self._ensure_vae(vae_path)
+        resource_metadata = {
+            "diffusion_model": self.resource_fingerprints.describe(model_path),
+            "vae": self.resource_fingerprints.describe(vae_path),
+            "text_encoder": self.resource_fingerprints.describe(text_encoder_path),
+        }
+        emit(
+            {
+                "type": "stage_progress",
+                "job_id": job_id,
+                "stage": "prompt",
+                "total": stage_total,
+            }
+        )
+        positive = self.nodes.CLIPTextEncode().encode(self.clip, command["prompt"])[0]
+        negative = self.nodes.CLIPTextEncode().encode(
+            self.clip, command.get("negative_prompt", "")
+        )[0]
+        load_seconds = time.perf_counter() - load_started
+
+        emit(
+            {
+                "type": "stage_progress",
+                "job_id": job_id,
+                "stage": "latent",
+                "total": stage_total,
+            }
+        )
+        start_image = self._load_input_image(command.get("input_image_path"))
+        latent = self.Wan22ImageToVideoLatent().execute(
+            self.vae,
+            int(command["width"]),
+            int(command["height"]),
+            int(command["length"]),
+            1,
+            start_image=start_image,
+        )[0]
+        sampling_model = self.ModelSamplingSD3().patch(
+            self.model, float(command.get("shift", 8.0))
+        )[0]
+        self.torch.cuda.reset_peak_memory_stats()
+
+        sampling_started = time.perf_counter()
+        previous_step_at = sampling_started
+
+        def sampling_callback(step, x0, _x, total_steps):
+            nonlocal previous_step_at
+            now = time.perf_counter()
+            progress = sampling_progress_payload(
+                step, total_steps, sampling_started, previous_step_at, now
+            )
+            previous_step_at = now
+            emit(
+                {
+                    "type": "step_progress",
+                    "job_id": job_id,
+                    "stage": "sampling",
+                    **progress,
+                }
+            )
+
+        emit(
+            {
+                "type": "stage_progress",
+                "job_id": job_id,
+                "stage": "sampling",
+                "total": stage_total,
+            }
+        )
+        samples = self._sample(
+            command,
+            latent,
+            positive,
+            negative,
+            sampling_callback,
+            model=sampling_model,
+            denoise=float(command.get("denoise", 1.0)),
+        )
+        sampling_seconds = time.perf_counter() - sampling_started
+        emit(
+            {
+                "type": "stage_progress",
+                "job_id": job_id,
+                "stage": "vae",
+                "total": stage_total,
+            }
+        )
+        vae_started = time.perf_counter()
+        images = self.nodes.VAEDecode().decode(self.vae, samples)[0]
+        vae_seconds = time.perf_counter() - vae_started
+        emit(
+            {
+                "type": "stage_progress",
+                "job_id": job_id,
+                "stage": "video_encoding",
+                "total": stage_total,
+            }
+        )
+        output_path = Path(command["output_path"]).resolve()
+        performance = {
+            "load_seconds": round(load_seconds, 3),
+            "sampling_seconds": round(sampling_seconds, 3),
+            "vae_seconds": round(vae_seconds, 3),
+            "generation_seconds": round(sampling_seconds + vae_seconds, 3),
+            "cuda_peak_allocated_gib": round(
+                self.torch.cuda.max_memory_allocated() / 1024**3, 3
+            ),
+            "cuda_peak_reserved_gib": round(
+                self.torch.cuda.max_memory_reserved() / 1024**3, 3
+            ),
+        }
+        metadata = {
+            "schema_version": 1,
+            "generator": {
+                "name": "diffusion-workbench",
+                "version": command.get("workbench_version"),
+            },
+            "parameters": {
+                "mode": command["video_model"],
+                "generation_type": "i2v" if command.get("input_image_path") else "t2v",
+                "prompt": command["prompt"],
+                "negative_prompt": command.get("negative_prompt", ""),
+                "width": int(command["width"]),
+                "height": int(command["height"]),
+                "duration_seconds": int(command["duration_seconds"]),
+                "fps": int(command["fps"]),
+                "length": int(command["length"]),
+                "steps": int(command["steps"]),
+                "seed": int(command["seed"]),
+                "cfg": float(command["cfg"]),
+                "sampler": command["sampler"],
+                "scheduler": command["scheduler"],
+                "denoise": float(command.get("denoise", 1.0)),
+                "shift": float(command.get("shift", 8.0)),
+                "input_image": command.get("input_image_path"),
+            },
+            "resources": {
+                **resource_metadata,
+                "clip_type": "wan",
+            },
+            "runtime": self.runtime_versions,
+            "performance": performance,
+        }
+        self._save_video(images, output_path, int(command["fps"]), metadata, job_id)
+        emit(
+            {
+                "type": "stage_progress",
+                "job_id": job_id,
+                "stage": "video_saved",
+                "total": stage_total,
+            }
+        )
+        return {
+            "type": "result",
+            "job_id": job_id,
+            "model_path": str(model_path),
+            "output_path": str(output_path),
+            "loaded_model": loaded_model,
+            "loaded_clip": loaded_clip,
+            "loaded_vae": loaded_vae,
+            "loaded_resources": self.resource_status(),
+            **performance,
+        }
+
     def _sample(
         self,
         command,
@@ -519,10 +724,13 @@ class ComfyWorker:
         *,
         sampling=None,
         start_step=None,
+        model=None,
+        denoise=1.0,
     ):
         sampling = sampling or command
+        model = model or self.model
         latent_image = self.comfy_sample.fix_empty_latent_channels(
-            self.model,
+            model,
             latent["samples"],
             latent.get("downscale_ratio_spacial"),
             latent.get("downscale_ratio_temporal"),
@@ -530,7 +738,7 @@ class ComfyWorker:
         seed = int(sampling["seed"])
         noise = self.comfy_sample.prepare_noise(latent_image, seed, None)
         sampled = self.comfy_sample.sample(
-            self.model,
+            model,
             noise,
             int(sampling["steps"]),
             float(sampling["cfg"]),
@@ -539,7 +747,8 @@ class ComfyWorker:
             positive,
             negative,
             latent_image,
-            denoise=1.0,
+            noise_mask=latent.get("noise_mask"),
+            denoise=float(denoise),
             start_step=start_step,
             force_full_denoise=start_step is not None,
             callback=callback,
@@ -551,6 +760,42 @@ class ComfyWorker:
         output.pop("downscale_ratio_temporal", None)
         output["samples"] = sampled
         return output
+
+    def _load_input_image(self, path: str | None):
+        if not path:
+            return None
+        image_path = Path(path).resolve()
+        if not image_path.is_file():
+            raise FileNotFoundError(f"找不到输入图片: {image_path}")
+        with self.Image.open(image_path) as source:
+            image = self.ImageOps.exif_transpose(source).convert("RGB")
+        try:
+            pixels = self.numpy.array(image, dtype=self.numpy.float32) / 255.0
+            return self.torch.from_numpy(pixels)[None, ...]
+        finally:
+            image.close()
+
+    def _save_video(
+        self, images, output_path: Path, fps: int, metadata: dict, job_id: str
+    ) -> None:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary_path = output_path.with_name(f".{output_path.name}.{job_id}.tmp.mp4")
+        components = self.Types.VideoComponents(
+            images=images,
+            frame_rate=Fraction(fps),
+            audio=None,
+        )
+        video = self.InputImpl.VideoFromComponents(components, bit_depth=8)
+        try:
+            video.save_to(
+                str(temporary_path),
+                format=self.Types.VideoContainer.MP4,
+                codec=self.Types.VideoCodec.H264,
+                metadata={"diffusion_workbench": metadata},
+            )
+            os.link(temporary_path, output_path)
+        finally:
+            temporary_path.unlink(missing_ok=True)
 
     def _save_image(self, images, output_path: Path, metadata: dict, job_id: str) -> None:
         pixels = images[0].detach().cpu().clamp(0, 1).mul(255).byte().numpy()
@@ -721,6 +966,7 @@ class ComfyWorker:
         self.model = None
         self.clip = None
         self.vae = None
+        self.upscale_model = None
         self.model_path = self.clip_path = self.vae_path = None
         self.checkpoint_path = None
         self.upscale_model_path = None
@@ -730,6 +976,15 @@ class ComfyWorker:
         self.model_management.cleanup_models_gc()
         self.model_management.cleanup_models()
         self.model_management.soft_empty_cache(force=True)
+
+    def resource_status(self) -> dict:
+        return {
+            "workload": self.mode,
+            "model": str(self.model_path) if self.model_path else None,
+            "vae": str(self.vae_path) if self.vae_path else None,
+            "text_encoder": str(self.clip_path) if self.clip_path else None,
+            "clip_type": self.clip_type,
+        }
 
     @staticmethod
     def _validate(command: dict) -> None:
@@ -774,6 +1029,34 @@ class ComfyWorker:
                 raise RuntimeError(
                     f"当前 ComfyUI 不支持放大 scheduler: {upscale['scheduler']}"
                 )
+
+    def _validate_video(self, command: dict) -> None:
+        try:
+            VideoModel(command.get("video_model"))
+        except ValueError:
+            raise ValueError(f"不支持视频模型: {command.get('video_model')}") from None
+        if command.get("clip_type") != "wan":
+            raise ValueError("Wan 视频 clip_type 必须为 wan")
+        width, height = int(command["width"]), int(command["height"])
+        if width <= 0 or height <= 0 or width % 16 or height % 16:
+            raise ValueError("视频宽高必须为正数且是 16 的倍数")
+        duration = int(command["duration_seconds"])
+        fps = int(command["fps"])
+        length = int(command["length"])
+        if duration <= 0 or fps <= 0 or fps > 120:
+            raise ValueError("视频时长必须为正数，帧率必须在 1 到 120 之间")
+        if length != duration * fps + 1:
+            raise ValueError("视频 length 必须等于 duration_seconds * fps + 1")
+        if (length - 1) % 4:
+            raise ValueError("视频总帧数必须满足 length = 4n + 1")
+        if float(command.get("denoise", 1.0)) != 1.0:
+            raise ValueError("Wan TI2V-5B denoise 固定为 1")
+        validate_sampling(
+            int(command["steps"]),
+            float(command["cfg"]),
+            command.get("sampler"),
+            command.get("scheduler"),
+        )
 
 
 def main() -> None:
@@ -832,7 +1115,14 @@ def main() -> None:
             worker.release()
             emit({"type": "stopped"})
             return
-        if command_type != "generate":
+        if command_type == "release":
+            try:
+                worker.release()
+                emit({"type": "released"})
+            except Exception as exc:
+                emit({"type": "error", "job_id": None, "error": f"{type(exc).__name__}: {exc}"})
+            continue
+        if command_type not in {"generate", "generate_video"}:
             emit(
                 {
                     "type": "error",

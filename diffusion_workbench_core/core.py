@@ -3,7 +3,15 @@ from pathlib import Path
 from .catalog import ResourceCatalog
 from .config import WorkbenchConfig, load_config
 from .controller import GenerationController
-from .domain import GenerationSettings, Mode, ModelLoader, ResourceKind, UpscaleMethod
+from .domain import (
+    GenerationSettings,
+    Mode,
+    ModelLoader,
+    ResourceKind,
+    UpscaleMethod,
+    VideoGenerationSettings,
+    VideoModel,
+)
 from .instance_lock import InstanceLock
 from .logging_config import CoreLogManager
 from .persistent_runtime import PersistentComfyRuntime
@@ -60,6 +68,9 @@ class WorkbenchCore:
     def list_upscale_models(self):
         return self.catalog.list_upscale_models()
 
+    def list_video_models(self, video_model: VideoModel):
+        return self.catalog.list_video_models(video_model)
+
     def submit(self, settings: GenerationSettings, count: int):
         resources = self.config.resources.get(settings.mode)
         if resources is None:
@@ -107,6 +118,28 @@ class WorkbenchCore:
                 raise ValueError("放大模型不属于配置的 upscaling.models 目录")
         return self.controller.submit(settings, count)
 
+    def submit_video(self, settings: VideoGenerationSettings, count: int):
+        resources = self.config.video_resources.get(settings.video_model)
+        if resources is None:
+            raise ValueError(f"未配置视频模型: {settings.video_model.value}")
+        if settings.vae.resolve() != resources.vae.resolve():
+            raise ValueError(f"{settings.video_model.value} VAE 固定为 {resources.vae}")
+        if settings.text_encoder.resolve() != resources.text_encoder.resolve():
+            raise ValueError(
+                f"{settings.video_model.value} text encoder 固定为 {resources.text_encoder}"
+            )
+        model_paths = {
+            item.path.resolve() for item in self.list_video_models(settings.video_model)
+        }
+        if settings.model.path.resolve() not in model_paths:
+            raise ValueError(
+                f"model 不属于 {settings.video_model.value} 配置的 diffusion 目录或文件路径"
+            )
+        if settings.input_image is not None and not settings.input_image.is_file():
+            raise FileNotFoundError(f"找不到输入图片: {settings.input_image}")
+        settings.validate()
+        return self.controller.submit_video(settings, count)
+
     def stop(self) -> None:
         self.controller.stop()
 
@@ -118,6 +151,12 @@ class WorkbenchCore:
 
     def list_jobs(self, *, status=None, mode=None, limit=50, cursor=None):
         return self.store.list_jobs(status=status, mode=mode, limit=limit, cursor=cursor)
+
+    def get_video_job(self, job_id: str):
+        return self.store.get_video_job(job_id)
+
+    def release_resources(self) -> None:
+        self.controller.release_resources()
 
     def runtime_status(self) -> dict:
         return self.controller.status()

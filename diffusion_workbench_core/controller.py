@@ -5,7 +5,12 @@ import time
 from collections.abc import Callable
 from datetime import datetime
 
-from .domain import GenerationSettings, JobRecord
+from .domain import (
+    GenerationSettings,
+    JobRecord,
+    VideoGenerationSettings,
+    VideoJobRecord,
+)
 from .logging_config import silent_logger
 from .runtime import GenerationCancelled, GenerationRuntime
 from .storage import JobStore
@@ -13,6 +18,13 @@ from .storage import JobStore
 
 EventSink = Callable[[dict], None]
 RANDOM_SEED_UPPER_BOUND = 2**53
+QueuedJob = JobRecord | VideoJobRecord
+
+
+def _job_mode(job: QueuedJob) -> str:
+    if isinstance(job, VideoJobRecord):
+        return job.video_model.value
+    return job.mode.value
 
 
 class GenerationController:
@@ -31,9 +43,9 @@ class GenerationController:
             lambda: secrets.randbelow(RANDOM_SEED_UPPER_BOUND)
         )
         self._logger = logger or silent_logger()
-        self._queue: queue.Queue[tuple[int, JobRecord] | None] = queue.Queue()
+        self._queue: queue.Queue[tuple[int, QueuedJob] | None] = queue.Queue()
         self._lock = threading.RLock()
-        self._current: JobRecord | None = None
+        self._current: QueuedJob | None = None
         self._current_cancellable = False
         self._cancel_requested: set[str] = set()
         self._generation = 0
@@ -61,6 +73,32 @@ class GenerationController:
             first.mode.value,
             first.width,
             first.height,
+            first.steps,
+            first.model_path.name,
+        )
+        return jobs
+
+    def submit_video(
+        self, settings: VideoGenerationSettings, count: int
+    ) -> list[VideoJobRecord]:
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("core 已关闭")
+            jobs = self.store.create_video_jobs(settings, count)
+            for job in jobs:
+                self._queue.put((self._generation, job))
+        self._emit_queue()
+        first = jobs[0]
+        self._logger.info(
+            "video jobs queued count=%d batch_id=%s model_type=%s generation_type=%s "
+            "size=%dx%d length=%d steps=%d model=%s",
+            len(jobs),
+            first.batch_id,
+            first.video_model.value,
+            first.generation_type,
+            first.width,
+            first.height,
+            first.length,
             first.steps,
             first.model_path.name,
         )
@@ -162,6 +200,13 @@ class GenerationController:
     def wait_idle(self) -> None:
         self._queue.join()
 
+    def release_resources(self) -> None:
+        with self._lock:
+            if self._current is not None or self._queue.qsize():
+                raise RuntimeError("队列运行期间不能释放资源，请先停止任务")
+            self.runtime.release_resources()
+            self._logger.info("worker resources released explicitly")
+
     def shutdown(self) -> None:
         with self._lock:
             if self._closed:
@@ -224,6 +269,9 @@ class GenerationController:
                             "type": "job_finished",
                             "job_id": job.id,
                             "status": "cancelled",
+                            "artifact_type": (
+                                "video" if isinstance(job, VideoJobRecord) else "image"
+                            ),
                             "steps": job.steps,
                         }
                     )
@@ -240,7 +288,7 @@ class GenerationController:
                 self._logger.info(
                     "job started job_id=%s mode=%s seed=%d size=%dx%d steps=%d model=%s",
                     job.id,
-                    running_job.mode.value,
+                    _job_mode(running_job),
                     seed,
                     running_job.width,
                     running_job.height,
@@ -393,9 +441,12 @@ class GenerationController:
                         "status": status,
                         "output_path": str(job.output_path),
                         "upscaled_output_path": (
-                            str(job.upscaled_output_path)
-                            if job.upscaled_output_path is not None
+                            str(getattr(job, "upscaled_output_path"))
+                            if getattr(job, "upscaled_output_path", None) is not None
                             else None
+                        ),
+                        "artifact_type": (
+                            "video" if isinstance(job, VideoJobRecord) else "image"
                         ),
                         "steps": job.steps,
                     }

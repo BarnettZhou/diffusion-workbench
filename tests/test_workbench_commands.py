@@ -6,9 +6,16 @@ from diffusion_workbench.commands import CommandSession
 from diffusion_workbench_core.config import (
     ComfyConfig,
     ModeResources,
+    VideoResources,
     WorkbenchConfig,
 )
-from diffusion_workbench_core.domain import Mode, ModelLoader, ResourceItem, ResourceKind
+from diffusion_workbench_core.domain import (
+    Mode,
+    ModelLoader,
+    ResourceItem,
+    ResourceKind,
+    VideoModel,
+)
 
 
 class FakeCore:
@@ -25,6 +32,11 @@ class FakeCore:
             output_dir=root / "output",
             database=root / "jobs.sqlite3",
             worker_timeout_seconds=300,
+            video_resources={
+                VideoModel.WAN22_TI2V_5B: VideoResources(
+                    (root,), root / "wan-vae.safetensors", root / "umt5.safetensors"
+                )
+            },
         )
         self.items = {
             (Mode.ZIT, ResourceKind.DIFFUSION): [ResourceItem(1, root / "zit.safetensors")],
@@ -37,17 +49,23 @@ class FakeCore:
             (Mode.SDXL, ResourceKind.VAE): [],
         }
         self.submitted = []
+        self.submitted_videos = []
+        self.video_items = [ResourceItem(1, root / "wan5b.safetensors")]
         self.upscale_models = [ResourceItem(1, root / "4x-UltraSharp.pth")]
         self.stopped = False
         self.skipped_job_id = None
         self.skip_error = None
         self.closed = False
+        self.released = False
 
     def list_resources(self, mode, kind):
         return self.items[(mode, kind)]
 
     def list_upscale_models(self):
         return self.upscale_models
+
+    def list_video_models(self, _video_model):
+        return self.video_items
 
     def set_alias(self, mode, kind, path, alias):
         items = self.items[(mode, kind)]
@@ -60,6 +78,14 @@ class FakeCore:
         self.submitted.append((settings, count))
         return [f"job-{index}" for index in range(count)]
 
+    def submit_video(self, settings, count):
+        settings.validate()
+        self.submitted_videos.append((settings, count))
+        return [f"video-job-{index}" for index in range(count)]
+
+    def release_resources(self):
+        self.released = True
+
     def stop(self):
         self.stopped = True
 
@@ -69,13 +95,45 @@ class FakeCore:
         return self.skipped_job_id
 
     def runtime_status(self):
-        return {"queue": 0, "running": None, "gpu": "1.0/16.0 GiB", "worker": "idle"}
+        return {
+            "queue": 0,
+            "running": None,
+            "gpu": "1.0/16.0 GiB",
+            "worker": "idle",
+            "loaded_resources": {},
+        }
 
     def shutdown(self):
         self.closed = True
 
 
 class CommandSessionTests(unittest.TestCase):
+    def test_video_commands_submit_t2v_snapshot_with_computed_length(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            core = FakeCore(Path(temp_dir))
+            session = CommandSession(core)
+
+            session.handle("/video model set 1")
+            session.handle("/video prompt camera pans across a city")
+            session.handle("/video duration 5")
+            session.handle("/video fps 24")
+            response = session.handle("/video start")
+
+            settings, count = core.submitted_videos[0]
+            self.assertEqual(count, 1)
+            self.assertEqual(settings.length, 121)
+            self.assertEqual(settings.generation_type, "t2v")
+            self.assertEqual(settings.sampler, "uni_pc")
+            self.assertIn("视频队列", "\n".join(response.lines))
+
+    def test_resource_release_command_calls_core(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            core = FakeCore(Path(temp_dir))
+            response = CommandSession(core).handle("/resources release")
+
+            self.assertTrue(core.released)
+            self.assertIn("已释放", "\n".join(response.lines))
+
     def test_start_submits_an_immutable_snapshot_and_mode_defaults_to_zit(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             core = FakeCore(Path(temp_dir))

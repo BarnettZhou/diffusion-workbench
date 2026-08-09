@@ -13,6 +13,9 @@ from .domain import (
     ModelLoader,
     ResourceKind,
     UpscaleSettings,
+    VideoGenerationSettings,
+    VideoJobRecord,
+    VideoModel,
 )
 
 
@@ -53,6 +56,12 @@ CREATE TABLE IF NOT EXISTS jobs (
     cfg REAL NOT NULL,
     model_loader TEXT NOT NULL DEFAULT 'components',
     upscale_json TEXT NOT NULL DEFAULT '{}',
+    job_kind TEXT NOT NULL DEFAULT 'image',
+    input_image TEXT,
+    video_duration_seconds INTEGER,
+    fps INTEGER,
+    frame_count INTEGER,
+    denoise REAL NOT NULL DEFAULT 1.0,
     error TEXT,
     UNIQUE (output_date, mode, daily_index)
 );
@@ -86,6 +95,19 @@ class JobStore:
                 connection.execute(
                     "ALTER TABLE jobs ADD COLUMN model_loader TEXT NOT NULL DEFAULT 'components'"
                 )
+            migrations = {
+                "job_kind": "TEXT NOT NULL DEFAULT 'image'",
+                "input_image": "TEXT",
+                "video_duration_seconds": "INTEGER",
+                "fps": "INTEGER",
+                "frame_count": "INTEGER",
+                "denoise": "REAL NOT NULL DEFAULT 1.0",
+            }
+            for name, declaration in migrations.items():
+                if name not in columns:
+                    connection.execute(
+                        f"ALTER TABLE jobs ADD COLUMN {name} {declaration}"
+                    )
 
     def recover_incomplete_jobs(self) -> None:
         with self._lock, self._connection() as connection:
@@ -161,7 +183,9 @@ class JobStore:
                 (output_date, settings.mode.value),
             ).fetchone()
             persisted_index = int(row["value"])
-            file_index = self._highest_output_index(output_date, settings.mode)
+            file_index = self._highest_output_index(
+                output_date, settings.mode.value, ".png"
+            )
             next_index = max(persisted_index, file_index) + 1
             for offset in range(count):
                 daily_index = next_index + offset
@@ -204,27 +228,114 @@ class JobStore:
                         ensure_ascii=False,
                         separators=(",", ":"),
                     ),
+                    "image",
                 )
                 connection.execute(
                     """
                     INSERT INTO jobs(
                         id, batch_id, status, submitted_at, output_path, upscaled_output_path, output_date,
                         daily_index, mode, prompt, negative_prompt, model, vae, text_encoder, sampler,
-                        scheduler, width, height, steps, seed, cfg, model_loader, upscale_json
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        scheduler, width, height, steps, seed, cfg, model_loader, upscale_json,
+                        job_kind
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     values,
                 )
                 jobs.append(self.get_job(job_id, connection=connection))
         return jobs
 
-    def _highest_output_index(self, output_date: str, mode: Mode) -> int:
+    def create_video_jobs(
+        self,
+        settings: VideoGenerationSettings,
+        count: int,
+        submitted_at: datetime | None = None,
+    ) -> list[VideoJobRecord]:
+        settings.validate()
+        if count <= 0:
+            raise ValueError("任务数量必须大于 0")
+        submitted_at = submitted_at or datetime.now().astimezone()
+        output_date = submitted_at.date().isoformat()
+        submitted_iso = submitted_at.isoformat()
+        batch_id = str(uuid.uuid4()) if count > 1 else None
+        jobs = []
+        with self._lock, self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT COALESCE(MAX(daily_index), 0) AS value FROM jobs "
+                "WHERE output_date = ? AND mode = ?",
+                (output_date, settings.video_model.value),
+            ).fetchone()
+            persisted_index = int(row["value"])
+            file_index = self._highest_output_index(
+                output_date, settings.video_model.value, ".mp4"
+            )
+            next_index = max(persisted_index, file_index) + 1
+            for offset in range(count):
+                daily_index = next_index + offset
+                job_id = str(uuid.uuid4())
+                output_path = (
+                    self.output_dir
+                    / output_date
+                    / f"{settings.video_model.value}-{daily_index:05d}.mp4"
+                ).resolve()
+                values = (
+                    job_id,
+                    batch_id,
+                    "queued",
+                    submitted_iso,
+                    str(output_path),
+                    output_date,
+                    daily_index,
+                    settings.video_model.value,
+                    settings.prompt,
+                    settings.negative_prompt,
+                    str(settings.model.path.resolve()),
+                    str(settings.vae.resolve()),
+                    str(settings.text_encoder.resolve()),
+                    settings.sampler,
+                    settings.scheduler,
+                    settings.width,
+                    settings.height,
+                    settings.steps,
+                    settings.seed,
+                    settings.cfg,
+                    "components",
+                    "{}",
+                    "video",
+                    (
+                        str(settings.input_image.resolve())
+                        if settings.input_image is not None
+                        else None
+                    ),
+                    settings.duration_seconds,
+                    settings.fps,
+                    settings.length,
+                    settings.denoise,
+                )
+                connection.execute(
+                    """
+                    INSERT INTO jobs(
+                        id, batch_id, status, submitted_at, output_path, output_date,
+                        daily_index, mode, prompt, negative_prompt, model, vae,
+                        text_encoder, sampler, scheduler, width, height, steps, seed,
+                        cfg, model_loader, upscale_json, job_kind, input_image,
+                        video_duration_seconds, fps, frame_count, denoise
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    values,
+                )
+                jobs.append(self.get_video_job(job_id, connection=connection))
+        return jobs
+
+    def _highest_output_index(
+        self, output_date: str, prefix_value: str, extension: str
+    ) -> int:
         directory = self.output_dir / output_date
         if not directory.is_dir():
             return 0
-        prefix = f"{mode.value}-"
+        prefix = f"{prefix_value}-"
         highest = 0
-        for path in directory.glob(f"{prefix}*.png"):
+        for path in directory.glob(f"{prefix}*{extension}"):
             index_text = path.stem.removeprefix(prefix)
             if index_text.isdigit():
                 highest = max(highest, int(index_text))
@@ -235,11 +346,44 @@ class JobStore:
     ) -> JobRecord:
         if connection is None:
             with self._connection() as owned:
-                row = owned.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
+                row = owned.execute(
+                    "SELECT * FROM jobs WHERE id = ? AND job_kind = 'image'",
+                    (job_id,),
+                ).fetchone()
         else:
-            row = connection.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
+            row = connection.execute(
+                "SELECT * FROM jobs WHERE id = ? AND job_kind = 'image'", (job_id,)
+            ).fetchone()
         if row is None:
             raise KeyError(job_id)
+        return self._job_from_row(row)
+
+    def get_video_job(
+        self, job_id: str, connection: sqlite3.Connection | None = None
+    ) -> VideoJobRecord:
+        if connection is None:
+            with self._connection() as owned:
+                row = owned.execute(
+                    "SELECT * FROM jobs WHERE id = ? AND job_kind = 'video'",
+                    (job_id,),
+                ).fetchone()
+        else:
+            row = connection.execute(
+                "SELECT * FROM jobs WHERE id = ? AND job_kind = 'video'", (job_id,)
+            ).fetchone()
+        if row is None:
+            raise KeyError(job_id)
+        return self._video_job_from_row(row)
+
+    def _get_any_job(self, job_id: str):
+        with self._connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM jobs WHERE id = ?", (job_id,)
+            ).fetchone()
+        if row is None:
+            raise KeyError(job_id)
+        if row["job_kind"] == "video":
+            return self._video_job_from_row(row)
         return self._job_from_row(row)
 
     def list_jobs(
@@ -257,7 +401,7 @@ class JobStore:
         """
         if limit <= 0:
             raise ValueError("limit 必须大于 0")
-        clauses = []
+        clauses = ["job_kind = 'image'"]
         values: list = []
         if status is not None:
             clauses.append("status = ?")
@@ -292,7 +436,7 @@ class JobStore:
             "UPDATE jobs SET status = 'running', seed = ?, started_at = ? WHERE id = ?",
             (seed, started_at.isoformat(), job_id),
         )
-        return self.get_job(job_id)
+        return self._get_any_job(job_id)
 
     def mark_completed(
         self, job_id: str, completed_at: datetime, duration_seconds: float
@@ -364,4 +508,39 @@ class JobStore:
             error=row["error"],
             upscale=UpscaleSettings.from_dict(json.loads(row["upscale_json"])),
             model_loader=ModelLoader(row["model_loader"]),
+        )
+
+    @staticmethod
+    def _video_job_from_row(row: sqlite3.Row) -> VideoJobRecord:
+        parse_time = lambda value: datetime.fromisoformat(value) if value else None
+        return VideoJobRecord(
+            id=row["id"],
+            batch_id=row["batch_id"],
+            status=row["status"],
+            submitted_at=parse_time(row["submitted_at"]),
+            started_at=parse_time(row["started_at"]),
+            completed_at=parse_time(row["completed_at"]),
+            elapsed_seconds=row["duration_seconds"],
+            output_path=Path(row["output_path"]),
+            video_model=VideoModel(row["mode"]),
+            prompt=row["prompt"],
+            negative_prompt=row["negative_prompt"],
+            input_image_path=(
+                Path(row["input_image"]) if row["input_image"] else None
+            ),
+            model_path=Path(row["model"]),
+            vae_path=Path(row["vae"]),
+            text_encoder_path=Path(row["text_encoder"]),
+            sampler=row["sampler"],
+            scheduler=row["scheduler"],
+            width=row["width"],
+            height=row["height"],
+            duration_seconds=row["video_duration_seconds"],
+            fps=row["fps"],
+            length=row["frame_count"],
+            steps=row["steps"],
+            seed=row["seed"],
+            cfg=row["cfg"],
+            denoise=row["denoise"],
+            error=row["error"],
         )

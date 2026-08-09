@@ -25,6 +25,8 @@ class WorkbenchApp(App):
         "vae": "VAE 解码",
         "saving": "保存图片",
         "saved": "图片已保存",
+        "video_encoding": "编码视频",
+        "video_saved": "视频已保存",
         "upscale_preparing": "准备放大",
         "upscale_sampling": "放大重绘采样",
         "upscale_decoding": "解码放大图",
@@ -159,6 +161,8 @@ class WorkbenchApp(App):
                 "vae",
                 "saving",
                 "saved",
+                "video_encoding",
+                "video_saved",
                 "upscale_decoding",
                 "upscale_saving",
                 "upscale_saved",
@@ -187,7 +191,7 @@ class WorkbenchApp(App):
                 self.total_steps = int(event["steps"])
             self.running_job = None
             if status == "completed":
-                self.stage = "saved"
+                self.stage = "video_saved" if event.get("artifact_type") == "video" else "saved"
             elif status == "cancelled":
                 self.stage = "cancelled"
             else:
@@ -206,6 +210,8 @@ class WorkbenchApp(App):
             "vae",
             "saving",
             "saved",
+            "video_encoding",
+            "video_saved",
             "upscale_decoding",
             "upscale_saving",
             "upscale_saved",

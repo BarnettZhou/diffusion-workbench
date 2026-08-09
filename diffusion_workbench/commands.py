@@ -1,4 +1,5 @@
 from dataclasses import dataclass, replace
+from pathlib import Path
 
 from diffusion_workbench_core.domain import (
     GenerationSettings,
@@ -12,6 +13,8 @@ from diffusion_workbench_core.domain import (
     LATENT_UPSCALE_INTERPOLATIONS,
     UpscaleMethod,
     UpscaleSettings,
+    VideoGenerationSettings,
+    VideoModel,
     validate_cfg,
     validate_steps,
 )
@@ -29,7 +32,7 @@ class CommandSession:
         self.mode = (
             Mode.ZIT
             if Mode.ZIT in core.config.resources
-            else next(iter(core.config.resources))
+            else next(iter(core.config.resources), Mode.ZIT)
         )
         self.prompt = ""
         self.negative_prompt = ""
@@ -43,6 +46,24 @@ class CommandSession:
         self.upscale = UpscaleSettings()
         self._models: dict[Mode, ResourceItem | None] = {mode: None for mode in Mode}
         self._vaes: dict[Mode, ResourceItem | None] = {mode: None for mode in Mode}
+        self.video_model = next(
+            iter(core.config.video_resources), VideoModel.WAN22_TI2V_5B
+        )
+        self.video_prompt = ""
+        self.video_negative_prompt = ""
+        self.video_width = 704
+        self.video_height = 960
+        self.video_duration = 5
+        self.video_fps = 24
+        self.video_steps = 20
+        self.video_seed = -1
+        self.video_cfg = 5.0
+        self.video_sampler = "uni_pc"
+        self.video_scheduler = "simple"
+        self.video_image: Path | None = None
+        self._video_models: dict[VideoModel, ResourceItem | None] = {
+            model: None for model in VideoModel
+        }
 
     @property
     def selected_model(self) -> ResourceItem | None:
@@ -65,6 +86,10 @@ class CommandSession:
         try:
             if command == "mode":
                 return self._mode(args)
+            if command == "video":
+                return self._video(args, command_line)
+            if command == "resources":
+                return self._resources(args)
             if command == "model":
                 return self._resource(ResourceKind.DIFFUSION, args)
             if command == "vae":
@@ -107,10 +132,11 @@ class CommandSession:
                 return CommandResponse((
                     "/mode  /model list|set|set-alias  /vae list|set|set-alias",
                     "/prompt  /negative  /size  /steps  /seed  /cfg  /sampler  /scheduler",
+                    "/video ...  /resources status|release",
                     "/upscale ...  /start  /status  /skip  /stop  /exit",
                 ))
             return CommandResponse((f"错误: 未知命令 /{command}",))
-        except (ValueError, IndexError, RuntimeError) as exc:
+        except (OSError, ValueError, IndexError, RuntimeError) as exc:
             return CommandResponse((f"错误: {exc}",))
 
     def _mode(self, args: list[str]) -> CommandResponse:
@@ -125,6 +151,165 @@ class CommandSession:
             modes = tuple(self.core.config.resources)
             self.mode = modes[(modes.index(self.mode) + 1) % len(modes)]
         return CommandResponse((f"mode 已切换为 {self.mode.value}",))
+
+    def _video(self, args: list[str], command_line: str) -> CommandResponse:
+        if not args:
+            raise ValueError(
+                "用法: /video type|model|prompt|negative|size|duration|fps|steps|"
+                "seed|cfg|sampler|scheduler|image|status|start"
+            )
+        action = args[0].lower()
+        rest = args[1:]
+        if action == "type":
+            if rest == ["list"]:
+                lines = tuple(
+                    f"[{model.value}]" for model in self.core.config.video_resources
+                )
+                return CommandResponse(lines or ("没有配置视频模型",))
+            if not rest:
+                return CommandResponse((f"video type: {self.video_model.value}",))
+            if len(rest) != 2 or rest[0].lower() != "set":
+                raise ValueError("用法: /video type list | set <wan2.2-ti2v-5b>")
+            model = VideoModel(rest[1].lower())
+            if model not in self.core.config.video_resources:
+                raise ValueError(f"未配置视频模型: {model.value}")
+            self.video_model = model
+            self._video_models[model] = None
+            return CommandResponse((f"video type 已设置为 {model.value}",))
+        if action == "model":
+            items = self.core.list_video_models(self.video_model)
+            if rest == ["list"]:
+                lines = tuple(
+                    f"[{item.index}] {item.display_name}" for item in items
+                )
+                return CommandResponse(lines or ("没有可用视频模型",))
+            if len(rest) == 2 and rest[0].lower() == "set":
+                item = self._item_at(items, rest[1])
+                self._video_models[self.video_model] = item
+                return CommandResponse((f"video model 已设置为 {item.display_name}",))
+            raise ValueError("用法: /video model list | set <index>")
+        if action in {"prompt", "negative"}:
+            value = command_line.split(None, 2)[2] if len(command_line.split(None, 2)) > 2 else ""
+            if action == "prompt":
+                self.video_prompt = value
+            else:
+                self.video_negative_prompt = value
+            return CommandResponse((f"video {action} 已更新",))
+        if action == "size":
+            self._set_video_size(rest)
+            return CommandResponse((f"video size 已设置为 {self.video_width}*{self.video_height}",))
+        if action in {"duration", "fps", "steps", "seed", "cfg"}:
+            if len(rest) != 1:
+                raise ValueError(f"用法: /video {action} <value>")
+            value = float(rest[0]) if action == "cfg" else int(rest[0])
+            if action == "duration" and value <= 0:
+                raise ValueError("视频时长必须大于 0")
+            if action == "fps" and not 1 <= value <= 120:
+                raise ValueError("帧率必须在 1 到 120 之间")
+            if action == "steps":
+                validate_steps(value)
+            if action == "seed" and value < -1:
+                raise ValueError("seed 必须为 -1 或非负整数")
+            if action == "cfg":
+                validate_cfg(value)
+            setattr(self, f"video_{action}", value)
+            displayed = f"{value:g}" if isinstance(value, float) else str(value)
+            return CommandResponse((f"video {action} 已设置为 {displayed}",))
+        if action in {"sampler", "scheduler"}:
+            choices = SAMPLERS if action == "sampler" else SCHEDULERS
+            if rest == ["list"]:
+                return CommandResponse(tuple(f"[{index}] {name}" for index, name in enumerate(choices, 1)))
+            if len(rest) != 2 or rest[0].lower() != "set":
+                raise ValueError(f"用法: /video {action} list | set <name|index>")
+            selected = self._choice_at(action, choices, rest[1])
+            setattr(self, f"video_{action}", selected)
+            return CommandResponse((f"video {action} 已设置为 {selected}",))
+        if action == "image":
+            if rest == ["clear"]:
+                self.video_image = None
+                return CommandResponse(("video image 已清除（T2V）",))
+            if len(rest) >= 2 and rest[0].lower() == "set":
+                raw = command_line.split(None, 2)[2].strip()
+                if raw.lower().startswith("set "):
+                    raw = raw[4:].strip()
+                if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in "\"'":
+                    raw = raw[1:-1]
+                path = Path(raw).expanduser().resolve()
+                if not path.is_file():
+                    raise FileNotFoundError(f"找不到输入图片: {path}")
+                self.video_image = path
+                return CommandResponse((f"video image 已设置为 {path}",))
+            raise ValueError("用法: /video image set <path> | clear")
+        if action == "status":
+            model = self._video_models[self.video_model]
+            image = str(self.video_image) if self.video_image else "无（T2V）"
+            return CommandResponse((
+                f"video type: {self.video_model.value} ({'I2V' if self.video_image else 'T2V'})",
+                f"model: {model.display_name if model else '未选择'}",
+                f"prompt: {self.video_prompt or '未设置'}",
+                f"size: {self.video_width}*{self.video_height}  "
+                f"duration: {self.video_duration}s  fps: {self.video_fps}  "
+                f"length: {self.video_duration * self.video_fps + 1}",
+                f"steps: {self.video_steps}  seed: {self.video_seed}  cfg: {self.video_cfg:g}",
+                f"sampler: {self.video_sampler}  scheduler: {self.video_scheduler}  denoise: 1",
+                f"image: {image}",
+            ))
+        if action == "start":
+            return self._start_video(rest)
+        raise ValueError(f"未知视频命令: {action}")
+
+    def _set_video_size(self, args: list[str]) -> None:
+        if len(args) != 1 or "*" not in args[0]:
+            raise ValueError("用法: /video size <width>*<height>")
+        width, height = (int(value) for value in args[0].split("*", 1))
+        if width <= 0 or height <= 0 or width % 16 or height % 16:
+            raise ValueError("视频宽高必须为正数且是 16 的倍数")
+        self.video_width, self.video_height = width, height
+
+    def _start_video(self, args: list[str]) -> CommandResponse:
+        if len(args) > 1:
+            raise ValueError("用法: /video start [num]")
+        model = self._video_models[self.video_model]
+        if model is None:
+            raise ValueError("请先使用 /video model set <index> 选择模型")
+        resources = self.core.config.video_resources[self.video_model]
+        settings = VideoGenerationSettings(
+            video_model=self.video_model,
+            model=model,
+            vae=resources.vae,
+            text_encoder=resources.text_encoder,
+            prompt=self.video_prompt,
+            negative_prompt=self.video_negative_prompt,
+            input_image=self.video_image,
+            width=self.video_width,
+            height=self.video_height,
+            duration_seconds=self.video_duration,
+            fps=self.video_fps,
+            steps=self.video_steps,
+            seed=self.video_seed,
+            cfg=self.video_cfg,
+            sampler=self.video_sampler,
+            scheduler=self.video_scheduler,
+        )
+        jobs = self.core.submit_video(settings, int(args[0]) if args else 1)
+        return CommandResponse((f"已加入视频队列: {len(jobs)} 个任务",))
+
+    def _resources(self, args: list[str]) -> CommandResponse:
+        if args == ["status"]:
+            status = self.core.runtime_status()
+            loaded = status.get("loaded_resources") or {}
+            return CommandResponse((
+                f"worker: {status.get('worker', 'stopped')}  workload: {loaded.get('workload') or '无'}",
+                f"model: {loaded.get('model') or '无'}",
+                f"vae: {loaded.get('vae') or '无'}",
+                f"text encoder: {loaded.get('text_encoder') or '无'}  "
+                f"clip_type: {loaded.get('clip_type') or '无'}",
+                f"gpu: {status.get('gpu', '不可用')}",
+            ))
+        if args == ["release"]:
+            self.core.release_resources()
+            return CommandResponse(("已释放 Worker 模型和显存资源",))
+        raise ValueError("用法: /resources status | release")
 
     def _resource(self, kind: ResourceKind, args: list[str]) -> CommandResponse:
         label = "model" if kind == ResourceKind.DIFFUSION else "vae"
@@ -431,7 +616,14 @@ class CommandSession:
 
     def _status(self) -> CommandResponse:
         runtime = self.core.runtime_status()
-        resources = self.core.config.resources[self.mode]
+        resources = self.core.config.resources.get(self.mode)
+        if resources is None:
+            loaded = runtime.get("loaded_resources") or {}
+            return CommandResponse((
+                "图片模式未配置",
+                f"视频资源 workload: {loaded.get('workload') or '无'}",
+                f"gpu: {runtime.get('gpu', '不可用')}",
+            ))
         prompt = self.prompt if len(self.prompt) <= 12 else self.prompt[:12] + "..."
         negative = (
             self.negative_prompt

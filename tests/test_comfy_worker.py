@@ -31,6 +31,27 @@ class FakeTorch:
 
 
 class ComfyWorkerTests(unittest.TestCase):
+    def test_wan_video_command_validates_length_and_fixed_denoise(self):
+        command = {
+            "video_model": "wan2.2-ti2v-5b",
+            "clip_type": "wan",
+            "width": 704,
+            "height": 960,
+            "duration_seconds": 5,
+            "fps": 24,
+            "length": 121,
+            "steps": 20,
+            "cfg": 5,
+            "sampler": "uni_pc",
+            "scheduler": "simple",
+            "denoise": 1,
+        }
+
+        ComfyWorker._validate_video(None, command)
+        command["length"] = 120
+        with self.assertRaisesRegex(ValueError, "length"):
+            ComfyWorker._validate_video(None, command)
+
     def test_latent_upscale_inherits_sampling_values_and_reports_actual_steps(self):
         resolved = resolve_upscale_settings(
             {

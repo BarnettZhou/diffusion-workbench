@@ -72,6 +72,31 @@ encoder 都在 `configs/workbench.yaml` 中设置；SDXL 则配置完整 checkpo
 SDXL 的 VAE 内嵌在 checkpoint 中，只需选择模型。
 `/start` 省略 `num` 时默认提交 1 个任务。
 
+## Wan 视频
+
+视频功能与图片参数独立，当前支持 `wan2.2-ti2v-5b`：
+
+```text
+/video type list|set <wan2.2-ti2v-5b>
+/video model list|set <index>
+/video prompt <prompt>
+/video negative <negative-prompt>
+/video size <width>*<height>
+/video duration <seconds>
+/video fps <fps>
+/video steps <1-100>
+/video seed <-1|非负整数>
+/video cfg <positive-number>
+/video sampler list|set <name|index>
+/video scheduler list|set <name|index>
+/video image set <path>|clear
+/video status
+/video start [num]
+/resources status|release
+```
+
+默认视频为 704x960、5 秒、24 FPS（121 帧）、20 步、CFG 5、`uni_pc` + `simple`，denoise 固定为 1。设置图片是 I2V，不设置图片是 T2V。视频写入 `output/YYYY-MM-DD/wan2.2-ti2v-5b-NNNNN.mp4`。`/resources release` 只允许在队列空闲时执行。
+
 ## 图片放大
 
 放大默认关闭。`/upscale on` 开启后，每个任务先保存原图，再保存文件名带

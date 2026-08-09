@@ -7,6 +7,8 @@ from .domain import (
     ResourceKind,
     UpscaleMethod,
     UpscaleSettings,
+    VideoGenerationSettings,
+    VideoModel,
 )
 from .core import WorkbenchCore
 from .png_metadata import read_generation_metadata
@@ -18,6 +20,8 @@ __all__ = [
     "ResourceKind",
     "UpscaleMethod",
     "UpscaleSettings",
+    "VideoGenerationSettings",
+    "VideoModel",
     "WorkbenchCore",
     "read_generation_metadata",
 ]

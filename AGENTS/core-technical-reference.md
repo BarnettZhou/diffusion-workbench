@@ -26,6 +26,8 @@ FastAPI 服务共同复用的核心层，不包含 HTTP、WebSocket 或界面状
 - SQLite 任务记录、资源别名和原子 PNG 输出；
 - 队列、执行阶段、采样速度/ETA、可选 latent 预览、错误和完成事件；
 - 带版本化生成参数 iTXt 元数据的 PNG 输出。
+- Wan 2.2 TI2V-5B 的 T2V/I2V 视频任务，输出 H.264 MP4；视频与图片任务共享串行队列，
+  但使用独立的 `VideoGenerationSettings` / `VideoJobRecord`。
 - 独立的 UTF-8 轮转运行日志和 Worker stdout/stderr 持久化。
 
 核心不负责：
@@ -120,10 +122,14 @@ finally:
 | `list_resources(mode, kind)` | `list[ResourceItem]` | 读取文件系统和 SQLite 别名 |
 | `set_alias(mode, kind, path, alias)` | 无 | 同 mode/kind 内 alias 唯一 |
 | `submit(settings, count)` | `list[JobRecord]` | 只入队，不等待图片完成 |
+| `list_video_models(video_model)` | `list[ResourceItem]` | 扫描已配置视频类型的 diffusion 目录 |
+| `submit_video(settings, count)` | `list[VideoJobRecord]` | 只入队；VAE/text encoder 固定由配置校验 |
 | `runtime_status()` | `dict` | GPU 数据最多约 2 秒陈旧 |
+| `release_resources()` | 无 | 仅队列空闲时调用，主动卸载 Worker 模型并清空显存 |
 | `set_event_sink(callback)` | 无 | 只有一个 sink，后设置会覆盖前一个 |
 | `set_preview_enabled(enabled)` | 无 | 默认关闭；FastAPI 启用后发送 base64 JPEG 预览事件 |
 | `get_job(job_id)` | `JobRecord` | 读取任务审计记录，不检查图片是否存在 |
+| `get_video_job(job_id)` | `VideoJobRecord` | 读取视频任务审计记录，不检查 MP4 是否存在 |
 | `list_jobs(...)` | `(list[JobRecord], cursor)` | 按提交时间/id 做稳定 keyset 分页 |
 | `skip_current()` | `str | None` | 接受时返回 job id；无可跳过任务时返回 `None`；失败时抛 `RuntimeError` |
 | `stop()` | 无 | 取消当前任务并清空全部等待任务 |
@@ -181,6 +187,10 @@ worker_timeout_seconds: 300
 `worker_timeout_seconds` 同时限定单任务等待时间；Worker 启动等待时间为该值与 60 秒
 中的较小值。
 
+视频资源使用独立的 `video_resources` 配置段：`diffusion` 为目录列表，`vae` 与
+`text_encoder` 为固定文件，`clip_type` 必须是 `wan`；视频任务使用
+`video_worker_timeout_seconds`。
+
 `resources` 可以只包含实际启用的 mode；未配置的 mode 不会出现在客户端能力列表中，
 旧配置无需为了新增 mode 立即迁移。
 
@@ -197,6 +207,10 @@ Mode.SDXL    # "sdxl"
 ResourceKind.DIFFUSION  # "diffusion"
 ResourceKind.VAE        # "vae"
 ```
+
+视频类型由 `VideoModel` 表示，当前只有 `VideoModel.WAN22_TI2V_5B`（值为
+`wan2.2-ti2v-5b`）。`VideoGenerationSettings` 与 `VideoJobRecord` 是独立于图片 DTO
+的参数和持久化对象；`input_image`/`input_image_path` 存在时为 I2V，否则为 T2V。
 
 ### 5.2 `ResourceItem`
 

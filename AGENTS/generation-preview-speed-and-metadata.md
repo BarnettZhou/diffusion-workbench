@@ -42,7 +42,7 @@ IPC 的开销。开关在任务开始时写入 Worker 命令；切换只影响�
 | `steps_per_second` | 平均采样速度；无有效耗时时可能为 `null` |
 | `eta_seconds` | 按当前平均速度估算的剩余采样时间 |
 
-这些指标只描述 sampling，不包含首次模型加载、提示词编码、VAE 解码、PNG 保存和首次
+这些指标只描述 sampling，不包含首次模型加载、提示词编码、VAE 解码、PNG/MP4 保存和首次
 资源 SHA-256 计算。启用预览后，已经发生的预览编码/传输开销会体现在后续步骤的速度中。
 
 ## 3. 预览事件
@@ -136,7 +136,20 @@ schema v1-v3 的旧 PNG 仍可读取；v1 没有 `negative_prompt`/`negative_con
 旧 PNG 不会自动补写元数据。图片编辑器、聊天软件或图床可能删除 PNG 文本块，SQLite
 仍是本机历史记录的最终事实来源。
 
-## 5. 读取与恢复
+## 5. Wan 视频任务
+
+Wan 2.2 TI2V-5B 任务不发送 latent 图片预览。Worker 会发送 `video_encoding` 与
+`video_saved` 阶段事件，完成事件 `job_finished` 带 `artifact_type: "video"`，输出为
+H.264 MP4，路径格式为 `output/YYYY-MM-DD/wan2.2-ti2v-5b-NNNNN.mp4`。MP4 使用 ComfyUI
+Video API 写入 `diffusion_workbench` 容器 metadata，值为 JSON，包含模型、提示词、尺寸、
+时长、帧率、length、采样参数、输入图片路径、资源指纹、运行时和性能字段。输入图片的
+服务端路径不能由 HTTP 客户端直接指定，应由受控资产引用解析。
+
+`runtime_status()` 的 `loaded_resources` 显示当前 workload、model、vae、text_encoder 和
+clip_type；`release_resources()` 在无运行任务且队列为空时卸载 Worker 资源。图片与视频
+workload 切换时 Worker 会自动执行同样的释放。
+
+## 6. 读取与恢复
 
 代码读取：
 

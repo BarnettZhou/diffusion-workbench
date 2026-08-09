@@ -3,7 +3,7 @@ from pathlib import Path
 
 import yaml
 
-from .domain import Mode, ModelLoader
+from .domain import Mode, ModelLoader, VideoModel
 
 
 @dataclass(frozen=True)
@@ -27,6 +27,14 @@ class UpscalingConfig:
 
 
 @dataclass(frozen=True)
+class VideoResources:
+    diffusion: tuple[Path, ...]
+    vae: Path
+    text_encoder: Path
+    clip_type: str = "wan"
+
+
+@dataclass(frozen=True)
 class WorkbenchConfig:
     path: Path
     comfyui: ComfyConfig
@@ -35,6 +43,8 @@ class WorkbenchConfig:
     database: Path
     worker_timeout_seconds: float
     upscaling: UpscalingConfig = field(default_factory=UpscalingConfig)
+    video_resources: dict[VideoModel, VideoResources] = field(default_factory=dict)
+    video_worker_timeout_seconds: float = 1800
 
 
 def _resolve(value: str, base: Path) -> Path:
@@ -51,7 +61,7 @@ def load_config(path: str | Path) -> WorkbenchConfig:
     if base.name == "configs":
         base = base.parent
     comfy_raw = raw["comfyui"]
-    resources_raw = raw["resources"]
+    resources_raw = raw.get("resources") or {}
     resources = {}
     for mode in Mode:
         if mode.value not in resources_raw:
@@ -73,11 +83,31 @@ def load_config(path: str | Path) -> WorkbenchConfig:
             clip_type=clip_type,
             model_loader=model_loader,
         )
-    if not resources:
-        raise ValueError("resources 至少必须配置一种 mode")
     timeout = float(raw.get("worker_timeout_seconds", 300))
     if timeout <= 0:
         raise ValueError("worker_timeout_seconds 必须大于 0")
+    video_timeout = float(raw.get("video_worker_timeout_seconds", 1800))
+    if video_timeout <= 0:
+        raise ValueError("video_worker_timeout_seconds 必须大于 0")
+    video_resources_raw = raw.get("video_resources") or {}
+    if not isinstance(video_resources_raw, dict):
+        raise ValueError("video_resources 必须是映射")
+    video_resources = {}
+    for video_model in VideoModel:
+        if video_model.value not in video_resources_raw:
+            continue
+        item = video_resources_raw[video_model.value]
+        clip_type = str(item.get("clip_type", "wan"))
+        if clip_type != "wan":
+            raise ValueError(f"{video_model.value} clip_type 固定为 wan")
+        video_resources[video_model] = VideoResources(
+            diffusion=tuple(_resolve(value, base) for value in item["diffusion"]),
+            vae=_resolve(item["vae"], base),
+            text_encoder=_resolve(item["text_encoder"], base),
+            clip_type=clip_type,
+        )
+    if not resources and not video_resources:
+        raise ValueError("resources 或 video_resources 至少必须配置一种生成模式")
     upscaling_raw = raw.get("upscaling") or {}
     if not isinstance(upscaling_raw, dict):
         raise ValueError("upscaling 必须是映射")
@@ -97,4 +127,6 @@ def load_config(path: str | Path) -> WorkbenchConfig:
         upscaling=UpscalingConfig(
             models=tuple(_resolve(value, base) for value in models_raw)
         ),
+        video_resources=video_resources,
+        video_worker_timeout_seconds=video_timeout,
     )

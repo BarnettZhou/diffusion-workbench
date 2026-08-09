@@ -106,6 +106,10 @@ class Mode(StrEnum):
     SDXL = "sdxl"
 
 
+class VideoModel(StrEnum):
+    WAN22_TI2V_5B = "wan2.2-ti2v-5b"
+
+
 class ModelLoader(StrEnum):
     COMPONENTS = "components"
     CHECKPOINT = "checkpoint"
@@ -294,3 +298,90 @@ class JobRecord:
     upscaled_output_path: Path | None = None
     upscale: UpscaleSettings = field(default_factory=UpscaleSettings)
     model_loader: ModelLoader = ModelLoader.COMPONENTS
+
+
+@dataclass(frozen=True)
+class VideoGenerationSettings:
+    video_model: VideoModel
+    model: ResourceItem
+    vae: Path
+    text_encoder: Path
+    prompt: str
+    negative_prompt: str = ""
+    input_image: Path | None = None
+    width: int = 704
+    height: int = 960
+    duration_seconds: int = 5
+    fps: int = 24
+    steps: int = 20
+    seed: int = -1
+    sampler: str = "uni_pc"
+    scheduler: str = "simple"
+    cfg: float = 5.0
+    denoise: float = 1.0
+
+    @property
+    def length(self) -> int:
+        return self.duration_seconds * self.fps + 1
+
+    @property
+    def generation_type(self) -> str:
+        return "i2v" if self.input_image is not None else "t2v"
+
+    def validate(self) -> None:
+        if not self.prompt.strip():
+            raise ValueError("prompt 不能为空")
+        if not isinstance(self.duration_seconds, int) or isinstance(
+            self.duration_seconds, bool
+        ):
+            raise ValueError("视频时长必须是整数秒")
+        if not isinstance(self.fps, int) or isinstance(self.fps, bool):
+            raise ValueError("帧率必须是整数")
+        if self.width <= 0 or self.height <= 0 or self.width % 16 or self.height % 16:
+            raise ValueError("视频宽高必须为正数且是 16 的倍数")
+        if self.duration_seconds <= 0:
+            raise ValueError("视频时长必须是正整数")
+        if not 1 <= self.fps <= 120:
+            raise ValueError("帧率必须在 1 到 120 之间")
+        if (self.length - 1) % 4:
+            raise ValueError("视频总帧数必须满足 length = 4n + 1")
+        if self.seed < -1:
+            raise ValueError("seed 必须为 -1 或非负整数")
+        if self.denoise != 1.0:
+            raise ValueError("Wan TI2V-5B denoise 固定为 1")
+        validate_sampling(self.steps, self.cfg, self.sampler, self.scheduler)
+
+
+@dataclass(frozen=True)
+class VideoJobRecord:
+    id: str
+    batch_id: str | None
+    status: str
+    submitted_at: datetime
+    output_path: Path
+    video_model: VideoModel
+    prompt: str
+    model_path: Path
+    vae_path: Path
+    text_encoder_path: Path
+    sampler: str
+    scheduler: str
+    width: int
+    height: int
+    duration_seconds: int
+    fps: int
+    length: int
+    steps: int
+    seed: int
+    cfg: float
+    denoise: float = 1.0
+    negative_prompt: str = ""
+    input_image_path: Path | None = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    elapsed_seconds: float | None = None
+    error: str | None = None
+
+    @property
+    def generation_type(self) -> str:
+        return "i2v" if self.input_image_path is not None else "t2v"

@@ -1,7 +1,7 @@
 from collections.abc import Callable
 from typing import Protocol
 
-from .domain import JobRecord
+from .domain import JobRecord, VideoJobRecord
 
 
 class GenerationCancelled(RuntimeError):
@@ -11,13 +11,15 @@ class GenerationCancelled(RuntimeError):
 class GenerationRuntime(Protocol):
     def generate(
         self,
-        job: JobRecord,
+        job: JobRecord | VideoJobRecord,
         progress: Callable[[int, int, dict], None],
         stage: Callable[[str, int | None], None],
         preview: Callable[[dict], None] | None = None,
     ) -> dict: ...
 
     def cancel(self) -> None: ...
+
+    def release_resources(self) -> None: ...
 
     def close(self) -> None: ...
 

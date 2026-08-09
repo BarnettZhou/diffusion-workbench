@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from .config import WorkbenchConfig
-from .domain import Mode, ResourceItem, ResourceKind
+from .domain import Mode, ResourceItem, ResourceKind, VideoModel
 from .storage import JobStore
 
 
@@ -48,6 +48,27 @@ class ResourceCatalog:
             for pattern in extensions:
                 for path in directory.glob(pattern):
                     paths[path.resolve()] = path.resolve()
+        ordered = sorted(paths.values(), key=lambda path: path.name.casefold())
+        return [
+            ResourceItem(index=index, path=path)
+            for index, path in enumerate(ordered, start=1)
+        ]
+
+    def list_video_models(self, video_model: VideoModel) -> list[ResourceItem]:
+        resources = self.config.video_resources.get(video_model)
+        if resources is None:
+            return []
+        paths: dict[Path, Path] = {}
+        for configured_path in resources.diffusion:
+            if configured_path.is_file() and configured_path.suffix.casefold() in {
+                ".safetensors",
+                ".sft",
+            }:
+                paths[configured_path.resolve()] = configured_path.resolve()
+            elif configured_path.is_dir():
+                for pattern in ("*.safetensors", "*.sft"):
+                    for path in configured_path.glob(pattern):
+                        paths[path.resolve()] = path.resolve()
         ordered = sorted(paths.values(), key=lambda path: path.name.casefold())
         return [
             ResourceItem(index=index, path=path)
