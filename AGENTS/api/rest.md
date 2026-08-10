@@ -22,12 +22,28 @@ traceback;客户端也不允许提交任何服务器文件路径。
   "queue": 1,
   "running": "job-uuid-or-null",
   "worker": "ready",
-  "gpu": "10.42/15.92 GiB"
+  "gpu": "10.42/15.92 GiB",
+  "memory": {"used_gib": 12.3, "total_gib": 31.8, "percent": 38.7},
+  "gpu_memory_used_gib": 10.42,
+  "gpu_memory_total_gib": 15.92,
+  "gpu_memory_percent": 65.5,
+  "gpu_utilization_percent": 92.0,
+  "loaded_resources": {
+    "workload": "wan2.2-ti2v-5b",
+    "model": "wan2.2-ti2v-5b.safetensors",
+    "vae": "wan2.2_vae.safetensors",
+    "text_encoder": "umt5_xxl.safetensors",
+    "clip_type": "wan"
+  }
 }
 ```
 
-`worker` 为 `ready` 或 `stopped`(尚未执行首个任务或 stop 之后)。`gpu` 最多约 2 秒
-陈旧，也可能为 `查询中` / `不可用`。
+`worker` 为 `ready` 或 `stopped`(尚未执行首个任务或 stop 之后)。资源探测最多约 2 秒
+陈旧，也可能为 `查询中` / `不可用`；数值字段在不可用时为 `null`。`memory` 是系统
+RAM，`gpu_memory_*` 是显存容量，`gpu_utilization_percent` 是 GPU 核心利用率。
+`loaded_resources` 是 Worker 当前加载的资源
+(workload/model/vae/text_encoder/clip_type),路径字段只公开文件名,未加载任何
+资源时为 `null`。
 
 ## 资源
 
@@ -293,6 +309,16 @@ index 同样按文件名排序，目录变化后会重排，不是永久 ID。
 { "accepted": false, "skipped_job_id": null, "reason": "no-cancellable-job" }
 ```
 
+### `POST /api/v1/control/release`
+
+**释放资源**:让 Worker 卸载已加载的模型/VAE/text encoder 等资源(Worker 进程保留,
+下一个任务按需重新加载)。只有在没有运行任务且队列为空时才允许,否则 409;
+释放超时 504。前端资源面板轮询 `/status` 的 `loaded_resources` 展示当前占用。
+
+```json
+{ "released": true }
+```
+
 Worker 取消失败返回 500。
 
 ## 图片
@@ -380,7 +406,7 @@ SDXL 的 `vae_name` 为 `null`，因为 VAE 来自同一 checkpoint。
 ## 相册
 
 相册**不依赖 jobs 表**（图片可能被删除/移动），每次请求重新扫描目录下的
-`*.png` 并按修改时间倒序返回；PNG 尺寸解析结果按 `(mtime_ns, size)` 做内存缓存，
+`*.png` 与 `*.mp4` 并按修改时间倒序返回；PNG 尺寸解析结果按 `(mtime_ns, size)` 做内存缓存（mp4 不解析尺寸，宽高记 0),
 文件变化或消失自动失效。
 
 相册支持多目录：内置目录 `output`（配置中的输出目录，不可改名/删除）加用户
@@ -414,7 +440,8 @@ SDXL 的 `vae_name` 为 `null`，因为 VAE 来自同一 checkpoint。
 ### `GET /api/v1/album`
 
 查询参数:`limit`(1–200，默认 60)、`cursor`（上一页的 `next_cursor`)、
-`dir`（目录 id，默认 `output`)。
+`dir`（目录 id，默认 `output`)、`subdir`（可选，只看某个一级子目录；子目录内
+为深度查找，含更深层级，值须为单级目录名，否则 422）。
 
 ```json
 {
@@ -424,6 +451,7 @@ SDXL 的 `vae_name` 为 `null`，因为 VAE 来自同一 checkpoint。
       "name": "zit-00005.png",
       "mtime_ns": 1780000000000000000,
       "size_bytes": 845312,
+      "kind": "image",
       "width": 576,
       "height": 576
     }
@@ -432,12 +460,30 @@ SDXL 的 `vae_name` 为 `null`，因为 VAE 来自同一 checkpoint。
 }
 ```
 
-`id` 是相对于所在目录的 POSIX 相对路径，URL 中使用前需编码。422 表示 cursor
+`id` 是相对于所在目录的 POSIX 相对路径，URL 中使用前需编码;`kind` 为 `image` 或
+`video`(mp4 的 `width`/`height` 为 0)。422 表示 cursor
 无效；`dir` 不存在返回 404，目录不可访问返回 410。
+
+### `GET /api/v1/album/subdirs`
+
+列出 `dir`（目录 id，默认 `output`）下的第一级子目录名（通常按日期分目录），
+按名称倒序（新的在前），不再往下深入。配合 `/album` 的 `subdir` 参数使用。
+
+```json
+{"subdirs": ["2026-07-28", "2026-07-27"]}
+```
 
 ### `GET /api/v1/album/image/{path}`
 
-读取图片（`image/png`)，查询参数 `dir` 同上。路径越出目录返回 400，文件不存在返回 404。
+读取图片或视频（按后缀返回 `image/png` 或 `video/mp4`)，查询参数 `dir` 同上。路径越出目录返回 400，文件不存在返回 404。
+
+### `GET /api/v1/album/image/{path}/poster`
+
+视频封面：ffmpeg 抽取首帧的 JPEG，查询参数 `dir` 同上。封面按
+（目录, 路径, mtime, 大小）缓存到 cache 目录的 `album_posters/`，文件被替换后
+自动重新生成。iOS(WebKit) 不会为 `preload="metadata"` 的 `<video>` 渲染首帧，
+相册网格的视频封面必须用本端点的静态图。仅支持 mp4，其他文件返回 404；
+服务器没有 ffmpeg 返回 503。
 
 ### `DELETE /api/v1/album/image/{path}`
 
@@ -446,7 +492,41 @@ SDXL 的 `vae_name` 为 `null`，因为 VAE 来自同一 checkpoint。
 
 ### `GET /api/v1/album/image/{path}/metadata`
 
-同 `/images/{job_id}/metadata`，返回脱敏的 PNG 内嵌生成参数，查询参数 `dir` 同上。
+PNG 同 `/images/{job_id}/metadata`，返回脱敏的内嵌生成参数，查询参数 `dir` 同上。
+若 PNG 不含本应用的 iTXt 块，回退解析 ComfyUI 原生 `prompt` tEXt 块（API prompt
+节点图），返回 `source: "comfyui"` 的脱敏参数：`model_name`/`vae_name`/
+`text_encoder_name` 为对应加载器的文件名（仅 basename），`mode` 按 unet 文件名
+推断（krea/zib/sdxl/zit，匹配不到为 null），采样器/调度器/步数/cfg/seed 取文档序
+第一个 KSampler 或 KSamplerAdvanced，正/负提示词取其 positive/negative 链接的
+CLIPTextEncode 文本（经 ConditioningZeroOut 透传一层）；取不到的字段为 null。
+两者都没有时返回 404。
+mp4 没有内嵌元数据,改为按输出文件(日期目录名 + 文件名)反查 jobs 表的视频
+任务记录,返回脱敏的视频生成参数:
+
+```json
+{
+  "video_model": "wan2.2-ti2v-5b",
+  "generation_type": "t2v",
+  "prompt": "...",
+  "negative_prompt": "",
+  "width": 704,
+  "height": 960,
+  "duration_seconds": 5,
+  "fps": 24,
+  "length": 121,
+  "steps": 20,
+  "seed": 12345,
+  "cfg": 5.0,
+  "shift": 8.0,
+  "denoise": 1.0,
+  "sampler": "uni_pc",
+  "scheduler": "simple",
+  "model_name": "wan2.2-ti2v-5b.safetensors",
+  "vae_name": "wan2.2_vae.safetensors"
+}
+```
+
+找不到对应生成记录(如外部拷贝进来的 mp4)返回 404。
 
 ## 设置
 
@@ -579,6 +659,183 @@ SDXL 的 `vae_name` 为 `null`，因为 VAE 来自同一 checkpoint。
 （同 mode/kind 内唯一，冲突 422);name 不存在 404。
 `output_path` 是生成时的路径快照；图片移动或删除不影响 SQLite 任务历史，`GET /jobs`
 和 `GET /jobs/{job_id}` 仍会返回完整记录。
+
+## 视频
+
+视频生成(Wan TI2V-5B/I2V-14B)经独立端点暴露;任务仍走同一条串行队列,全局 stop/skip 对
+视频任务同样生效。不带输入图片为 T2V(文生视频),带 `input_image_id` 为 I2V
+(图生视频);text encoder 由服务端 `video_resources` 配置固定注入,客户端不能指定。
+
+### `GET /api/v1/video/models`
+
+返回服务端实际配置的视频模型及生成能力。前端应以 `requires_input_image` 控制输入图片
+是否必选，并用 `generation_types` 决定可展示的生成类型：
+
+```json
+{ "video_models": [
+  {
+    "video_model": "wan2.2-ti2v-5b",
+    "label": "Wan 2.2 TI2V-5B",
+    "generation_types": ["t2v", "i2v"],
+    "requires_input_image": false
+  },
+  {
+    "video_model": "wan2.2-i2v-14b",
+    "label": "Wan 2.2 I2V-14B FP8",
+    "generation_types": ["i2v"],
+    "requires_input_image": true
+  }
+] }
+```
+
+### `GET /api/v1/video/models/{video_model}/resources`
+
+指定视频模型可选的 diffusion/VAE 资源,字段与 `/resources/{mode}/{kind}` 一致
+(index/name/display_name,视频资源没有 alias 机制,`alias` 固定为 `null`);
+`video_model` 未配置返回 404。
+
+```json
+{
+  "models": [
+    { "index": 1, "name": "wan2.2-ti2v-5b.safetensors", "display_name": "wan2.2-ti2v-5b.safetensors", "alias": null }
+  ],
+  "vaes": [
+    { "index": 1, "name": "wan2.2_vae.safetensors", "display_name": "wan2.2_vae.safetensors", "alias": null }
+  ]
+}
+```
+
+### `POST /api/v1/video/input-images`
+
+受控上传 I2V 输入图片:请求体为图片二进制,`Content-Type` 只接受
+`image/png`、`image/jpeg`、`image/webp`,大小 ≤ 10MB,服务端用 PIL 校验确实是
+有效图片。图片落盘到 cache 下的 `video_inputs/` 目录,文件名是服务端生成的
+`<uuid4 hex><扩展名>`,客户端只拿到这个 id,之后不能提交任何服务器路径。
+
+响应 201:`{ "id": "....png", "url": "/api/v1/video/input-images/....png" }`。
+422 表示类型不支持、内容为空、超限或不是有效图片。
+
+### `GET /api/v1/video/input-images/{image_id}`
+
+按 id 读取受控上传的输入图片。id 先过白名单正则再做路径解析,越界、非法
+id 或文件不存在一律 404。
+
+### `POST /api/v1/video/input-images/from-album`
+
+把相册里已存在的图片直接导入为 I2V 输入图片(服务端本地复制,不经客户端
+上传)。请求体 `{"id": "<相册 relpath>", "dir": "output"}`,`id`/`dir` 语义与
+相册端点一致,路径解析复用相册的受控逻辑;图片校验(类型/大小/PIL 可解码)
+与上传接口相同。响应 201 与上传接口一致(`{id, url}`);400 路径越界、404
+目录或文件不存在、422 不是支持的图片。
+
+### `POST /api/v1/video/jobs`
+
+提交一个或一批视频任务。请求体:
+
+```json
+{
+  "video_model": "wan2.2-ti2v-5b",
+  "model_index": 1,
+  "vae_index": 1,
+  "prompt": "一只猫在雪地里奔跑",
+  "negative_prompt": "",
+  "width": 704,
+  "height": 960,
+  "duration_seconds": 5,
+  "fps": 24,
+  "steps": 20,
+  "seed": -1,
+  "count": 1,
+  "cfg": 5.0,
+  "shift": 8.0,
+  "sampler": "uni_pc",
+  "scheduler": "simple",
+  "input_image_id": null
+}
+```
+
+`input_image_id` 对 TI2V-5B 可选:引用 `POST /video/input-images` 返回的 id,设置后为
+I2V,不设置为 T2V。I2V-14B 必须设置 `input_image_id`，否则 API 返回 422；Core 会自动
+配对 high-noise 与 low-noise diffusion 模型并执行双阶段采样。
+
+约束:`video_model` 必填且必须是已配置的视频模型;`model_index`/`vae_index` ≥ 1;
+`prompt` 1–16000 字符;宽高必须是 16 的倍数(默认 704×960);`duration_seconds`
+为 ≥ 1 的整数秒(默认 5);`fps` 1–120(默认 24);总帧数
+length = duration_seconds × fps + 1 且必须满足 4n + 1;`steps` 1–100(默认 20);
+`seed` ≥ -1(`-1` 表示随机);`count` 1–8(HTTP admission limit);`cfg` 为大于 0
+的有限浮点数(默认 5.0);`shift` 0–100(默认 8.0,ComfyUI `ModelSamplingSD3`,
+前端表单一般只开放 8–12);`sampler`/`scheduler` 的合法值与图片任务同源(core
+domain 的 SAMPLERS/SCHEDULERS)。
+
+响应 202(已持久化并入队,不代表视频完成):
+
+```json
+{
+  "jobs": [
+    {
+      "id": "job-uuid",
+      "batch_id": null,
+      "status": "queued",
+      "video_model": "wan2.2-ti2v-5b",
+      "generation_type": "t2v",
+      "seed": -1,
+      "width": 704,
+      "height": 960,
+      "duration_seconds": 5,
+      "fps": 24,
+      "length": 121,
+      "steps": 20,
+      "sampler": "uni_pc",
+      "scheduler": "simple",
+      "cfg": 5.0,
+      "shift": 8.0,
+      "denoise": 1.0,
+      "model_name": "wan2.2-ti2v-5b.safetensors",
+      "vae_name": "wan2.2_vae.safetensors",
+      "prompt": "一只猫在雪地里奔跑",
+      "negative_prompt": "",
+      "submitted_at": "2026-08-09T13:00:00+08:00",
+      "started_at": null,
+      "completed_at": null,
+      "elapsed_seconds": null,
+      "output_name": "wan2.2-ti2v-5b-00001.mp4",
+      "video_url": null,
+      "input_image_url": null,
+      "error": null
+    }
+  ]
+}
+```
+
+- `generation_type` 为 `t2v` 或 `i2v`(取决于是否带 `input_image_id`);
+  `duration_seconds` 是视频时长秒,`elapsed_seconds` 是实际耗时。
+- `video_url` 在 mp4 文件实际存在时为 `/api/v1/videos/{job_id}`,否则为 `null`。
+- `input_image_url` 仅 I2V 任务有值,为 `/api/v1/video/input-images/{id}`。
+- 错误:404 资源 index 或 input_image_id 不存在;422 参数校验失败(含未配置的
+  video_model 以外的非法枚举值)。
+
+### `GET /api/v1/video/jobs/{job_id}`
+
+读取单个视频任务的持久化状态(单个 VideoJobResponse 对象)。404 表示 job 不存在。
+
+### `GET /api/v1/videos/{job_id}`
+
+受控下载视频任务的 mp4(`video/mp4`)。服务端校验存储路径必须位于配置的
+`output_dir` 内、文件确实存在,规则与图片端点一致。
+
+- 200 mp4 字节流
+- 404 job 不存在,或任务未完成且文件不存在
+- 410 任务已到终态但文件已丢失
+- 500 存储路径越出 output_dir(数据异常)
+
+### 视频模型卡片
+
+`/api/v1/video-models/{video_model}` 下镜像图片 models 端点:list、cover
+GET/PUT、quant POST、info PUT,响应字段与 `/models/{mode}` 一致(`mode` 为
+video_model 值,`alias` 固定为 `null`)。备注/量化/封面复用同一个
+`model_info.json` 与 `covers/` 目录,以 video_model 字符串作 key,与图片 mode
+不会冲突。视频目录没有 alias 机制,info PUT 只支持 `note`,payload 带 `alias`
+返回 422;`video_model` 未配置返回 404。
 
 ## 错误码汇总
 

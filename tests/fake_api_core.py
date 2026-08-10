@@ -4,13 +4,15 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-from diffusion_workbench_core.config import ComfyConfig, ModeResources, WorkbenchConfig
+from diffusion_workbench_core.config import ComfyConfig, ModeResources, VideoResources, WorkbenchConfig
 from diffusion_workbench_core.domain import (
     JobRecord,
     Mode,
     ModelLoader,
     ResourceItem,
     ResourceKind,
+    VideoJobRecord,
+    VideoModel,
 )
 
 
@@ -37,6 +39,18 @@ class FakeApiCore:
             output_dir=root / "output",
             database=root / "jobs.sqlite3",
             worker_timeout_seconds=300,
+            video_resources={
+                VideoModel.WAN22_TI2V_5B: VideoResources(
+                    (root / "wan-models",),
+                    (root / "wan-vae",),
+                    root / "wan-te.safetensors",
+                ),
+                VideoModel.WAN22_I2V_14B: VideoResources(
+                    (root / "wan14-models",),
+                    (root / "wan14-vae" / "wan_2.1_vae.safetensors",),
+                    root / "wan14-te.safetensors",
+                ),
+            },
         )
         self.items = {
             (Mode.ZIT, ResourceKind.DIFFUSION): [
@@ -71,6 +85,37 @@ class FakeApiCore:
         self.skipped_id = None
         self.skip_error = None
         self.skip_calls = 0
+        self.video_model_items = {
+            VideoModel.WAN22_TI2V_5B: [
+                ResourceItem(1, root / "wan-models" / "wan2.2-ti2v-5b.safetensors"),
+            ],
+            VideoModel.WAN22_I2V_14B: [
+                ResourceItem(
+                    1,
+                    root
+                    / "wan14-models"
+                    / "wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors",
+                ),
+                ResourceItem(
+                    2,
+                    root
+                    / "wan14-models"
+                    / "wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors",
+                ),
+            ],
+        }
+        self.video_vae_items = {
+            VideoModel.WAN22_TI2V_5B: [
+                ResourceItem(1, root / "wan-vae" / "wan-vae.safetensors"),
+            ],
+            VideoModel.WAN22_I2V_14B: [
+                ResourceItem(
+                    1, root / "wan14-vae" / "wan_2.1_vae.safetensors"
+                ),
+            ],
+        }
+        self.video_submitted: list = []
+        self.video_jobs: dict[str, VideoJobRecord] = {}
 
     def list_resources(self, mode, kind):
         return self.items[(mode, kind)]
@@ -177,3 +222,65 @@ class FakeApiCore:
 
     def shutdown(self):
         self.closed = True
+
+    def list_video_models(self, video_model):
+        if video_model not in self.config.video_resources:
+            return []
+        return self.video_model_items[video_model]
+
+    def list_video_vaes(self, video_model):
+        if video_model not in self.config.video_resources:
+            return []
+        return self.video_vae_items[video_model]
+
+    def make_video_job(self, settings, batch_id=None, status="queued") -> VideoJobRecord:
+        output_path = (
+            self.config.output_dir
+            / "2026-07-27"
+            / f"{settings.video_model.value}-{len(self.video_jobs) + 1:05d}.mp4"
+        )
+        return VideoJobRecord(
+            id=str(uuid.uuid4()),
+            batch_id=batch_id,
+            status=status,
+            submitted_at=datetime.now().astimezone(),
+            output_path=output_path,
+            video_model=settings.video_model,
+            prompt=settings.prompt,
+            negative_prompt=settings.negative_prompt,
+            model_path=settings.model.path,
+            vae_path=settings.vae.path,
+            text_encoder_path=settings.text_encoder,
+            sampler=settings.sampler,
+            scheduler=settings.scheduler,
+            width=settings.width,
+            height=settings.height,
+            duration_seconds=settings.duration_seconds,
+            fps=settings.fps,
+            length=settings.length,
+            steps=settings.steps,
+            seed=settings.seed,
+            cfg=settings.cfg,
+            shift=settings.shift,
+            input_image_path=settings.input_image,
+        )
+
+    def submit_video(self, settings, count):
+        settings.validate()
+        self.video_submitted.append((settings, count))
+        batch_id = str(uuid.uuid4()) if count > 1 else None
+        jobs = []
+        for _ in range(count):
+            job = self.make_video_job(settings, batch_id=batch_id)
+            self.video_jobs[job.id] = job
+            jobs.append(job)
+        return jobs
+
+    def get_video_job(self, job_id):
+        return self.video_jobs[job_id]
+
+    def find_video_job_by_output(self, date_dir, name):
+        for job in self.video_jobs.values():
+            if job.output_path.name == name and job.output_path.parent.name == date_dir:
+                return job
+        raise KeyError(f"{date_dir}/{name}")

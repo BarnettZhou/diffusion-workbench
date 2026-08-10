@@ -9,6 +9,11 @@ const MODE_LABELS = {
   sdxl: "stable-diffusion-xl (sdxl)",
 };
 
+const VIDEO_MODEL_LABELS = {
+  "wan2.2-ti2v-5b": "Wan 2.2 TI2V-5B",
+  "wan2.2-i2v-14b": "Wan 2.2 I2V-14B FP8",
+};
+
 // 宽屏(桌面)默认展开抽屉,窄屏(移动端)默认收起,由右上角悬浮按钮切换
 const DRAWER_DEFAULT_OPEN = "(min-width: 901px)";
 
@@ -19,10 +24,12 @@ export default function Lightbox({
   metadataUrl,
   fallback,
   fileInfo = null,
+  kind = "image",
   onClose,
   onPrev = null,
   onNext = null,
   onSendToWorkbench = null,
+  onSendToVideo = null,
 }) {
   const [meta, setMeta] = useState(null);
   const [drawerOpen, setDrawerOpen] = useState(
@@ -64,6 +71,23 @@ export default function Lightbox({
 
   const view = meta ?? fallback ?? {};
 
+  // 截取 <video> 当前帧为 jpeg Blob(视频"设为封面"用);未加载完成时抛错
+  function captureFrame() {
+    const video = document.getElementById("lightbox-video");
+    if (!video || !video.videoWidth) throw new Error("视频尚未加载完成,请稍候再试");
+    const canvas = document.createElement("canvas");
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    canvas.getContext("2d").drawImage(video, 0, 0);
+    return new Promise((resolve, reject) =>
+      canvas.toBlob(
+        (blob) => (blob ? resolve(blob) : reject(new Error("封面截取失败"))),
+        "image/jpeg",
+        0.9,
+      ),
+    );
+  }
+
   return (
     <div
       id="lightbox-overlay"
@@ -99,12 +123,24 @@ export default function Lightbox({
         </button>
       )}
       <div className="lightbox-body">
-        <img
-          id="lightbox-image"
-          src={imageUrl}
-          alt={view.prompt ?? ""}
-          onClick={(e) => e.stopPropagation()}
-        />
+        {kind === "video" ? (
+          // 视频:页内弹窗 + 浏览器原生播放器
+          <video
+            id="lightbox-video"
+            src={imageUrl}
+            controls
+            autoPlay
+            playsInline
+            onClick={(e) => e.stopPropagation()}
+          />
+        ) : (
+          <img
+            id="lightbox-image"
+            src={imageUrl}
+            alt={view.prompt ?? ""}
+            onClick={(e) => e.stopPropagation()}
+          />
+        )}
       </div>
       <button
         id="lightbox-info-btn"
@@ -124,10 +160,13 @@ export default function Lightbox({
           meta={meta}
           imageUrl={imageUrl}
           fileInfo={fileInfo}
+          kind={kind}
+          captureFrame={kind === "video" ? captureFrame : null}
           onClose={() => setDrawerOpen(false)}
           onSendToWorkbench={
             meta && onSendToWorkbench ? () => onSendToWorkbench(meta) : null
           }
+          onSendToVideo={onSendToVideo}
         />
       )}
     </div>
@@ -135,12 +174,16 @@ export default function Lightbox({
 }
 
 // 右侧信息抽屉:文件信息 + 生成参数 + 提示词(带复制),底部为操作工具栏
-function InfoDrawer({ view, meta, imageUrl, fileInfo, onClose, onSendToWorkbench }) {
+function InfoDrawer({ view, meta, imageUrl, fileInfo, kind = "image", captureFrame = null, onClose, onSendToWorkbench, onSendToVideo }) {
   const message = useMessage();
   const [menuOpen, setMenuOpen] = useState(false);
   const [settingCover, setSettingCover] = useState(false);
-  // 设为封面需要元数据里的 mode 和模型文件名
-  const canSetCover = Boolean(meta?.mode && meta?.model_name);
+  const [sendingToVideo, setSendingToVideo] = useState(false);
+  // 设为封面需要元数据里的分类与模型文件名;视频封面取当前帧,设到视频模型卡片
+  const canSetCover =
+    kind === "video"
+      ? Boolean(meta?.video_model && meta?.model_name && captureFrame)
+      : Boolean(meta?.mode && meta?.model_name);
 
   // 尺寸以当前文件为准:artifact 是 PNG 实际尺寸(放大图是放大后的尺寸),
   // width/height 是首次生成尺寸,旧 schema 无 artifact 时回退
@@ -160,20 +203,38 @@ function InfoDrawer({ view, meta, imageUrl, fileInfo, onClose, onSendToWorkbench
     };
   }, [menuOpen]);
 
-  // 把当前图片字节上传到封面端点,服务端保存到 .cache/covers/{mode}/
+  // 图片:把当前图片字节上传到封面端点;视频:截取当前帧设到视频模型卡片
   async function handleSetCover() {
     if (!canSetCover || settingCover) return;
     setSettingCover(true);
     try {
-      const response = await fetch(imageUrl);
-      if (!response.ok) throw new Error(`图片读取失败(HTTP ${response.status})`);
-      const blob = await response.blob();
-      await api.uploadModelCover(meta.mode, meta.model_name, blob);
+      if (kind === "video") {
+        const blob = await captureFrame();
+        await api.uploadVideoModelCover(meta.video_model, meta.model_name, blob);
+      } else {
+        const response = await fetch(imageUrl);
+        if (!response.ok) throw new Error(`图片读取失败(HTTP ${response.status})`);
+        const blob = await response.blob();
+        await api.uploadModelCover(meta.mode, meta.model_name, blob);
+      }
       message.success(`已设为 ${meta.model_name} 的封面`);
     } catch (err) {
       message.error(`设置封面失败:${err.message}`);
     } finally {
       setSettingCover(false);
+    }
+  }
+
+  // 把当前图片导入为 I2V 输入图片(服务端本地复制)并跳到视频生成 tab
+  async function handleSendToVideo() {
+    if (!onSendToVideo || sendingToVideo) return;
+    setSendingToVideo(true);
+    try {
+      await onSendToVideo();
+    } catch (err) {
+      message.error(`发送到视频生成失败:${err.message}`);
+    } finally {
+      setSendingToVideo(false);
     }
   }
 
@@ -192,6 +253,12 @@ function InfoDrawer({ view, meta, imageUrl, fileInfo, onClose, onSendToWorkbench
         >
           ×
         </button>
+
+        {meta?.source === "comfyui" && (
+          <div id="drawer-source-comfyui" className="drawer-source-badge">
+            由 ComfyUI 生成
+          </div>
+        )}
 
         {fileInfo && (
           <section className="drawer-section">
@@ -219,6 +286,9 @@ function InfoDrawer({ view, meta, imageUrl, fileInfo, onClose, onSendToWorkbench
           )}
           {view.model_name && <DrawerRow label="模型" value={view.model_name} mono />}
           {view.vae_name && <DrawerRow label="VAE" value={view.vae_name} mono />}
+          {view.text_encoder_name && (
+            <DrawerRow label="Text Encoder" value={view.text_encoder_name} mono />
+          )}
           {view.sampler && (
             <DrawerRow
               label="采样 / 调度"
@@ -226,8 +296,18 @@ function InfoDrawer({ view, meta, imageUrl, fileInfo, onClose, onSendToWorkbench
             />
           )}
           {view.cfg != null && <DrawerRow label="CFG" value={String(view.cfg)} />}
+          {view.shift != null && <DrawerRow label="Shift" value={String(view.shift)} />}
           {view.steps != null && <DrawerRow label="步数" value={String(view.steps)} />}
           {view.seed != null && <DrawerRow label="Seed" value={String(view.seed)} />}
+          {view.video_model && (
+            <DrawerRow label="分类" value={VIDEO_MODEL_LABELS[view.video_model] ?? view.video_model} />
+          )}
+          {view.generation_type && (
+            <DrawerRow label="类型" value={view.generation_type === "i2v" ? "图生视频" : "文生视频"} />
+          )}
+          {view.duration_seconds != null && (
+            <DrawerRow label="时长 / 帧率" value={`${view.duration_seconds}s / ${view.fps}fps`} />
+          )}
         </section>
 
         {view.prompt && (
@@ -286,6 +366,21 @@ function InfoDrawer({ view, meta, imageUrl, fileInfo, onClose, onSendToWorkbench
               >
                 {settingCover ? "设置中……" : "设置为封面"}
               </button>
+              {onSendToVideo && (
+                <button
+                  id="drawer-send-to-video"
+                  type="button"
+                  role="menuitem"
+                  disabled={sendingToVideo}
+                  title="以此图片作为输入,生成图生视频(I2V)"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    handleSendToVideo();
+                  }}
+                >
+                  {sendingToVideo ? "发送中……" : "发送到视频生成"}
+                </button>
+              )}
             </div>
           )}
         </div>
