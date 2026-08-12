@@ -68,7 +68,9 @@ def main() -> None:
     run(
         f"uv run uvicorn diffusion_workbench_api.app:app "
         f"--host {args.host} --port {args.port} --workers 1 "
-        f"--timeout-graceful-shutdown 3",
+        # Core 关闭时需要先取消当前任务，再等待 Worker 进程退出；3 秒不足以覆盖
+        # ComfyUI 正在执行 CUDA 算子时的收尾时间。
+        f"--timeout-graceful-shutdown 60",
         ROOT,
     )
 

@@ -10,7 +10,7 @@ from fastapi import FastAPI
 
 from diffusion_workbench_core import WorkbenchCore
 
-from . import album, events, files, jobs, llm, models, settings
+from . import album, events, files, jobs, llm, models, settings, video
 from .album import AlbumDirStore, AlbumManager
 from .console_status import ConsoleStatusBar
 from .events import EventHub
@@ -56,6 +56,7 @@ def create_app(
         app.state.album_manager = AlbumManager(
             core.config.output_dir,
             AlbumDirStore(core.config.database.parent / "album_dirs.json"),
+            poster_dir=core.config.database.parent / "album_posters",
         )
         app.state.settings_store = SettingsStore(
             core.config.database.parent / "settings.json"
@@ -80,6 +81,7 @@ def create_app(
     app.include_router(models.router)
     app.include_router(llm.router)
     app.include_router(events.router)
+    app.include_router(video.router)
 
     # 静态托管前端构建产物(单端口同源,无需反向代理)。API 路由先注册,
     # 优先于根挂载;dist 不存在时(如未构建)跳过。

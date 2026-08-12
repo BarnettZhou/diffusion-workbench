@@ -12,7 +12,7 @@ const BUILTIN_DIR = "output";
 // 相册:顶部 tabs 为目录列表(内置 output + 用户添加的目录),网格展示当前
 // 目录全部图片,按修改时间倒序。数据来自后端扫盘索引(不依赖 jobs 表),
 // 容忍图片被删除/移动。
-export default function AlbumPage({ onSendToWorkbench }) {
+export default function AlbumPage({ onSendToWorkbench, onSendToVideo, onSendVideoMeta }) {
   const [dirs, setDirs] = useState(null);
   const [activeDir, setActiveDir] = useState(BUILTIN_DIR);
   const [images, setImages] = useState([]);
@@ -22,33 +22,54 @@ export default function AlbumPage({ onSendToWorkbench }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [selected, setSelected] = useState(null);
+  // 子目录浏览:当前查看的一级子目录(null=查看全部);汉堡弹层开关与目录列表
+  const [subDir, setSubDir] = useState(null);
+  const [subPickerOpen, setSubPickerOpen] = useState(false);
+  const [subdirs, setSubdirs] = useState(null);
+  // 当前 images 列表所属的子目录,与 imagesDir 一起防止旧列表配新范围渲染
+  const [imagesSubdir, setImagesSubdir] = useState(null);
   // 图片右键菜单:{x, y, image};待确认删除的图片;删除中状态
   const [menu, setMenu] = useState(null);
   const [pendingDelete, setPendingDelete] = useState(null);
   const [deleting, setDeleting] = useState(false);
+  // 批量选择:开关、已选图片 id 集合、待确认批量删除、删除中状态
+  const [batchMode, setBatchMode] = useState(false);
+  const [batchSelected, setBatchSelected] = useState(() => new Set());
+  const [pendingBatchDelete, setPendingBatchDelete] = useState(false);
+  const [batchDeleting, setBatchDeleting] = useState(false);
   // 目录 tabs:add/edit modal 开关与编辑对象;tab 右键菜单;待确认删除的目录
   const [dirModal, setDirModal] = useState(null); // {mode: "add" | "edit", dir?}
   const [dirMenu, setDirMenu] = useState(null); // {x, y, dir}
   const [pendingDeleteDir, setPendingDeleteDir] = useState(null);
   const sentinelRef = useRef(null);
-  const stateRef = useRef({ cursor: null, loading: false, dir: BUILTIN_DIR });
-  stateRef.current = { cursor, loading, dir: activeDir };
+  const subPanelRef = useRef(null);
+  const stateRef = useRef({ cursor: null, loading: false, dir: BUILTIN_DIR, subdir: null });
+  // 已删除文件的 id(relpath)集合:阻止删除前发出的翻页请求把已删项重新带回列表
+  const removedIdsRef = useRef(new Set());
+  stateRef.current = { cursor, loading, dir: activeDir, subdir: subDir };
 
   const loadMore = useCallback(async () => {
-    const { cursor: current, loading: busy, dir } = stateRef.current;
+    const { cursor: current, loading: busy, dir, subdir } = stateRef.current;
     if (busy || current === "end") return;
     setLoading(true);
     try {
-      const page = await api.album(PAGE_SIZE, current, dir);
-      // 请求发出后目录已切换:丢弃过期页,loading 交给新目录的请求收尾
-      if (stateRef.current.dir !== dir) return;
-      setImages((prev) => [...prev, ...page.images]);
+      const page = await api.album(PAGE_SIZE, current, dir, subdir);
+      // 请求发出后目录/子目录已切换:丢弃过期页,loading 交给新范围的请求收尾
+      if (stateRef.current.dir !== dir || stateRef.current.subdir !== subdir) return;
+      // 页面可能扫描于删除之前,含已删项;追加时按 removedIdsRef 过滤
+      setImages((prev) => [
+        ...prev,
+        ...page.images.filter((item) => !removedIdsRef.current.has(item.id)),
+      ]);
       setImagesDir(dir);
+      setImagesSubdir(subdir);
       setCursor(page.next_cursor ?? "end");
     } catch (err) {
-      if (stateRef.current.dir === dir) setError(err.message);
+      if (stateRef.current.dir === dir && stateRef.current.subdir === subdir)
+        setError(err.message);
     } finally {
-      if (stateRef.current.dir === dir) setLoading(false);
+      if (stateRef.current.dir === dir && stateRef.current.subdir === subdir)
+        setLoading(false);
     }
   }, []);
 
@@ -67,9 +88,12 @@ export default function AlbumPage({ onSendToWorkbench }) {
     setSelected(null);
     setMenu(null);
     setError(null);
-    stateRef.current = { cursor: null, loading: false, dir: activeDir };
+    setBatchMode(false);
+    setBatchSelected(new Set());
+    removedIdsRef.current = new Set();
+    stateRef.current = { cursor: null, loading: false, dir: activeDir, subdir: subDir };
     loadMore();
-  }, [activeDir, loadMore]);
+  }, [activeDir, subDir, loadMore]);
 
   // 切换目录时重新加载
   useEffect(() => {
@@ -86,6 +110,17 @@ export default function AlbumPage({ onSendToWorkbench }) {
     return () => observer.disconnect();
   }, [loadMore]);
 
+  // 打开子目录弹层时,把当前选中的子目录滚动到弹层可视位置
+  useEffect(() => {
+    if (!subPickerOpen) return;
+    const panel = subPanelRef.current;
+    const activeButton = panel?.querySelector("button.active");
+    if (panel && activeButton) {
+      panel.scrollTop =
+        activeButton.offsetTop - panel.clientHeight / 2 + activeButton.clientHeight / 2;
+    }
+  }, [subPickerOpen, subdirs]);
+
   // 浏览到最后一张已加载图片时提前翻页,保证 lightbox 内可继续向后翻
   useEffect(() => {
     if (selected && images[images.length - 1]?.id === selected.id) loadMore();
@@ -101,11 +136,35 @@ export default function AlbumPage({ onSendToWorkbench }) {
     }
   }
 
+  // 抽屉"发送到视频生成":图片在服务端本地复制为 I2V 输入图片,再切 tab 预填表单
+  async function handleSendToVideo(image) {
+    const saved = await api.importVideoInputFromAlbum(image.id, activeDir);
+    setSelected(null);
+    onSendToVideo?.({ id: saved.id, url: saved.url, name: image.name });
+  }
+
+  // 汉堡按钮:开关子目录弹层,打开时拉取当前目录的一级子目录列表
+  async function toggleSubPicker() {
+    if (subPickerOpen) {
+      setSubPickerOpen(false);
+      return;
+    }
+    setSubPickerOpen(true);
+    try {
+      const data = await api.albumSubdirs(activeDir);
+      setSubdirs(data.subdirs);
+    } catch (err) {
+      setError(`子目录加载失败:${err.message}`);
+    }
+  }
+
   async function confirmDelete() {
     if (!pendingDelete || deleting) return;
     setDeleting(true);
     try {
       await api.deleteAlbumImage(pendingDelete.id, activeDir);
+      // 前端直接移除该元素,并记录 id 防止在途翻页把它带回
+      removedIdsRef.current = new Set([...removedIdsRef.current, pendingDelete.id]);
       setImages((prev) => prev.filter((item) => item.id !== pendingDelete.id));
       if (selected?.id === pendingDelete.id) setSelected(null);
       setPendingDelete(null);
@@ -113,6 +172,53 @@ export default function AlbumPage({ onSendToWorkbench }) {
       setError(`删除失败:${err.message}`);
     } finally {
       setDeleting(false);
+    }
+  }
+
+  // 退出批量选择:清空选择,工具栏随之消失
+  function exitBatchMode() {
+    setBatchMode(false);
+    setBatchSelected(new Set());
+  }
+
+  // 批量模式下点击网格项:切换选中状态(不进 lightbox)
+  function toggleBatchSelect(image) {
+    setBatchSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(image.id)) {
+        next.delete(image.id);
+      } else {
+        next.add(image.id);
+      }
+      return next;
+    });
+  }
+
+  async function confirmBatchDelete() {
+    if (batchDeleting || batchSelected.size === 0) return;
+    const targetIds = [...batchSelected];
+    setBatchDeleting(true);
+    try {
+      const result = await api.batchDeleteAlbumImages(targetIds, activeDir);
+      // 前端按选中 id 直接移除;仅保留服务端报告删除失败的文件
+      const failedIds = new Set((result.failed ?? []).map((f) => f.relpath));
+      const removedIds = targetIds.filter((id) => !failedIds.has(id));
+      if (removedIds.length) {
+        removedIdsRef.current = new Set([...removedIdsRef.current, ...removedIds]);
+      }
+      setImages((prev) => prev.filter((item) => !removedIds.includes(item.id)));
+      if (selected && removedIds.includes(selected.id)) setSelected(null);
+      if (result.failed?.length) {
+        setError(
+          `部分文件删除失败:${result.failed.map((f) => f.relpath).join("、")}`,
+        );
+      }
+      setPendingBatchDelete(false);
+      exitBatchMode();
+    } catch (err) {
+      setError(`批量删除失败:${err.message}`);
+    } finally {
+      setBatchDeleting(false);
     }
   }
 
@@ -153,7 +259,7 @@ export default function AlbumPage({ onSendToWorkbench }) {
     dirs?.find((d) => d.id === activeDir)?.name ?? activeDir;
 
   return (
-    <main id="album-page">
+    <main id="album-page" className={batchMode ? "batch-selecting" : undefined}>
       <div id="album-tabs" role="tablist" aria-label="相册目录">
         {(dirs ?? [{ id: BUILTIN_DIR, name: "默认", builtin: true }]).map(
           (dir) => (
@@ -165,7 +271,11 @@ export default function AlbumPage({ onSendToWorkbench }) {
               aria-selected={activeDir === dir.id}
               className={activeDir === dir.id ? "active" : ""}
               title={dir.path}
-              onClick={() => setActiveDir(dir.id)}
+              onClick={() => {
+                setSubDir(null);
+                setSubPickerOpen(false);
+                setActiveDir(dir.id);
+              }}
               onContextMenu={(event) => {
                 if (dir.builtin) return;
                 event.preventDefault();
@@ -190,18 +300,28 @@ export default function AlbumPage({ onSendToWorkbench }) {
 
       {error && <div id="album-error" className="form-error">加载失败:{error}</div>}
       {images.length === 0 && !loading && !error && (
-        <div className="empty-hint">{activeDirName} 目录中还没有图片</div>
+        <div className="empty-hint">{subDir ?? activeDirName} 目录中还没有图片</div>
       )}
       <div id="album-grid" className="album-grid">
-        {imagesDir === activeDir &&
+        {imagesDir === activeDir && imagesSubdir === subDir &&
           images.map((image) => (
             <AlbumItem
               key={image.id}
               image={image}
               dir={activeDir}
-              onClick={() => setSelected(image)}
+              selected={batchMode && batchSelected.has(image.id)}
+              onClick={() => {
+                // 批量选择状态:点击切换选中,不进 lightbox
+                if (batchMode) {
+                  toggleBatchSelect(image);
+                  return;
+                }
+                // 图片与视频都在页内弹窗查看(视频用原生播放器)
+                setSelected(image);
+              }}
               onContextMenu={(event) => {
                 event.preventDefault();
+                if (batchMode) return; // 批量状态下不弹单个项菜单
                 setMenu({ x: event.clientX, y: event.clientY, image });
               }}
             />
@@ -209,6 +329,54 @@ export default function AlbumPage({ onSendToWorkbench }) {
       </div>
       <div id="album-sentinel" ref={sentinelRef} />
       {loading && <div id="album-loading" className="album-loading">加载中……</div>}
+      <button
+        id="album-subdir-btn"
+        type="button"
+        className={subDir ? "active" : undefined}
+        aria-label="按子目录浏览"
+        title={subDir ? `正在查看子目录:${subDir}` : "按子目录浏览"}
+        onClick={toggleSubPicker}
+      >
+        ☰
+      </button>
+      {subPickerOpen && (
+        <>
+          <div
+            id="album-subdir-backdrop"
+            onClick={() => setSubPickerOpen(false)}
+          />
+          <div id="album-subdir-panel" role="menu" ref={subPanelRef}>
+            <button
+              id="album-subdir-all"
+              type="button"
+              className={subDir === null ? "active" : undefined}
+              onClick={() => {
+                setSubDir(null);
+                setSubPickerOpen(false);
+              }}
+            >
+              返回查看所有相册
+            </button>
+            {(subdirs ?? []).map((name) => (
+              <button
+                key={name}
+                id={`album-subdir-${name}`}
+                type="button"
+                className={subDir === name ? "active" : undefined}
+                onClick={() => {
+                  setSubDir(name);
+                  setSubPickerOpen(false);
+                }}
+              >
+                {name}
+              </button>
+            ))}
+            {subdirs !== null && subdirs.length === 0 && (
+              <div className="album-subdir-empty">当前目录没有子目录</div>
+            )}
+          </div>
+        </>
+      )}
       <button
         id="album-refresh-btn"
         type="button"
@@ -221,6 +389,28 @@ export default function AlbumPage({ onSendToWorkbench }) {
         ⟳
       </button>
 
+      {batchMode && (
+        <div id="album-batch-toolbar" className="album-batch-toolbar">
+          <button
+            id="album-batch-delete-btn"
+            type="button"
+            className="danger"
+            disabled={batchSelected.size === 0 || batchDeleting}
+            onClick={() => setPendingBatchDelete(true)}
+          >
+            批量删除({batchSelected.size})
+          </button>
+          <button
+            id="album-batch-cancel-btn"
+            type="button"
+            className="chip"
+            onClick={exitBatchMode}
+          >
+            取消
+          </button>
+        </div>
+      )}
+
       {menu && (
         <ContextMenu
           x={menu.x}
@@ -228,13 +418,27 @@ export default function AlbumPage({ onSendToWorkbench }) {
           onClose={() => setMenu(null)}
           items={[
             {
-              id: "album-menu-send",
-              label: "发送到工作台",
-              onClick: () => handleMenuSend(menu.image),
+              id: "album-menu-batch-select",
+              label: "批量选择",
+              onClick: () => {
+                // 右键的该项直接纳入选择,进入批量状态
+                setBatchSelected(new Set([menu.image.id]));
+                setBatchMode(true);
+              },
             },
+            // 发送到工作台依赖 PNG 元数据,仅对图片可用
+            ...(menu.image.kind === "video"
+              ? []
+              : [
+                  {
+                    id: "album-menu-send",
+                    label: "发送到工作台",
+                    onClick: () => handleMenuSend(menu.image),
+                  },
+                ]),
             {
               id: "album-menu-delete",
-              label: "删除图片",
+              label: menu.image.kind === "video" ? "删除视频" : "删除图片",
               danger: true,
               onClick: () => setPendingDelete(menu.image),
             },
@@ -301,10 +505,44 @@ export default function AlbumPage({ onSendToWorkbench }) {
           </p>
         </Modal>
       )}
+      {pendingBatchDelete && (
+        <Modal
+          id="album-batch-delete-modal"
+          title="批量删除"
+          onClose={() => setPendingBatchDelete(false)}
+          closeDisabled={batchDeleting}
+          footer={
+            <>
+              <button
+                id="album-batch-delete-cancel"
+                type="button"
+                className="chip"
+                disabled={batchDeleting}
+                onClick={() => setPendingBatchDelete(false)}
+              >
+                取消
+              </button>
+              <button
+                id="album-batch-delete-confirm"
+                type="button"
+                className="danger"
+                disabled={batchDeleting}
+                onClick={confirmBatchDelete}
+              >
+                {batchDeleting ? "删除中……" : "确认删除"}
+              </button>
+            </>
+          }
+        >
+          <p className="modal-text">
+            将从本机删除选中的 {batchSelected.size} 个图片/视频,确认删除?
+          </p>
+        </Modal>
+      )}
       {pendingDelete && (
         <Modal
           id="album-delete-modal"
-          title="删除图片"
+          title={pendingDelete.kind === "video" ? "删除视频" : "删除图片"}
           onClose={() => setPendingDelete(null)}
           closeDisabled={deleting}
           footer={
@@ -331,7 +569,7 @@ export default function AlbumPage({ onSendToWorkbench }) {
           }
         >
           <p className="modal-text">
-            将从本机删除该图片({pendingDelete.name}),确认删除?
+            将从本机删除该{pendingDelete.kind === "video" ? "视频" : "图片"}({pendingDelete.name}),确认删除?
           </p>
         </Modal>
       )}
@@ -346,15 +584,30 @@ export default function AlbumPage({ onSendToWorkbench }) {
             sizeBytes: selected.size_bytes,
             mtimeNs: selected.mtime_ns,
           }}
+          kind={selected.kind ?? "image"}
           onClose={() => setSelected(null)}
           onPrev={prevImage ? () => setSelected(prevImage) : null}
           onNext={nextImage ? () => setSelected(nextImage) : null}
           onSendToWorkbench={
-            onSendToWorkbench
-              ? (meta) => {
-                  setSelected(null);
-                  onSendToWorkbench(meta);
-                }
+            selected.kind === "video"
+              ? // 视频:把生成参数预填进视频生成表单
+                onSendVideoMeta
+                  ? (meta) => {
+                      setSelected(null);
+                      onSendVideoMeta(meta);
+                    }
+                  : null
+              : onSendToWorkbench
+                ? (meta) => {
+                    setSelected(null);
+                    onSendToWorkbench(meta);
+                  }
+                : null
+          }
+          onSendToVideo={
+            // 「发送到视频生成」仅对图片(作为 I2V 输入图)开放
+            selected.kind !== "video" && onSendToVideo
+              ? () => handleSendToVideo(selected)
               : null
           }
         />
@@ -450,9 +703,9 @@ function DirFormModal({ mode, dir, onSave, onClose }) {
   );
 }
 
-// 单个图片项:进入视口附近才挂载 <img>,移出后卸载以回收资源;
+// 单个相册项:进入视口附近才挂载 <img>/<video>,移出后卸载以回收资源;
 // 占位用 aspect-ratio 保持网格布局稳定;加载失败(如文件刚被删)整格隐藏。
-function AlbumItem({ image, dir, onClick, onContextMenu }) {
+function AlbumItem({ image, dir, selected, onClick, onContextMenu }) {
   const ref = useRef(null);
   const [active, setActive] = useState(false);
   const [failed, setFailed] = useState(false);
@@ -472,20 +725,35 @@ function AlbumItem({ image, dir, onClick, onContextMenu }) {
     <div
       ref={ref}
       id={`album-item-${image.id}`}
-      className="album-item"
+      className={selected ? "album-item selected" : "album-item"}
       onClick={onClick}
       onContextMenu={onContextMenu}
       role="button"
       tabIndex={0}
       onKeyDown={(e) => e.key === "Enter" && onClick()}
     >
-      {active && (
-        <img
-          src={api.albumImageUrl(image.id, dir)}
-          alt={image.name}
-          loading="lazy"
-          onError={() => setFailed(true)}
-        />
+      {active &&
+        (image.kind === "video" ? (
+          // 视频封面用服务端抽取的首帧静态图(iOS 不会渲染 <video> 的首帧)
+          <img
+            src={api.albumPosterUrl(image.id, dir)}
+            alt={image.name}
+            loading="lazy"
+            onError={() => setFailed(true)}
+          />
+        ) : (
+          <img
+            src={api.albumImageUrl(image.id, dir)}
+            alt={image.name}
+            loading="lazy"
+            onError={() => setFailed(true)}
+          />
+        ))}
+      {image.kind === "video" && <span className="album-kind-badge">视频</span>}
+      {selected && (
+        <span className="album-item-check" aria-label="已选择">
+          ✓
+        </span>
       )}
     </div>
   );

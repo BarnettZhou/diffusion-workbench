@@ -1,7 +1,8 @@
 import { useEffect } from "react";
 
-// 公共模态框:遮罩 + 居中对话框。Esc / 点击遮罩关闭(closeDisabled 时禁用,
-// 用于提交中等不可打断状态)。id 同时作为对话框 id 和 CSS 尺寸定制钩子。
+// 公共模态框:遮罩 + 居中对话框。Esc / 点击遮罩关闭(maskClosable=false 时
+// 遮罩点击不关闭;closeDisabled 时全部关闭方式禁用,用于提交中等不可打断状态)。
+// id 同时作为对话框 id 和 CSS 尺寸定制钩子。
 // titleExtra 渲染在标题行右侧(如新建会话按钮)。
 export default function Modal({
   id,
@@ -9,6 +10,7 @@ export default function Modal({
   titleExtra = null,
   onClose,
   closeDisabled = false,
+  maskClosable = true,
   children,
   footer = null,
 }) {
@@ -24,7 +26,7 @@ export default function Modal({
     <div
       className="modal-overlay"
       id={id ? `${id}-overlay` : undefined}
-      onClick={() => !closeDisabled && onClose()}
+      onClick={() => !closeDisabled && maskClosable && onClose()}
     >
       <div
         className="modal"

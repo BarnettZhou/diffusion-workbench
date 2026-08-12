@@ -20,8 +20,18 @@ from .dependencies import get_settings_store
 
 router = APIRouter(prefix="/api/v1")
 
+_DEFAULT_VIDEO_SIZE_PRESETS = [
+    [704, 960],
+    [960, 704],
+    [1280, 720],
+    [720, 1280],
+]
+
 _DEFAULT_SETTINGS = {
     "size_presets": [[576, 576], [768, 768], [1024, 1024], [960, 1280]],
+    # wan 系列视频模型(16 的倍数)与 MiniMax 系列(32 的倍数)各自的尺寸标签
+    "wan_video_size_presets": _DEFAULT_VIDEO_SIZE_PRESETS,
+    "minimax_video_size_presets": [],
     "prompt_presets": [],
     "sampling_defaults": {
         mode.value: {"steps": 8, "sampler": "euler", "scheduler": "simple", "cfg": 1}
@@ -52,31 +62,38 @@ _DEFAULT_SETTINGS = {
 }
 
 
-def _validate_size_presets(value) -> list[list[int]]:
-    if not isinstance(value, list):
-        raise ValueError("size_presets 必须是 [宽, 高] 列表")
-    presets = []
-    seen = set()
-    for item in value:
-        if not isinstance(item, (list, tuple)) or len(item) != 2:
-            raise ValueError("每个尺寸标签必须是 [宽, 高] 两项")
-        width, height = item
-        if (
-            not isinstance(width, int)
-            or not isinstance(height, int)
-            or isinstance(width, bool)
-            or isinstance(height, bool)
-            or width <= 0
-            or height <= 0
-            or width % 16
-            or height % 16
-        ):
-            raise ValueError("宽高必须是正整数且为 16 的倍数")
-        key = (width, height)
-        if key not in seen:
-            seen.add(key)
-            presets.append([width, height])
-    return presets
+def _make_size_presets_validator(multiple: int):
+    def validate(value) -> list[list[int]]:
+        if not isinstance(value, list):
+            raise ValueError("size_presets 必须是 [宽, 高] 列表")
+        presets = []
+        seen = set()
+        for item in value:
+            if not isinstance(item, (list, tuple)) or len(item) != 2:
+                raise ValueError("每个尺寸标签必须是 [宽, 高] 两项")
+            width, height = item
+            if (
+                not isinstance(width, int)
+                or not isinstance(height, int)
+                or isinstance(width, bool)
+                or isinstance(height, bool)
+                or width <= 0
+                or height <= 0
+                or width % multiple
+                or height % multiple
+            ):
+                raise ValueError(f"宽高必须是正整数且为 {multiple} 的倍数")
+            key = (width, height)
+            if key not in seen:
+                seen.add(key)
+                presets.append([width, height])
+        return presets
+
+    return validate
+
+
+_validate_size_presets = _make_size_presets_validator(16)
+_validate_minimax_size_presets = _make_size_presets_validator(32)
 
 
 # 新设置项在这里注册默认值和校验器。
@@ -182,6 +199,8 @@ def _validate_prompt_presets(value) -> list[dict]:
 
 _VALIDATORS = {
     "size_presets": _validate_size_presets,
+    "wan_video_size_presets": _validate_size_presets,
+    "minimax_video_size_presets": _validate_minimax_size_presets,
     "prompt_presets": _validate_prompt_presets,
     "llm": _validate_llm,
     "sampling_defaults": _validate_sampling_defaults,
@@ -201,6 +220,9 @@ class SettingsStore:
             except (OSError, json.JSONDecodeError):
                 stored = {}
             if isinstance(stored, dict):
+                # 旧版统一的 video_size_presets 属于 wan 系列,迁移为新键
+                if "wan_video_size_presets" not in stored and "video_size_presets" in stored:
+                    stored["wan_video_size_presets"] = stored["video_size_presets"]
                 for key, validator in _VALIDATORS.items():
                     if key in stored:
                         try:

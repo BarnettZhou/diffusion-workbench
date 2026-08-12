@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api/client";
 import PromptPresetPicker from "./PromptPresetPicker";
+import ImageCropModal from "./ImageCropModal";
+import Modal from "./Modal";
 
 // 采样器/调度器选项与图片表单同源(/api/v1/sampling-options),接口不可用时用兜底列表
 const FALLBACK_SAMPLERS = ["uni_pc", "euler", "dpmpp_2m_sde"];
@@ -55,6 +57,10 @@ export default function VideoParameterForm({
   const [referenceImage, setReferenceImage] = useState(null);
   const [referenceImageUploading, setReferenceImageUploading] = useState(false);
   const referenceImageRef = useRef(null);
+  // 输入图片裁剪弹窗开关;裁剪比例取自当前宽度/高度输入值
+  const [cropOpen, setCropOpen] = useState(false);
+  // 宽高失焦校验提示弹窗:{label, raw, min, max, multiple, suggestions, setValue}
+  const [sizeHint, setSizeHint] = useState(null);
   // 预设提示词选择弹窗:null 关闭;"positive"/"negative" 表示替换目标输入框
   const [presetTarget, setPresetTarget] = useState(null);
   // prompt/负面提示词输入框高度倍率,循环 1x → 2x → 3x
@@ -267,6 +273,39 @@ export default function VideoParameterForm({
     setInputImage((prev) => {
       if (prev?.previewUrl?.startsWith("blob:")) URL.revokeObjectURL(prev.previewUrl);
       return null;
+    });
+  }
+
+  // 打开裁剪弹窗:裁剪比例取自当前宽度/高度输入值,无效时先提示
+  function openCrop() {
+    const widthNum = Number(width);
+    const heightNum = Number(height);
+    if (!Number.isFinite(widthNum) || !Number.isFinite(heightNum) || widthNum <= 0 || heightNum <= 0) {
+      setError("裁剪比例取自宽度和高度,请先把这两个值填为有效数值");
+      return;
+    }
+    setError(null);
+    setCropOpen(true);
+  }
+
+  // 宽高失焦校验:输入阶段允许任意值;失焦时若非法,弹窗提示最接近的两个合法值
+  function handleSizeBlur(label, raw, setValue) {
+    if (raw.trim() === "") return; // 空值留给提交时统一校验
+    const { min, max, multiple } = isMiniMaxH3 ? LIMITS.h3Size : LIMITS.size;
+    const value = Number(raw);
+    if (Number.isInteger(value) && value >= min && value <= max && value % multiple === 0) return;
+    // 非数字输入没有"最接近"可言,从下限起给出两个建议值
+    const basis = Number.isFinite(value) ? value : min;
+    const below = Math.min(Math.max(Math.floor(basis / multiple) * multiple, min), max);
+    const above = Math.min(Math.max(Math.ceil(basis / multiple) * multiple, min), max);
+    setSizeHint({
+      label,
+      raw,
+      min,
+      max,
+      multiple,
+      suggestions: below === above ? [below] : [below, above],
+      setValue,
     });
   }
 
@@ -520,6 +559,18 @@ export default function VideoParameterForm({
           <div className="label-actions">
             {inputImage && (
               <button
+                id="video-input-image-crop-btn"
+                type="button"
+                className="prompt-assist-btn"
+                title="按当前宽度×高度比例裁剪输入图片"
+                aria-label="裁剪输入图片"
+                onClick={openCrop}
+              >
+                裁剪
+              </button>
+            )}
+            {inputImage && (
+              <button
                 id="video-input-image-clear-btn"
                 type="button"
                 className="prompt-assist-btn"
@@ -660,7 +711,7 @@ export default function VideoParameterForm({
           <input
             id="video-width-input" type="number" step={isMiniMaxH3 ? LIMITS.h3Size.multiple : LIMITS.size.multiple}
             min={isMiniMaxH3 ? LIMITS.h3Size.min : LIMITS.size.min} max={isMiniMaxH3 ? LIMITS.h3Size.max : LIMITS.size.max}
-            value={width} onChange={(e) => setWidth(e.target.value)}
+            value={width} onChange={(e) => setWidth(e.target.value)} onBlur={() => handleSizeBlur("宽度", width, setWidth)}
           />
         </div>
         <div className="field" id="field-video-height">
@@ -668,7 +719,7 @@ export default function VideoParameterForm({
           <input
             id="video-height-input" type="number" step={isMiniMaxH3 ? LIMITS.h3Size.multiple : LIMITS.size.multiple}
             min={isMiniMaxH3 ? LIMITS.h3Size.min : LIMITS.size.min} max={isMiniMaxH3 ? LIMITS.h3Size.max : LIMITS.size.max}
-            value={height} onChange={(e) => setHeight(e.target.value)}
+            value={height} onChange={(e) => setHeight(e.target.value)} onBlur={() => handleSizeBlur("高度", height, setHeight)}
           />
         </div>
       </div>
@@ -801,6 +852,46 @@ export default function VideoParameterForm({
       </div>
 
       {error && <div id="video-form-error" className="form-error">{error}</div>}
+
+      {cropOpen && inputImage && (
+        <ImageCropModal
+          src={inputImage.previewUrl}
+          ratio={Number(width) / Number(height)}
+          onClose={() => setCropOpen(false)}
+          onConfirm={(file) => {
+            setCropOpen(false);
+            handleInputImageSelect(file);
+          }}
+        />
+      )}
+
+      {sizeHint && (
+        <Modal
+          id="video-size-hint-modal"
+          title={`${sizeHint.label}不合法`}
+          onClose={() => setSizeHint(null)}
+        >
+          <p className="modal-text">
+            {`${sizeHint.label}必须是 ${sizeHint.min}-${sizeHint.max} 之间 ${sizeHint.multiple} 的倍数;当前输入“${sizeHint.raw}”不合法,最接近的合法值:`}
+          </p>
+          <div className="preset-row">
+            {sizeHint.suggestions.map((value) => (
+              <button
+                key={value}
+                id={`video-size-hint-apply-${value}`}
+                type="button"
+                className="chip"
+                onClick={() => {
+                  sizeHint.setValue(String(value));
+                  setSizeHint(null);
+                }}
+              >
+                使用 {value}
+              </button>
+            ))}
+          </div>
+        </Modal>
+      )}
 
       {presetTarget && (
         <PromptPresetPicker

@@ -169,17 +169,17 @@ Wan2.2 A14B GGUF 仍必须下载 high-noise 和 low-noise 两个专家。以 bul
 7. **默认超时过短。** [`persistent_runtime.py`](../diffusion_workbench_core/persistent_runtime.py)
    对整个任务使用 `worker_timeout_seconds`；默认 300 秒低于 Wan2.2 5B 官方消费级 GPU
    基准，视频模式必须有更合理的超时策略。
-8. **GGUF 需要独立 loader 适配。** [`catalog.py`](../diffusion_workbench_core/catalog.py)
-   只扫描 `.safetensors`/`.sft`，Worker 直接实例化 stock `UNETLoader`；即使用户安装了
-   ComfyUI-GGUF，当前 Worker 也不会自动改用 `UnetLoaderGGUF`。
+8. **GGUF 需要独立 loader 适配。** 这项接入现已完成：[`catalog.py`](../diffusion_workbench_core/catalog.py)
+   的视频 diffusion 扫描 `.gguf`，Worker 按后缀显式加载 ComfyUI-GGUF 的
+   `UnetLoaderGGUF`，图片模型和视频 VAE 仍走原有 safetensors 路径。
 
 因此，**5B 原生 safetensors 是最小且最稳的首发范围**；A14B 不只是“换一个大模型”，
 而是双模型资源、双阶段采样和更强内存治理；GGUF 又在其上增加 custom node 生命周期与
 loader 抽象。合理的演进顺序是：
 
-1. 先接 Wan2.2 TI2V-5B 原生 FP16/FP8 UMT5，完成 T2V/I2V、视频产物和长任务协议。
-2. 再接 A14B FP8 high/low 双专家和两阶段进度/取消/模型复用。
-3. 最后把 GGUF 做成明确可选的 loader/backend，不让它污染默认原生路径。
+1. Wan2.2 TI2V-5B 原生路径已存在，视频产物和长任务协议已接入。
+2. A14B FP8/GGUF high/low 双专家和两阶段采样已接入；本机 Q4_K_M 已完成短任务 GPU 烟测。
+3. GGUF 作为按后缀选择的可选 loader/backend，不改变默认原生路径。
 
 ## 推荐配置基线
 

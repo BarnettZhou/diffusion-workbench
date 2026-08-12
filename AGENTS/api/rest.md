@@ -552,7 +552,8 @@ mp4 没有内嵌元数据,改为按输出文件(日期目录名 + 文件名)反�
 ```json
 {
   "size_presets": [[576, 576], [768, 768], [1024, 1024], [960, 1280]],
-  "video_size_presets": [[704, 960], [960, 704], [1280, 720], [720, 1280]],
+  "wan_video_size_presets": [[704, 960], [960, 704], [1280, 720], [720, 1280]],
+  "minimax_video_size_presets": [],
   "prompt_presets": [
     {"id": "a1b2", "title": "通用质量词", "kind": "positive", "text": "masterpiece, best quality"}
   ],
@@ -584,8 +585,11 @@ mp4 没有内嵌元数据,改为按输出文件(日期目录名 + 文件名)反�
 ### `PUT /api/v1/settings`
 
 部分更新：请求体只需包含要修改的设置项，校验通过后原子写入并返回完整设置。
-`size_presets` 与 `video_size_presets`（视频表单的尺寸标签）的每项必须是 `[宽, 高]`，
-正整数且为 16 的倍数，自动去重。未知设置项或非法值返回 422。
+`size_presets` 与视频表单尺寸标签的每项必须是 `[宽, 高]`，正整数且自动去重；宽高倍数
+按系列区分：`size_presets` 与 `wan_video_size_presets`（wan 系列视频尺寸标签）要求 16 的倍数，
+`minimax_video_size_presets`（MiniMax 系列视频尺寸标签）要求 32 的倍数。
+旧版统一的 `video_size_presets` 在加载时自动迁移为 `wan_video_size_presets`。
+未知设置项或非法值返回 422。
 
 `sampling_defaults` 是工作台表单「重置」按钮使用的各模式默认采样参数，键为模式名
 （`zit` / `krea2` / `zib` / `sdxl`）。允许只提交部分模式或部分字段，服务端用默认值补齐；

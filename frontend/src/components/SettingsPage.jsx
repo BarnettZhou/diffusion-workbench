@@ -1,14 +1,17 @@
 import { useEffect, useMemo, useState } from "react";
 import LLMRecords from "./LLMRecords";
 import ModelSettings from "./ModelSettings";
+import VideoModelSettings from "./VideoModelSettings";
 import PromptPresets from "./PromptPresets";
 import { useMessage } from "./Message";
 import { api } from "../api/client";
 
 // 设置项注册表:后续新设置页只需在这里加一项。
 const SETTINGS_TABS = [
-  { key: "general", label: "通用" },
-  { key: "models", label: "模型" },
+  { key: "general", label: "生图设置" },
+  { key: "models", label: "生图模型" },
+  { key: "video", label: "视频设置" },
+  { key: "videoModels", label: "视频模型" },
   { key: "llm", label: "大模型" },
   { key: "prompts", label: "提示词" },
 ];
@@ -38,6 +41,10 @@ export default function SettingsPage({ settings, modes, onUpdate, onResourcesCha
         {active === "models" && (
           <ModelSettings modes={modes} onResourcesChanged={onResourcesChanged} />
         )}
+        {active === "video" && (
+          <VideoSettings settings={settings} onUpdate={onUpdate} />
+        )}
+        {active === "videoModels" && <VideoModelSettings />}
         {active === "llm" && (
           <LLMTab settings={settings} onUpdate={onUpdate} />
         )}
@@ -304,7 +311,43 @@ function GeneralSettings({ settings, modes, onUpdate }) {
   );
 }
 
-function SizePresetEditor({ presets, onUpdate }) {
+function VideoSettings({ settings, onUpdate }) {
+  return (
+    <div id="settings-video" className="panel">
+      <h2>视频设置</h2>
+      <div className="settings-item" id="settings-item-wan-video-size-presets">
+        <label className="settings-item-label">Wan 系列尺寸标签</label>
+        <p className="settings-item-desc">
+          wan 系列视频模型表单中宽高输入框下方的快捷尺寸标签;宽高必须是 16 的倍数。
+        </p>
+        <SizePresetEditor
+          presets={settings?.wan_video_size_presets ?? []}
+          field="wan_video_size_presets"
+          idPrefix="wan-video-"
+          multiple={16}
+          onUpdate={onUpdate}
+        />
+      </div>
+      <div className="settings-item" id="settings-item-minimax-video-size-presets">
+        <label className="settings-item-label">MiniMax 系列尺寸标签</label>
+        <p className="settings-item-desc">
+          MiniMax 系列视频模型表单中宽高输入框下方的快捷尺寸标签;宽高必须是 32 的倍数。
+        </p>
+        <SizePresetEditor
+          presets={settings?.minimax_video_size_presets ?? []}
+          field="minimax_video_size_presets"
+          idPrefix="minimax-video-"
+          multiple={32}
+          onUpdate={onUpdate}
+        />
+      </div>
+    </div>
+  );
+}
+
+// field 指定写入的设置项键名;idPrefix 用于区分图片/视频多处编辑器的 DOM id;
+// multiple 是该系列模型要求的宽高倍数(wan 为 16,MiniMax 为 32)
+function SizePresetEditor({ presets, onUpdate, field = "size_presets", idPrefix = "", multiple = 16 }) {
   const [adding, setAdding] = useState(false);
   const [width, setWidth] = useState(576);
   const [height, setHeight] = useState(576);
@@ -312,7 +355,7 @@ function SizePresetEditor({ presets, onUpdate }) {
 
   function removePreset(target) {
     onUpdate({
-      size_presets: presets.filter(
+      [field]: presets.filter(
         ([w, h]) => !(w === target[0] && h === target[1]),
       ),
     });
@@ -320,8 +363,8 @@ function SizePresetEditor({ presets, onUpdate }) {
 
   function savePreset() {
     for (const [label, value] of [["宽度", width], ["高度", height]]) {
-      if (!Number.isInteger(value) || value <= 0 || value % 16) {
-        setError(`${label}必须是正整数且为 16 的倍数`);
+      if (!Number.isInteger(value) || value <= 0 || value % multiple) {
+        setError(`${label}必须是正整数且为 ${multiple} 的倍数`);
         return;
       }
     }
@@ -330,18 +373,18 @@ function SizePresetEditor({ presets, onUpdate }) {
       return;
     }
     setError(null);
-    onUpdate({ size_presets: [...presets, [width, height]] });
+    onUpdate({ [field]: [...presets, [width, height]] });
     setAdding(false);
   }
 
   return (
-    <div className="preset-editor" id="size-preset-editor">
+    <div className="preset-editor" id={`${idPrefix}size-preset-editor`}>
       <div className="preset-editor-tags">
         {presets.map(([w, h]) => (
-          <span className="preset-tag" key={`${w}x${h}`} id={`size-tag-${w}x${h}`}>
+          <span className="preset-tag" key={`${w}x${h}`} id={`${idPrefix}size-tag-${w}x${h}`}>
             {w === h ? `${w}²` : `${w}×${h}`}
             <button
-              id={`delete-tag-${w}x${h}`}
+              id={`${idPrefix}delete-tag-${w}x${h}`}
               type="button"
               className="preset-tag-delete"
               aria-label={`删除 ${w}×${h}`}
@@ -353,7 +396,7 @@ function SizePresetEditor({ presets, onUpdate }) {
         ))}
         {!adding && (
           <button
-            id="add-preset-btn"
+            id={`${idPrefix}add-preset-btn`}
             type="button"
             className="chip"
             onClick={() => {
@@ -367,31 +410,31 @@ function SizePresetEditor({ presets, onUpdate }) {
       </div>
 
       {adding && (
-        <div className="preset-add-form" id="preset-add-form">
+        <div className="preset-add-form" id={`${idPrefix}preset-add-form`}>
           <input
-            id="preset-width-input"
+            id={`${idPrefix}preset-width-input`}
             type="number"
-            step={16}
-            min={16}
+            step={multiple}
+            min={multiple}
             value={width}
             onChange={(e) => setWidth(Number(e.target.value))}
             placeholder="宽度"
           />
           <span className="preset-add-x">×</span>
           <input
-            id="preset-height-input"
+            id={`${idPrefix}preset-height-input`}
             type="number"
-            step={16}
-            min={16}
+            step={multiple}
+            min={multiple}
             value={height}
             onChange={(e) => setHeight(Number(e.target.value))}
             placeholder="高度"
           />
-          <button id="preset-save-btn" type="button" className="chip" onClick={savePreset}>
+          <button id={`${idPrefix}preset-save-btn`} type="button" className="chip" onClick={savePreset}>
             保存
           </button>
           <button
-            id="preset-cancel-btn"
+            id={`${idPrefix}preset-cancel-btn`}
             type="button"
             className="chip"
             onClick={() => setAdding(false)}
@@ -400,7 +443,7 @@ function SizePresetEditor({ presets, onUpdate }) {
           </button>
         </div>
       )}
-      {error && <div id="preset-form-error" className="form-error">{error}</div>}
+      {error && <div id={`${idPrefix}preset-form-error`} className="form-error">{error}</div>}
     </div>
   );
 }

@@ -570,7 +570,9 @@ export default function App() {
               inputImagePrefill={videoPrefill}
               paramsPrefill={videoParamsPrefill}
               promptPresets={settings?.prompt_presets ?? []}
-              sizePresets={settings?.video_size_presets ?? []}
+              sizePresets={videoModel?.startsWith("minimax")
+                ? (settings?.minimax_video_size_presets ?? [])
+                : (settings?.wan_video_size_presets ?? [])}
               onSubmit={handleVideoSubmit}
             />
           )}

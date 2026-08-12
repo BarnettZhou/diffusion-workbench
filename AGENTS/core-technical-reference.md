@@ -23,6 +23,10 @@ FastAPI 服务共同复用的核心层，不包含 HTTP、WebSocket 或界面状
 - 固定 seed 或 `-1` 随机 seed；
 - 单 GPU 串行队列和批量任务；
 - 模型跨任务复用、切模重载、跳过/停止/退出释放；
+- Worker 在同一文本编码器、模式和提示词不变时复用纯文本 conditioning，避免重复执行
+  tokenizer/文本编码；切换 diffusion 模型、VAE、text encoder、clip 类型或进入带图像条件的
+  视频路径时会失效。H3 首帧/参考图 conditioning 依赖图像内容，不与纯文生视频缓存混用；
+  latent 仍按任务重新创建。
 - SQLite 任务记录、资源别名和原子 PNG 输出；
 - 队列、执行阶段、采样速度/ETA、可选 latent 预览、错误和完成事件；
 - 带版本化生成参数 iTXt 元数据的 PNG 输出。

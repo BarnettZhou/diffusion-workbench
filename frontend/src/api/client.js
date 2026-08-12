@@ -57,6 +57,12 @@ export const api = {
       `/api/v1/album/image/${encodeURIComponent(id)}?dir=${encodeURIComponent(dir)}`,
       { method: "DELETE" },
     ),
+  // 批量删除:返回 {deleted: [relpath], failed: [{relpath, reason}]}
+  batchDeleteAlbumImages: (relpaths, dir = "output") =>
+    request("/api/v1/album/batch-delete", {
+      method: "POST",
+      body: JSON.stringify({ dir, relpaths }),
+    }),
   albumDirs: () => request("/api/v1/album/dirs"),
   addAlbumDir: (payload) =>
     request("/api/v1/album/dirs", { method: "POST", body: JSON.stringify(payload) }),

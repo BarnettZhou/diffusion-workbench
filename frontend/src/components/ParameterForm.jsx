@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api/client";
 import PromptAssistModal from "./PromptAssistModal";
 import PromptPresetPicker from "./PromptPresetPicker";
@@ -20,10 +20,10 @@ const DEFAULT_UPSCALE = {
   interpolationImage: "lanczos",
   interpolationLatent: "bislerp",
   modelIndex: null,
-  tile: 512,
-  overlap: 32,
-  steps: 9,
-  startStep: 4,
+  tile: "512",
+  overlap: "32",
+  steps: "9",
+  startStep: "4",
   cfg: "", // 空字符串表示继承首次采样
   sampler: "",
   scheduler: "",
@@ -36,11 +36,14 @@ export default function ParameterForm({ mode, onModeChange, resources, sizePrese
   const [selections, setSelections] = useState({});
   const [prompt, setPrompt] = useState("");
   const [negativePrompt, setNegativePrompt] = useState("");
-  const [width, setWidth] = useState(576);
-  const [height, setHeight] = useState(576);
-  const [steps, setSteps] = useState(8);
-  const [count, setCount] = useState(1);
+  // 数字输入框一律存原始字符串:允许删空和 "-1" 这类中间态,提交时才校验/转换
+  const [width, setWidth] = useState("576");
+  const [height, setHeight] = useState("576");
+  const [steps, setSteps] = useState("8");
+  const [count, setCount] = useState("1");
   const [cfg, setCfg] = useState("1");
+  // seed:-1 表示随机;相册"发送到工作台"时替换为图片的 seed
+  const [seed, setSeed] = useState("-1");
   const [sampler, setSampler] = useState("euler");
   const [scheduler, setScheduler] = useState("simple");
   const [samplerOptions, setSamplerOptions] = useState(FALLBACK_SAMPLERS);
@@ -58,9 +61,27 @@ export default function ParameterForm({ mode, onModeChange, resources, sizePrese
   const [presetTarget, setPresetTarget] = useState(null);
   // prompt 输入框高度倍率,循环 1x → 2x → 3x
   const [promptSize, setPromptSize] = useState(1);
+  // 负面提示词输入框高度倍率,循环 1x → 2x → 3x
+  const [negativePromptSize, setNegativePromptSize] = useState(1);
 
   const models = resources?.[mode]?.models ?? [];
   const vaes = resources?.[mode]?.vaes ?? [];
+  // 模型封面选择器排序:先按别名,再按模型文件名;无别名的模型按文件名参与排序
+  const pickerModels = useMemo(() => {
+    const compare = (a, b) => {
+      const key = (item) => item.alias ?? item.name;
+      const byKey = String(key(a)).localeCompare(String(key(b)), undefined, {
+        sensitivity: "base",
+        numeric: true,
+      });
+      if (byKey !== 0) return byKey;
+      return String(a.name).localeCompare(String(b.name), undefined, {
+        sensitivity: "base",
+        numeric: true,
+      });
+    };
+    return [...models].sort(compare);
+  }, [models]);
   const usesCheckpointVae = resources?.[mode]?.modelLoader === "checkpoint";
   const availableModes = Object.keys(resources ?? {});
   const modelIndex = selections[mode]?.modelIndex ?? null;
@@ -120,7 +141,7 @@ export default function ParameterForm({ mode, onModeChange, resources, sizePrese
     const { multiple, min, max } = LIMITS.size;
     for (const [value, setter] of [[prefill.width, setWidth], [prefill.height, setHeight]]) {
       if (Number.isInteger(value) && value >= min && value <= max && value % multiple === 0) {
-        setter(value);
+        setter(String(value));
       }
     }
     if (
@@ -128,10 +149,15 @@ export default function ParameterForm({ mode, onModeChange, resources, sizePrese
       prefill.steps >= LIMITS.steps.min &&
       prefill.steps <= LIMITS.steps.max
     ) {
-      setSteps(prefill.steps);
+      setSteps(String(prefill.steps));
     }
     if (Number.isFinite(Number(prefill.cfg)) && Number(prefill.cfg) > 0) {
       setCfg(String(prefill.cfg));
+    }
+    // 图片的 seed 替换默认的 -1(随机);非法值保留当前值
+    const prefillSeed = Number(prefill.seed);
+    if (Number.isInteger(prefillSeed) && prefillSeed >= -1) {
+      setSeed(String(prefillSeed));
     }
     if (samplerOptions.includes(prefill.sampler)) setSampler(prefill.sampler);
     if (schedulerOptions.includes(prefill.scheduler)) setScheduler(prefill.scheduler);
@@ -189,7 +215,7 @@ export default function ParameterForm({ mode, onModeChange, resources, sizePrese
       nextSteps >= LIMITS.steps.min &&
       nextSteps <= LIMITS.steps.max
     ) {
-      setSteps(nextSteps);
+      setSteps(String(nextSteps));
     }
     const nextCfg = Number(defaults.cfg ?? 1);
     if (Number.isFinite(nextCfg) && nextCfg > 0) setCfg(String(defaults.cfg ?? 1));
@@ -218,18 +244,23 @@ export default function ParameterForm({ mode, onModeChange, resources, sizePrese
       return usesCheckpointVae ? "请选择模型" : "请选择模型和 VAE";
     }
     if (!prompt.trim()) return "prompt 不能为空";
-    for (const [label, value] of [["宽度", width], ["高度", height]]) {
+    for (const [label, raw] of [["宽度", width], ["高度", height]]) {
+      const value = Number(raw);
       if (!Number.isInteger(value) || value < min || value > max || value % multiple) {
         return `${label}必须是 ${min}-${max} 之间 ${multiple} 的倍数`;
       }
     }
-    if (steps < LIMITS.steps.min || steps > LIMITS.steps.max) {
+    const stepsNum = Number(steps);
+    if (!Number.isInteger(stepsNum) || stepsNum < LIMITS.steps.min || stepsNum > LIMITS.steps.max) {
       return `steps 必须在 ${LIMITS.steps.min} 到 ${LIMITS.steps.max} 之间`;
     }
-    if (count < LIMITS.count.min || count > LIMITS.count.max) {
+    const countNum = Number(count);
+    if (!Number.isInteger(countNum) || countNum < LIMITS.count.min || countNum > LIMITS.count.max) {
       return `批次数量必须在 ${LIMITS.count.min} 到 ${LIMITS.count.max} 之间`;
     }
     if (!Number.isFinite(Number(cfg)) || Number(cfg) <= 0) return "CFG 必须是大于 0 的数值";
+    const seedNum = Number(seed);
+    if (!Number.isInteger(seedNum) || seedNum < -1) return "seed 必须是 -1(随机)或非负整数";
     return validateUpscale();
   }
 
@@ -246,18 +277,22 @@ export default function ParameterForm({ mode, onModeChange, resources, sizePrese
     if (upscale.method === "upscale_model") {
       if (upscale.modelIndex === null) return "请选择放大模型";
       const { min, max, multiple } = LIMITS.upscaleTile;
-      if (!Number.isInteger(upscale.tile) || upscale.tile < min || upscale.tile > max || upscale.tile % multiple) {
+      const tile = Number(upscale.tile);
+      if (!Number.isInteger(tile) || tile < min || tile > max || tile % multiple) {
         return `分块大小必须在 ${min}-${max} 之间且是 ${multiple} 的倍数`;
       }
-      if (!Number.isInteger(upscale.overlap) || upscale.overlap < 0 || upscale.overlap >= upscale.tile / 2) {
+      const overlap = Number(upscale.overlap);
+      if (!Number.isInteger(overlap) || overlap < 0 || overlap >= tile / 2) {
         return "分块重叠必须大于等于 0 且小于分块大小的一半";
       }
     }
     if (upscale.method === "latent_hires") {
-      if (!Number.isInteger(upscale.steps) || upscale.steps < LIMITS.steps.min || upscale.steps > LIMITS.steps.max) {
+      const upscaleSteps = Number(upscale.steps);
+      if (!Number.isInteger(upscaleSteps) || upscaleSteps < LIMITS.steps.min || upscaleSteps > LIMITS.steps.max) {
         return `总步数必须在 ${LIMITS.steps.min} 到 ${LIMITS.steps.max} 之间`;
       }
-      if (!Number.isInteger(upscale.startStep) || upscale.startStep < 0 || upscale.startStep >= upscale.steps) {
+      const startStep = Number(upscale.startStep);
+      if (!Number.isInteger(startStep) || startStep < 0 || startStep >= upscaleSteps) {
         return "开始步数必须大于等于 0 且小于总步数";
       }
       if (upscale.cfg !== "" && (!Number.isFinite(Number(upscale.cfg)) || Number(upscale.cfg) <= 0)) {
@@ -284,12 +319,12 @@ export default function ParameterForm({ mode, onModeChange, resources, sizePrese
     };
     if (upscale.method === "upscale_model") {
       payload.model_index = upscale.modelIndex;
-      payload.tile = upscale.tile;
-      payload.overlap = upscale.overlap;
+      payload.tile = Number(upscale.tile);
+      payload.overlap = Number(upscale.overlap);
     }
     if (upscale.method === "latent_hires") {
-      payload.steps = upscale.steps;
-      payload.start_step = upscale.startStep;
+      payload.steps = Number(upscale.steps);
+      payload.start_step = Number(upscale.startStep);
       payload.cfg = upscale.cfg === "" ? null : Number(upscale.cfg);
       payload.sampler = upscale.sampler || null;
       payload.scheduler = upscale.scheduler || null;
@@ -310,11 +345,11 @@ export default function ParameterForm({ mode, onModeChange, resources, sizePrese
         vae_index: usesCheckpointVae ? undefined : vaeIndex,
         prompt: prompt.trim(),
         negative_prompt: negativePrompt,
-        width,
-        height,
-        steps,
-        seed: -1,
-        count,
+        width: Number(width),
+        height: Number(height),
+        steps: Number(steps),
+        seed: Number(seed),
+        count: Number(count),
         cfg: Number(cfg),
         sampler,
         scheduler,
@@ -416,10 +451,32 @@ export default function ParameterForm({ mode, onModeChange, resources, sizePrese
             >
               预设
             </button>
+            <button
+              id="negative-size-btn"
+              type="button"
+              className="prompt-assist-btn"
+              title={`切换输入框高度(当前 ${negativePromptSize}x)`}
+              aria-label={`切换输入框高度(当前 ${negativePromptSize}x)`}
+              onClick={() => setNegativePromptSize((size) => (size % 3) + 1)}
+            >
+              {negativePromptSize}x
+            </button>
+            <button
+              id="negative-clear-btn"
+              type="button"
+              className="prompt-assist-btn"
+              title="清空负面提示词"
+              aria-label="清空负面提示词"
+              disabled={!negativePrompt}
+              onClick={() => setNegativePrompt("")}
+            >
+              清空
+            </button>
           </div>
         </div>
         <textarea
           id="negative-prompt-input"
+          className={negativePromptSize > 1 ? `prompt-size-${negativePromptSize}` : undefined}
           value={negativePrompt}
           placeholder="不想出现在画面中的内容(可留空)……"
           onChange={(e) => setNegativePrompt(e.target.value)}
@@ -457,7 +514,7 @@ export default function ParameterForm({ mode, onModeChange, resources, sizePrese
 
       {modelPickerOpen && (
         <div id="model-picker" className="model-picker">
-          {models.map((item) => {
+          {pickerModels.map((item) => {
             const cover = modelCovers[item.name];
             return (
               <button
@@ -506,7 +563,7 @@ export default function ParameterForm({ mode, onModeChange, resources, sizePrese
           <input
             id="width-input" type="number" step={LIMITS.size.multiple}
             min={LIMITS.size.min} max={LIMITS.size.max}
-            value={width} onChange={(e) => setWidth(Number(e.target.value))}
+            value={width} onChange={(e) => setWidth(e.target.value)}
           />
         </div>
         <div className="field" id="field-height">
@@ -514,7 +571,7 @@ export default function ParameterForm({ mode, onModeChange, resources, sizePrese
           <input
             id="height-input" type="number" step={LIMITS.size.multiple}
             min={LIMITS.size.min} max={LIMITS.size.max}
-            value={height} onChange={(e) => setHeight(Number(e.target.value))}
+            value={height} onChange={(e) => setHeight(e.target.value)}
           />
         </div>
       </div>
@@ -526,7 +583,7 @@ export default function ParameterForm({ mode, onModeChange, resources, sizePrese
             id={`preset-${presetWidth}x${presetHeight}`}
             type="button"
             className="chip"
-            onClick={() => { setWidth(presetWidth); setHeight(presetHeight); }}
+            onClick={() => { setWidth(String(presetWidth)); setHeight(String(presetHeight)); }}
           >
             {presetWidth === presetHeight
               ? `${presetWidth}²`
@@ -541,7 +598,7 @@ export default function ParameterForm({ mode, onModeChange, resources, sizePrese
           <input
             id="steps-input" type="number"
             min={LIMITS.steps.min} max={LIMITS.steps.max}
-            value={steps} onChange={(e) => setSteps(Number(e.target.value))}
+            value={steps} onChange={(e) => setSteps(e.target.value)}
           />
         </div>
         <div className="field" id="field-count">
@@ -549,7 +606,7 @@ export default function ParameterForm({ mode, onModeChange, resources, sizePrese
           <input
             id="count-input" type="number"
             min={LIMITS.count.min} max={LIMITS.count.max}
-            value={count} onChange={(e) => setCount(Number(e.target.value))}
+            value={count} onChange={(e) => setCount(e.target.value)}
           />
         </div>
       </div>
@@ -584,6 +641,14 @@ export default function ParameterForm({ mode, onModeChange, resources, sizePrese
           <input
             id="cfg-input" type="number" min={0} step="any"
             value={cfg} onChange={(e) => setCfg(e.target.value)}
+          />
+        </div>
+        <div className="field" id="field-seed">
+          <label htmlFor="seed-input">种子 Seed</label>
+          <input
+            id="seed-input" type="number" min={-1} step={1}
+            title="-1 表示随机"
+            value={seed} onChange={(e) => setSeed(e.target.value)}
           />
         </div>
       </div>

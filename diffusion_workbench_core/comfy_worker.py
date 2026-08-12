@@ -160,6 +160,7 @@ class ComfyWorker:
         from comfy_extras.nodes_model_advanced import ModelSamplingSD3
         from comfy_extras.nodes_audio import VAEDecodeAudio
         from comfy_extras.nodes_minimax_h3 import (
+            EmptyMiniMaxH3LatentAV,
             MiniMaxH3ImageToVideo,
             MiniMaxH3ReferenceToVideo,
             MiniMaxH3SigmaShift,
@@ -191,6 +192,7 @@ class ComfyWorker:
         self.VAEDecodeAudio = VAEDecodeAudio
         self.MiniMaxH3ImageToVideo = MiniMaxH3ImageToVideo
         self.MiniMaxH3ReferenceToVideo = MiniMaxH3ReferenceToVideo
+        self.EmptyMiniMaxH3LatentAV = EmptyMiniMaxH3LatentAV
         self.MiniMaxH3SigmaShift = MiniMaxH3SigmaShift
         self.WanImageToVideo = WanImageToVideo
         self.Wan22ImageToVideoLatent = Wan22ImageToVideoLatent
@@ -212,6 +214,8 @@ class ComfyWorker:
         self.clip = None
         self.clip_path: Path | None = None
         self.clip_type: str | None = None
+        # 仅缓存不含图像/视频条件的文本 conditioning，避免重复执行昂贵的文本编码。
+        self._conditioning_cache: dict[tuple, tuple] = {}
         self.vae = None
         self.vae_path: Path | None = None
         self.audio_vae = None
@@ -285,13 +289,13 @@ class ComfyWorker:
                 "total": stage_total,
             }
         )
-        positive = self.nodes.CLIPTextEncode().encode(self.clip, command["prompt"])[0]
-        if command["mode"] != "zib" and float(command["cfg"]) == 1.0:
-            negative = positive
-        else:
-            negative = self.nodes.CLIPTextEncode().encode(
-                self.clip, command.get("negative_prompt", "")
-            )[0]
+        positive, negative = self._encode_text_conditioning(
+            command["prompt"],
+            command.get("negative_prompt", ""),
+            cfg=float(command["cfg"]),
+            cache_scope=f"image:{command['mode']}",
+            reuse_negative_at_cfg_one=command["mode"] != "zib",
+        )
         load_seconds = time.perf_counter() - load_started
 
         emit(
@@ -619,10 +623,13 @@ class ComfyWorker:
                 "total": stage_total,
             }
         )
-        positive = self.nodes.CLIPTextEncode().encode(self.clip, command["prompt"])[0]
-        negative = self.nodes.CLIPTextEncode().encode(
-            self.clip, command.get("negative_prompt", "")
-        )[0]
+        positive, negative = self._encode_text_conditioning(
+            command["prompt"],
+            command.get("negative_prompt", ""),
+            cfg=float(command["cfg"]),
+            cache_scope=f"video:{command['video_model']}",
+            reuse_negative_at_cfg_one=False,
+        )
         load_seconds = time.perf_counter() - load_started
 
         emit(
@@ -871,6 +878,12 @@ class ComfyWorker:
                 int(command["width"]), int(command["height"]), int(command["length"]),
                 ref_images={"ref_image_1": reference_image},
             )
+        elif first_frame is None:
+            # 纯文生视频没有图像条件，可以复用文本 conditioning；latent 每次重新创建。
+            positive = self._encode_h3_text_conditioning(command["prompt"])
+            latent = self.EmptyMiniMaxH3LatentAV.execute(
+                int(command["width"]), int(command["height"]), int(command["length"])
+            )[0]
         else:
             positive, latent = self.MiniMaxH3ImageToVideo.execute(
                 self.clip, self.vae, command["prompt"],
@@ -977,6 +990,25 @@ class ComfyWorker:
             "loaded_resources": self.resource_status(),
             **performance,
         }
+
+    def _encode_h3_text_conditioning(self, prompt: str):
+        """缓存纯文生视频的 H3 文本 conditioning；图像条件路径不调用此缓存。"""
+
+        cache = getattr(self, "_conditioning_cache", None)
+        if cache is None:
+            cache = self._conditioning_cache = {}
+        clip_identity = (str(self.clip_path) if self.clip_path else None, self.clip_type)
+        key = (clip_identity, "h3-t2va", prompt)
+        cached = cache.get(key)
+        if cached is not None:
+            return cached
+        # 与 ComfyUI 原生 MiniMaxH3ImageToVideo 在无首帧时保持相同的空图像参数。
+        tokens = self.clip.tokenize(prompt, images=[])
+        conditioning = self.clip.encode_from_tokens_scheduled(tokens)
+        cache[key] = conditioning
+        if len(cache) > 8:
+            cache.pop(next(iter(cache)))
+        return conditioning
 
     def _video_metadata(self, command: dict, resource_metadata: dict, performance: dict) -> dict:
         return {
@@ -1190,6 +1222,7 @@ class ComfyWorker:
         if self.model is not None and self.model_path == path:
             return False
         self._unload_gpu()
+        self._conditioning_cache.clear()
         self.model = None
         self.model_path = None
         gc.collect()
@@ -1208,6 +1241,7 @@ class ComfyWorker:
             self.model_path = high_path
             return False
         self._unload_gpu()
+        self._conditioning_cache.clear()
         self.model = self.model_high = self.model_low = None
         self.model_path = self.model_high_path = self.model_low_path = None
         gc.collect()
@@ -1267,6 +1301,7 @@ class ComfyWorker:
         ):
             return False
         self._unload_gpu()
+        self._conditioning_cache.clear()
         self.model = self.clip = self.vae = None
         self.model_path = self.clip_path = self.vae_path = None
         self.checkpoint_path = None
@@ -1296,6 +1331,7 @@ class ComfyWorker:
         self.clip = None
         self.clip_path = None
         self.clip_type = None
+        self._conditioning_cache.clear()
         gc.collect()
         name = self._register_exact("text_encoders", path)
         self.clip = self.nodes.CLIPLoader().load_clip(name, clip_type)[0]
@@ -1307,6 +1343,7 @@ class ComfyWorker:
         if self.vae is not None and self.vae_path == path:
             return False
         self._unload_gpu()
+        self._conditioning_cache.clear()
         self.vae = None
         self.upscale_model = None
         self.vae_path = None
@@ -1316,10 +1353,49 @@ class ComfyWorker:
         self.vae_path = path
         return True
 
+    def _encode_text_conditioning(
+        self,
+        prompt: str,
+        negative_prompt: str,
+        *,
+        cfg: float,
+        cache_scope: str,
+        reuse_negative_at_cfg_one: bool,
+    ) -> tuple[object, object]:
+        """编码并缓存纯文本 conditioning；带图像条件的节点不得调用此方法。"""
+
+        clip_identity = (str(self.clip_path) if self.clip_path else None, self.clip_type)
+        key = (
+            clip_identity,
+            cache_scope,
+            prompt,
+            negative_prompt,
+            bool(reuse_negative_at_cfg_one and cfg == 1.0),
+        )
+        cache = getattr(self, "_conditioning_cache", None)
+        if cache is None:
+            cache = self._conditioning_cache = {}
+        cached = cache.get(key)
+        if cached is not None:
+            return cached
+
+        encoder = self.nodes.CLIPTextEncode()
+        positive = encoder.encode(self.clip, prompt)[0]
+        if reuse_negative_at_cfg_one and cfg == 1.0:
+            negative = positive
+        else:
+            negative = encoder.encode(self.clip, negative_prompt)[0]
+        cache[key] = (positive, negative)
+        # 文本 embedding 可能较大，限制缓存规模，保留最近插入的条目。
+        if len(cache) > 8:
+            cache.pop(next(iter(cache)))
+        return positive, negative
+
     def _ensure_audio_vae(self, path: Path) -> bool:
         if self.audio_vae is not None and self.audio_vae_path == path:
             return False
         self._unload_gpu()
+        self._conditioning_cache.clear()
         self.audio_vae = None
         self.audio_vae_path = None
         gc.collect()
@@ -1364,6 +1440,7 @@ class ComfyWorker:
         self.checkpoint_path = None
         self.upscale_model_path = None
         self.clip_type = None
+        self._conditioning_cache.clear()
         self.mode = None
         gc.collect()
         self.model_management.cleanup_models_gc()

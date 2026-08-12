@@ -231,12 +231,23 @@ class WorkbenchApp(App):
 
         status = self.core.runtime_status()
         queue_state = "运行中" if self.running_job else "空闲"
+        gpu_utilization = status.get("gpu_utilization_percent")
+        gpu_memory_percent = status.get("gpu_memory_percent")
+        memory = status.get("memory") or {}
+        system_memory = (
+            f"{memory['used_gib']:.2f}/{memory['total_gib']:.2f} GiB ({memory['percent']:g}%)"
+            if all(memory.get(key) is not None for key in ("used_gib", "total_gib", "percent"))
+            else "不可用"
+        )
         text = (
             f"当前阶段: {phase}\n"
             f"采样步数: {sample}{self._sampling_metrics_text()} | "
             f"队列: {queue_state} | 等待: {self.queue_waiting}\n"
             f"Worker: {status.get('worker', 'stopped')} | "
-            f"GPU: {status.get('gpu', '不可用')}"
+            f"GPU: {status.get('gpu', '不可用')} | "
+            f"利用率: {gpu_utilization if gpu_utilization is not None else '不可用'}% | "
+            f"显存: {gpu_memory_percent if gpu_memory_percent is not None else '不可用'}%\n"
+            f"系统内存: {system_memory}"
         )
         self.query_one("#progress", Static).update(text)
 

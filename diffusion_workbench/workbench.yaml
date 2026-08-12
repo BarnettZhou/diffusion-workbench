@@ -31,4 +31,4 @@ resources:
 
 output_dir: output
 database: .cache\diffusion_workbench.sqlite3
-worker_timeout_seconds: 300
+worker_timeout_seconds: 3600

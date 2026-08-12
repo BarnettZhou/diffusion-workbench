@@ -181,3 +181,15 @@ async def skip_current(core=Depends(get_core)):
     if skipped_id is None:
         return {"accepted": False, "skipped_job_id": None, "reason": "no-cancellable-job"}
     return {"accepted": True, "skipped_job_id": skipped_id, "scope": "current-job-only"}
+
+
+@router.post("/control/release")
+async def release_resources(core=Depends(get_core)):
+    """释放 Worker 已加载的模型/VAE/text encoder 等资源;任务或队列非空时 409。"""
+    try:
+        await asyncio.to_thread(core.release_resources)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except TimeoutError as exc:
+        raise HTTPException(status_code=504, detail=str(exc)) from exc
+    return {"released": True}

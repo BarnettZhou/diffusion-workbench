@@ -7,6 +7,8 @@ const STAGE_LABELS = {
   vae: "VAE 解码",
   saving: "保存图片",
   saved: "图片已保存",
+  video_encoding: "编码视频",
+  video_saved: "视频已保存",
 };
 
 function formatEta(seconds) {
@@ -30,7 +32,7 @@ export default function ProgressPanel({ job, preview, queuedCount }) {
   const sampling = job.stage === "sampling" && job.total;
   const percent = sampling
     ? Math.round((job.step / job.total) * 100)
-    : job.stage === "saved"
+    : job.stage === "saved" || job.stage === "video_saved"
       ? 100
       : 5;
   const eta = formatEta(job.etaSeconds);

@@ -9,6 +9,21 @@ const MODE_LABELS = {
   sdxl: "SDXL",
 };
 
+// 模型列表排序:先按别名,再按模型文件名;无别名的模型按文件名参与排序
+// (与工作台模型选择器 ParameterForm 的排序规则一致)
+function compareModels(a, b) {
+  const key = (item) => item.alias ?? item.name;
+  const byKey = String(key(a)).localeCompare(String(key(b)), undefined, {
+    sensitivity: "base",
+    numeric: true,
+  });
+  if (byKey !== 0) return byKey;
+  return String(a.name).localeCompare(String(b.name), undefined, {
+    sensitivity: "base",
+    numeric: true,
+  });
+}
+
 function formatSize(bytes) {
   if (bytes == null) return "未知";
   if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(2)} GiB`;
@@ -30,7 +45,7 @@ export default function ModelSettings({ modes, onResourcesChanged }) {
   async function load(targetMode) {
     try {
       const body = await api.models(targetMode);
-      setModels(body.models);
+      setModels([...(body.models ?? [])].sort(compareModels));
     } catch (err) {
       setError(err.message);
     }
@@ -184,7 +199,13 @@ function ModelEditor({ model, onClose, onSaved }) {
   }
 
   return (
-    <Modal id="model-editor" title={`编辑模型 ${model.name}`} onClose={onClose}>
+    <Modal
+      id="model-editor"
+      title={`编辑模型 ${model.name}`}
+      onClose={onClose}
+      // 编辑信息时遮罩点击不关闭,防止误触丢失未保存内容;Esc 仍可关闭
+      maskClosable={false}
+    >
       <div className="model-editor-main">
         <div
           id="editor-cover"

@@ -9,7 +9,7 @@ EventHub 向所有连接扇出；每个事件追加单调递增的 `event_id`，
 - 事件**不持久化、不重放**。正确姿势:先连接订阅，再拉取 `GET /api/v1/status` 和
   `GET /api/v1/jobs/{id}` 快照;断线重连后重新拉快照，不能仅凭事件重建事实。
 - 服务端事件队列有上限；慢客户端会丢失最旧事件（含预览），但绝不影响生成。
-- 与 Core 原始事件相比,`output_path` 被改写为 `image_url`,`error` 只保留首行摘要,
+- 与 Core 原始事件相比,`output_path` 被改写为 `image_url`(视频任务为 `video_url`),`error` 只保留首行摘要,
   绝不包含绝对路径或 traceback。
 
 ## 事件类型
@@ -97,19 +97,35 @@ VAE 解码):
 
 ### `job_finished`
 
-任务到达终态。`status` ∈ `completed|failed|cancelled`;`image_url` 指向原图下载
-端点；任务启用了图片放大且最终完成时，额外携带 `upscaled_image_url` 指向放大图
-端点。放大阶段失败或取消时不带 `upscaled_image_url`，但原图可能已保存，
-以 `GET /api/v1/jobs/{job_id}` 的持久化状态为准。
+任务到达终态。`status` ∈ `completed|failed|cancelled`;`artifact_type` 为 `image` 或
+`video`:图片任务携带 `image_url` 指向原图下载端点,视频任务携带 `video_url` 指向
+`/api/v1/videos/{job_id}`(此时不带 `image_url`);任务启用了图片放大且最终完成时,
+额外携带 `upscaled_image_url` 指向放大图端点。放大阶段失败或取消时不带
+`upscaled_image_url`,但原图可能已保存,以 `GET /api/v1/jobs/{job_id}` 的持久化
+状态为准。视频阶段名为 `video_encoding`/`video_saved`,没有 latent 预览事件。
 
 ```json
 {
   "type": "job_finished",
   "job_id": "job-uuid",
   "status": "completed",
+  "artifact_type": "image",
   "image_url": "/api/v1/images/job-uuid",
   "upscaled_image_url": "/api/v1/images/job-uuid/upscaled",
   "event_id": 48
+}
+```
+
+视频任务示例:
+
+```json
+{
+  "type": "job_finished",
+  "job_id": "job-uuid",
+  "status": "completed",
+  "artifact_type": "video",
+  "video_url": "/api/v1/videos/job-uuid",
+  "event_id": 49
 }
 ```
 

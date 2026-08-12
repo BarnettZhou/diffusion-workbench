@@ -51,7 +51,7 @@ export default function UpscaleCard({ value, onChange }) {
   // 放大模型默认选中第一项
   const modelIndex =
     value.modelIndex ?? (method === "upscale_model" ? (models[0]?.index ?? null) : null);
-  const executedSteps = value.steps - value.startStep;
+  const executedSteps = Number(value.steps) - Number(value.startStep);
 
   return (
     <div id="upscale-card" className="panel form">
@@ -136,7 +136,7 @@ export default function UpscaleCard({ value, onChange }) {
                 id="upscale-tile-input" type="number" step={LIMITS.tile.multiple}
                 min={LIMITS.tile.min} max={LIMITS.tile.max}
                 value={value.tile}
-                onChange={(e) => patch({ tile: Number(e.target.value) })}
+                onChange={(e) => patch({ tile: e.target.value })}
               />
             </div>
             <div className="field" id="field-upscale-overlap">
@@ -144,7 +144,7 @@ export default function UpscaleCard({ value, onChange }) {
               <input
                 id="upscale-overlap-input" type="number" min={0}
                 value={value.overlap}
-                onChange={(e) => patch({ overlap: Number(e.target.value) })}
+                onChange={(e) => patch({ overlap: e.target.value })}
               />
             </div>
           </div>
@@ -160,7 +160,7 @@ export default function UpscaleCard({ value, onChange }) {
                 id="upscale-steps-input" type="number"
                 min={LIMITS.steps.min} max={LIMITS.steps.max}
                 value={value.steps}
-                onChange={(e) => patch({ steps: Number(e.target.value) })}
+                onChange={(e) => patch({ steps: e.target.value })}
               />
             </div>
             <div className="field" id="field-upscale-start-step">
@@ -168,7 +168,7 @@ export default function UpscaleCard({ value, onChange }) {
               <input
                 id="upscale-start-step-input" type="number" min={0}
                 value={value.startStep}
-                onChange={(e) => patch({ startStep: Number(e.target.value) })}
+                onChange={(e) => patch({ startStep: e.target.value })}
               />
             </div>
           </div>

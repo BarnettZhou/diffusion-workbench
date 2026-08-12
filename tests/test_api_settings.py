@@ -53,6 +53,81 @@ class SettingsTests(ApiTestCase):
             self.assertEqual(response.status_code, 422, f"{key} 不应成为全局设置")
 
 
+class VideoSizePresetsTests(ApiTestCase):
+    def test_returns_defaults_without_file(self):
+        response = self.client.get("/api/v1/settings")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json()["wan_video_size_presets"],
+            [[704, 960], [960, 704], [1280, 720], [720, 1280]],
+        )
+        self.assertEqual(response.json()["minimax_video_size_presets"], [])
+
+    def test_round_trip_persists(self):
+        presets = [[704, 960], [1280, 720]]
+        response = self.client.put(
+            "/api/v1/settings", json={"wan_video_size_presets": presets}
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["wan_video_size_presets"], presets)
+
+        settings_file = self.core.config.database.parent / "settings.json"
+        stored = json.loads(settings_file.read_text(encoding="utf-8"))
+        self.assertEqual(stored["wan_video_size_presets"], presets)
+
+        reloaded = SettingsStore(settings_file)
+        self.assertEqual(reloaded.get()["wan_video_size_presets"], presets)
+
+    def test_rejects_invalid_values(self):
+        for payload in (
+            {"wan_video_size_presets": "not-a-list"},
+            {"wan_video_size_presets": [[577, 576]]},
+            {"wan_video_size_presets": [[576]]},
+            {"wan_video_size_presets": [[0, 576]]},
+            {"wan_video_size_presets": [[576.0, 576]]},
+        ):
+            response = self.client.put("/api/v1/settings", json=payload)
+            self.assertEqual(response.status_code, 422, f"{payload} 应被拒绝")
+
+    def test_minimax_presets_require_multiple_of_32(self):
+        presets = [[608, 352], [768, 1344]]
+        response = self.client.put(
+            "/api/v1/settings", json={"minimax_video_size_presets": presets}
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["minimax_video_size_presets"], presets)
+
+        # 16 的倍数但不是 32 的倍数应被拒绝
+        bad = self.client.put(
+            "/api/v1/settings", json={"minimax_video_size_presets": [[720, 352]]}
+        )
+        self.assertEqual(bad.status_code, 422)
+
+    def test_legacy_video_size_presets_migrate_to_wan(self):
+        settings_file = self.core.config.database.parent / "settings.json"
+        settings_file.parent.mkdir(parents=True, exist_ok=True)
+        legacy = [[704, 960], [960, 704]]
+        settings_file.write_text(
+            json.dumps({"video_size_presets": legacy}), encoding="utf-8"
+        )
+
+        store = SettingsStore(settings_file)
+        self.assertEqual(store.get()["wan_video_size_presets"], legacy)
+
+        # 新键已存在时旧键不覆盖
+        settings_file.write_text(
+            json.dumps(
+                {
+                    "video_size_presets": legacy,
+                    "wan_video_size_presets": [[1280, 720]],
+                }
+            ),
+            encoding="utf-8",
+        )
+        store = SettingsStore(settings_file)
+        self.assertEqual(store.get()["wan_video_size_presets"], [[1280, 720]])
+
+
 class LlmSettingsTests(ApiTestCase):
     def test_llm_defaults(self):
         response = self.client.get("/api/v1/settings")

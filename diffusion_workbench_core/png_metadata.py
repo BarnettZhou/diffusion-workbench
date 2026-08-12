@@ -9,6 +9,8 @@ from PIL import Image, PngImagePlugin
 PNG_METADATA_KEY = "diffusion_workbench"
 PNG_METADATA_SCHEMA_VERSION = 4
 SUPPORTED_PNG_METADATA_SCHEMA_VERSIONS = {1, 2, 3, PNG_METADATA_SCHEMA_VERSION}
+# ComfyUI 原生生成 PNG 把 API prompt 节点图写进这个 tEXt 块
+COMFYUI_METADATA_KEY = "prompt"
 
 
 class ResourceFingerprintCache:
@@ -172,3 +174,152 @@ def _sha256_file(path: Path) -> str:
         while chunk := stream.read(8 * 1024 * 1024):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def read_comfyui_metadata(path: str | Path) -> dict[str, Any] | None:
+    """Read generation parameters from a PNG produced by ComfyUI itself.
+
+    ComfyUI 把 API prompt 形式的完整节点图写进 PNG 的 ``prompt`` tEXt 块，
+    本函数从中提取加载器（UNET/VAE/CLIP）名称与第一个采样器的参数，
+    返回与相册展示对齐的公开形状；取不到的字段为 None。
+    非 ComfyUI 生成的 PNG（没有 ``prompt`` 块或格式不符）返回 None。
+    """
+
+    with Image.open(path) as image:
+        raw = image.info.get(COMFYUI_METADATA_KEY)
+        size = image.size
+    if raw is None or not isinstance(raw, str):
+        return None
+    try:
+        graph = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(graph, dict):
+        return None
+    nodes = {
+        str(node_id): node
+        for node_id, node in graph.items()
+        if isinstance(node, dict)
+        and isinstance(node.get("class_type"), str)
+        and isinstance(node.get("inputs"), dict)
+    }
+    if not nodes:
+        return None
+
+    sampler = _first_node(nodes, "KSampler", "KSamplerAdvanced")
+    unet = _first_node(nodes, "UNETLoader")
+    vae = _first_node(nodes, "VAELoader")
+    clip = _first_node(nodes, "CLIPLoader")
+    if sampler is None and unet is None:
+        return None
+
+    model_name = _base_name(_scalar(unet["inputs"].get("unet_name"))) if unet else None
+    metadata: dict[str, Any] = {
+        "source": "comfyui",
+        "mode": _guess_comfyui_mode(model_name) if model_name else None,
+        "prompt": None,
+        "negative_prompt": None,
+        "width": size[0],
+        "height": size[1],
+        "steps": None,
+        "cfg": None,
+        "sampler": None,
+        "scheduler": None,
+        "seed": None,
+        "model_name": model_name,
+        "vae_name": _base_name(_scalar(vae["inputs"].get("vae_name"))) if vae else None,
+        "text_encoder_name": (
+            _base_name(_scalar(clip["inputs"].get("clip_name"))) if clip else None
+        ),
+    }
+    if sampler is not None:
+        inputs = sampler["inputs"]
+        metadata["steps"] = _scalar(inputs.get("steps"))
+        metadata["cfg"] = _float_or_none(_scalar(inputs.get("cfg")))
+        metadata["sampler"] = _scalar(inputs.get("sampler_name"))
+        metadata["scheduler"] = _scalar(inputs.get("scheduler"))
+        # KSamplerAdvanced 的随机种子字段叫 noise_seed
+        metadata["seed"] = _scalar(inputs.get("seed", inputs.get("noise_seed")))
+        metadata["prompt"] = _encode_text(nodes, inputs.get("positive"))
+        metadata["negative_prompt"] = _encode_text(nodes, inputs.get("negative"))
+    return metadata
+
+
+def _first_node(
+    nodes: Mapping[str, Mapping[str, Any]], *class_types: str
+) -> Mapping[str, Any] | None:
+    """按文档序取第一个 class_type 匹配的节点（多轮采样只取第一个）。"""
+
+    for node in nodes.values():
+        if node["class_type"] in class_types:
+            return node
+    return None
+
+
+def _scalar(value: Any) -> Any:
+    """节点输入若是链接（list 形式）则取不到字面量，返回 None。"""
+
+    if isinstance(value, (list, dict)):
+        return None
+    return value
+
+
+def _float_or_none(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            return None
+    return None
+
+
+def _base_name(value: Any) -> str | None:
+    """模型名可能带子目录（Windows 反斜杠），展示只取文件名。"""
+
+    if not isinstance(value, str) or not value:
+        return None
+    return value.replace("\\", "/").split("/")[-1]
+
+
+def _guess_comfyui_mode(model_name: str) -> str | None:
+    """按 unet 文件名 best-effort 推断模式，匹配顺序：krea2 → zib → sdxl → zit。"""
+
+    lowered = model_name.lower()
+    if "krea" in lowered:
+        return "krea2"
+    if "zib" in lowered or "z-image-base" in lowered:
+        return "zib"
+    if "sdxl" in lowered:
+        return "sdxl"
+    if "zit" in lowered or "zimage" in lowered or "z-image-turbo" in lowered:
+        return "zit"
+    return None
+
+
+def _encode_text(
+    nodes: Mapping[str, Mapping[str, Any]], link: Any
+) -> str | None:
+    """沿采样器 positive/negative 链接找到 CLIPTextEncode 并取其 text。"""
+
+    node = _link_node(nodes, link)
+    if node is None:
+        return None
+    # negative 常经 ConditioningZeroOut 透传，需再跟一层 conditioning 输入
+    if node["class_type"] == "ConditioningZeroOut":
+        node = _link_node(nodes, node["inputs"].get("conditioning"))
+        if node is None:
+            return None
+    text = node["inputs"].get("text")
+    return text if isinstance(text, str) else None
+
+
+def _link_node(
+    nodes: Mapping[str, Mapping[str, Any]], link: Any
+) -> Mapping[str, Any] | None:
+    if not isinstance(link, (list, tuple)) or len(link) < 1:
+        return None
+    return nodes.get(str(link[0]))

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
+import shutil
+import subprocess
 import threading
 import uuid
 from dataclasses import dataclass
@@ -11,15 +14,49 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
 from PIL import Image
 
-from diffusion_workbench_core import read_generation_metadata
+from diffusion_workbench_core import read_comfyui_metadata, read_generation_metadata
 
-from .dependencies import get_album_manager
+from .dependencies import get_album_manager, get_core
 from .files import _public_metadata
+
+
+def _public_video_metadata(job) -> dict:
+    """脱敏的视频生成参数:只含生成参数与资源文件名,不含绝对路径。"""
+    return {
+        "video_model": job.video_model.value,
+        "generation_type": job.generation_type,
+        "prompt": job.prompt,
+        "negative_prompt": job.negative_prompt,
+        "width": job.width,
+        "height": job.height,
+        "duration_seconds": job.duration_seconds,
+        "fps": job.fps,
+        "length": job.length,
+        "steps": job.steps,
+        "seed": job.seed,
+        "cfg": job.cfg,
+        "shift": job.shift,
+        "denoise": job.denoise,
+        "latent_multiplier": job.latent_multiplier,
+        "sampler": job.sampler,
+        "scheduler": job.scheduler,
+        "model_name": job.model_path.name,
+        "vae_name": job.vae_path.name,
+    }
 
 router = APIRouter(prefix="/api/v1")
 
 # 内置目录(输出目录)的固定 id,不允许改名/删除
 BUILTIN_DIR_ID = "output"
+
+
+def _validate_subdir(subdir: str) -> str:
+    """校验子目录参数:只允许根目录下单级目录名,拒绝越界路径。"""
+    normalized = subdir.replace("\\", "/").strip("/")
+    parts = [part for part in normalized.split("/") if part]
+    if len(parts) != 1 or parts[0] in (".", ".."):
+        raise HTTPException(status_code=422, detail="无效的子目录")
+    return parts[0]
 
 
 @dataclass
@@ -30,6 +67,7 @@ class AlbumEntry:
     size_bytes: int
     width: int
     height: int
+    kind: str  # "image" | "video"
 
 
 class AlbumIndex:
@@ -54,31 +92,36 @@ class AlbumIndex:
             entries: list[AlbumEntry] = []
             seen: set[Path] = set()
             if self._root.is_dir():
-                for path in self._root.rglob("*.png"):
+                for path in (*self._root.rglob("*.png"), *self._root.rglob("*.mp4")):
                     try:
                         stat = path.stat()
                     except OSError:
                         continue
                     seen.add(path)
-                    cached = self._size_cache.get(path)
-                    if (
-                        cached
-                        and cached[0] == stat.st_mtime_ns
-                        and cached[1] == stat.st_size
-                    ):
-                        _, _, width, height = cached
+                    is_video = path.suffix.lower() == ".mp4"
+                    if is_video:
+                        # mp4 不做 PIL 尺寸解析,宽高记 0
+                        width, height = 0, 0
                     else:
-                        try:
-                            with Image.open(path) as image:
-                                width, height = image.size
-                        except Exception:
-                            continue  # 写入中或损坏的文件本次跳过
-                        self._size_cache[path] = (
-                            stat.st_mtime_ns,
-                            stat.st_size,
-                            width,
-                            height,
-                        )
+                        cached = self._size_cache.get(path)
+                        if (
+                            cached
+                            and cached[0] == stat.st_mtime_ns
+                            and cached[1] == stat.st_size
+                        ):
+                            _, _, width, height = cached
+                        else:
+                            try:
+                                with Image.open(path) as image:
+                                    width, height = image.size
+                            except Exception:
+                                continue  # 写入中或损坏的文件本次跳过
+                            self._size_cache[path] = (
+                                stat.st_mtime_ns,
+                                stat.st_size,
+                                width,
+                                height,
+                            )
                     entries.append(
                         AlbumEntry(
                             relpath=path.relative_to(self._root).as_posix(),
@@ -87,6 +130,7 @@ class AlbumIndex:
                             size_bytes=stat.st_size,
                             width=width,
                             height=height,
+                            kind="video" if is_video else "image",
                         )
                     )
             for path in list(self._size_cache):
@@ -94,6 +138,18 @@ class AlbumIndex:
                     del self._size_cache[path]
         entries.sort(key=lambda entry: (entry.mtime_ns, entry.relpath), reverse=True)
         return entries
+
+    def subdirs(self) -> list[str]:
+        """根目录下第一级子目录名(通常按日期分目录),按名称倒序(新的在前)。"""
+        if not self._root.is_dir():
+            return []
+        names = [
+            child.name
+            for child in self._root.iterdir()
+            if child.is_dir() and not child.name.startswith(".")
+        ]
+        names.sort(reverse=True)
+        return names
 
     def resolve(self, relpath: str) -> Path:
         path = (self._root / relpath).resolve()
@@ -182,9 +238,10 @@ class AlbumDirStore:
 class AlbumManager:
     """多目录相册:内置 output + 用户添加的目录,每个目录一个 AlbumIndex。"""
 
-    def __init__(self, output_dir: Path, store: AlbumDirStore):
+    def __init__(self, output_dir: Path, store: AlbumDirStore, poster_dir: Path | None = None):
         self._output = Path(output_dir).resolve()
         self._store = store
+        self._poster_dir = Path(poster_dir) if poster_dir is not None else None
         self._lock = threading.Lock()
         self._indexes: dict[str, AlbumIndex] = {}
 
@@ -240,6 +297,61 @@ class AlbumManager:
         with self._lock:
             self._indexes.pop(dir_id, None)
 
+    def poster_for(self, dir_id: str, relpath: str) -> Path:
+        """视频封面(首帧 JPEG):ffmpeg 抽取,按 (目录, 路径, mtime, size) 缓存。
+
+        iOS(WebKit)不会为 preload=metadata 的 <video> 渲染首帧,相册封面只能
+        用服务端生成的静态图。缓存键含 mtime 与大小,文件被替换后自动失效。
+        """
+        if self._poster_dir is None:
+            raise HTTPException(status_code=503, detail="未配置视频封面缓存目录")
+        index = self.index_for(dir_id)
+        path = index.resolve(relpath)
+        if path.suffix.lower() != ".mp4":
+            raise HTTPException(status_code=404, detail="只有视频才有封面")
+        stat = path.stat()
+        key = f"{index.root}|{relpath}|{stat.st_mtime_ns}|{stat.st_size}"
+        digest = hashlib.sha1(key.encode("utf-8")).hexdigest()
+        cache_path = self._poster_dir / f"{digest}.jpg"
+        if cache_path.is_file():
+            return cache_path
+        ffmpeg = shutil.which("ffmpeg")
+        if ffmpeg is None:
+            raise HTTPException(
+                status_code=503, detail="服务器未安装 ffmpeg,无法生成视频封面"
+            )
+        self._poster_dir.mkdir(parents=True, exist_ok=True)
+        temporary = self._poster_dir / f".{digest}.{uuid.uuid4().hex[:8]}.tmp.jpg"
+        try:
+            result = subprocess.run(
+                [
+                    ffmpeg,
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-y",
+                    "-i",
+                    str(path),
+                    "-frames:v",
+                    "1",
+                    "-q:v",
+                    "3",
+                    str(temporary),
+                ],
+                capture_output=True,
+                timeout=30,
+            )
+            if result.returncode != 0 or not temporary.is_file():
+                detail = result.stderr.decode("utf-8", "replace").strip()
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"视频封面生成失败:{detail or '无法解码首帧'}",
+                )
+            temporary.replace(cache_path)
+        finally:
+            temporary.unlink(missing_ok=True)
+        return cache_path
+
 
 @router.get("/album/dirs")
 async def list_album_dirs(manager: AlbumManager = Depends(get_album_manager)):
@@ -276,15 +388,29 @@ async def remove_album_dir(dir_id: str, manager: AlbumManager = Depends(get_albu
     return {"deleted": dir_id}
 
 
+@router.get("/album/subdirs")
+async def list_album_subdirs(
+    dir: str = Query(default=BUILTIN_DIR_ID),
+    manager: AlbumManager = Depends(get_album_manager),
+):
+    index = await asyncio.to_thread(manager.index_for, dir)
+    return {"subdirs": await asyncio.to_thread(index.subdirs)}
+
+
 @router.get("/album")
 async def list_album(
     limit: int = Query(default=60, ge=1, le=200),
     cursor: str | None = None,
     dir: str = Query(default=BUILTIN_DIR_ID),
+    subdir: str | None = None,
     manager: AlbumManager = Depends(get_album_manager),
 ):
     index = await asyncio.to_thread(manager.index_for, dir)
     entries = await asyncio.to_thread(index.scan)
+    # subdir 限定只看某个一级子目录,目录内为深度查找(含更深层级)
+    if subdir is not None:
+        prefix = _validate_subdir(subdir) + "/"
+        entries = [entry for entry in entries if entry.relpath.startswith(prefix)]
     start = 0
     if cursor is not None:
         try:
@@ -312,6 +438,7 @@ async def list_album(
                 "size_bytes": entry.size_bytes,
                 "width": entry.width,
                 "height": entry.height,
+                "kind": entry.kind,
             }
             for entry in page
         ],
@@ -324,16 +451,40 @@ async def album_image_metadata(
     relpath: str,
     dir: str = Query(default=BUILTIN_DIR_ID),
     manager: AlbumManager = Depends(get_album_manager),
+    core=Depends(get_core),
 ):
     index = await asyncio.to_thread(manager.index_for, dir)
     path = await asyncio.to_thread(index.resolve, relpath)
+    # mp4 没有内嵌元数据,参数来自 jobs 表中的视频任务记录(按输出文件反查)
+    if path.suffix.lower() == ".mp4":
+        try:
+            job = await asyncio.to_thread(
+                core.find_video_job_by_output, path.parent.name, path.name
+            )
+        except KeyError:
+            raise HTTPException(status_code=404, detail="视频没有对应的生成记录") from None
+        return _public_video_metadata(job)
     try:
         metadata = await asyncio.to_thread(read_generation_metadata, path)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    if metadata is None:
+    if metadata is not None:
+        return _public_metadata(metadata)
+    # 非本应用 PNG 回退解析 ComfyUI 原生 prompt 块(已是公开形状,直接返回)
+    comfyui_metadata = await asyncio.to_thread(read_comfyui_metadata, path)
+    if comfyui_metadata is None:
         raise HTTPException(status_code=404, detail="图片不包含生成元数据")
-    return _public_metadata(metadata)
+    return comfyui_metadata
+
+
+@router.get("/album/image/{relpath:path}/poster")
+async def album_image_poster(
+    relpath: str,
+    dir: str = Query(default=BUILTIN_DIR_ID),
+    manager: AlbumManager = Depends(get_album_manager),
+):
+    poster = await asyncio.to_thread(manager.poster_for, dir, relpath)
+    return FileResponse(poster, media_type="image/jpeg")
 
 
 @router.get("/album/image/{relpath:path}")
@@ -344,7 +495,8 @@ async def album_image(
 ):
     index = await asyncio.to_thread(manager.index_for, dir)
     path = await asyncio.to_thread(index.resolve, relpath)
-    return FileResponse(path, media_type="image/png")
+    media_type = "video/mp4" if path.suffix.lower() == ".mp4" else "image/png"
+    return FileResponse(path, media_type=media_type)
 
 
 @router.delete("/album/image/{relpath:path}")
@@ -358,3 +510,38 @@ async def delete_album_image(
     path = await asyncio.to_thread(index.resolve, relpath)
     await asyncio.to_thread(path.unlink)
     return {"deleted": relpath}
+
+
+@router.post("/album/batch-delete")
+async def batch_delete_album_images(
+    payload: dict,
+    manager: AlbumManager = Depends(get_album_manager),
+):
+    """批量删除:逐个解析并删除,单个失败不影响其余;已不存在的文件视为删除成功(幂等)。"""
+    dir = str(payload.get("dir") or BUILTIN_DIR_ID)
+    relpaths = payload.get("relpaths")
+    if not isinstance(relpaths, list) or not relpaths:
+        raise HTTPException(status_code=422, detail="relpaths 必须是非空列表")
+    if len(relpaths) > 200:
+        raise HTTPException(status_code=422, detail="单次最多删除 200 个文件")
+    if not all(isinstance(item, str) and item for item in relpaths):
+        raise HTTPException(status_code=422, detail="relpaths 必须是字符串列表")
+    index = await asyncio.to_thread(manager.index_for, dir)
+    deleted: list[str] = []
+    failed: list[dict[str, str]] = []
+    for relpath in relpaths:
+        try:
+            path = await asyncio.to_thread(index.resolve, relpath)
+        except HTTPException as exc:
+            if exc.status_code == 404:
+                deleted.append(relpath)  # 已被删除/移动,目标已达成
+            else:
+                failed.append({"relpath": relpath, "reason": str(exc.detail)})
+            continue
+        try:
+            await asyncio.to_thread(path.unlink)
+        except OSError as exc:
+            failed.append({"relpath": relpath, "reason": str(exc)})
+            continue
+        deleted.append(relpath)
+    return {"deleted": deleted, "failed": failed}

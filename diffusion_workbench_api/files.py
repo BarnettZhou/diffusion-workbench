@@ -130,3 +130,22 @@ def _public_metadata(metadata: dict) -> dict:
             parameters.get("upscale") or {}, resources.get("upscale_model") or {}
         ),
     }
+
+
+
+@router.get("/videos/{job_id}")
+async def get_video(job_id: str, core=Depends(get_core)):
+    """受控读取视频任务的 mp4,路径校验规则与图片一致。"""
+    try:
+        job = await asyncio.to_thread(core.get_video_job, job_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"video job {job_id} 不存在") from None
+    output_root = core.config.output_dir.resolve()
+    path = job.output_path.resolve()
+    if not path.is_relative_to(output_root):
+        raise HTTPException(status_code=500, detail="invalid stored output path")
+    if not path.is_file():
+        if job.status in ("queued", "running"):
+            raise HTTPException(status_code=404, detail="任务尚未完成")
+        raise HTTPException(status_code=410, detail="输出文件已丢失")
+    return FileResponse(path, media_type="video/mp4")
