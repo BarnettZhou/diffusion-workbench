@@ -806,7 +806,7 @@ domain 的 SAMPLERS/SCHEDULERS);`latent_multiplier` 为大于 0 的有限浮点�
 
 MiniMax H3 的 FL2VA 不带图片为 T2V，单张 `input_image_id` 为首帧 I2V；Ref2VA 模型使用
 单张 `reference_image_id` 生成 R2V。第一阶段不支持多图、参考视频或参考音频，且
-`input_image_id` 与 `reference_image_id` 不能同时提供。H3 宽高必须为 32 的倍数，FPS 固定 24，CFG 固定 1；`length` 从
+`input_image_id` 与 `reference_image_id` 不能同时提供。H3 宽高必须为 32 的倍数，单边为 32–1344，且总面积不超过 768×1344；FPS 固定 24，CFG 固定 1；`length` 从
 `duration_seconds * 24` 向上对齐到 `17n+5`（5 秒对应 124 帧），因此实际媒体时长可
 略长于请求秒数。H3 请求未提供 sampler 时默认 `res_multistep`，shift 默认 12；内部
 audio shift 固定为 3。输出 MP4 含 H.264 视频和 32 kHz 双声道 AAC 音频。

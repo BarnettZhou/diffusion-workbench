@@ -28,6 +28,9 @@ try:
         UpscaleSettings,
         VideoModel,
         validate_sampling,
+        H3_MAX_PIXELS,
+        H3_MAX_SIZE,
+        H3_MIN_SIZE,
     )
     from .png_metadata import (
         ResourceFingerprintCache,
@@ -44,6 +47,9 @@ except ImportError:  # The Comfy worker runs this module as a standalone script.
         UpscaleSettings,
         VideoModel,
         validate_sampling,
+        H3_MAX_PIXELS,
+        H3_MAX_SIZE,
+        H3_MIN_SIZE,
     )
     from png_metadata import (
         ResourceFingerprintCache,
@@ -1431,16 +1437,18 @@ class ComfyWorker:
                 f"{video_model.value} clip_type 必须为 {expected_clip_type}"
             )
         width, height = int(command["width"]), int(command["height"])
-        if width <= 0 or height <= 0 or width % 16 or height % 16:
-            raise ValueError("视频宽高必须为正数且是 16 的倍数")
+        if width < 16 or height < 16:
+            raise ValueError("视频宽高必须至少为 16 像素")
         duration = int(command["duration_seconds"])
         fps = int(command["fps"])
         length = int(command["length"])
         if duration <= 0 or fps <= 0 or fps > 120:
             raise ValueError("视频时长必须为正数，帧率必须在 1 到 120 之间")
         if video_model == VideoModel.MINIMAX_H3:
-            if width % 32 or height % 32:
+            if width < H3_MIN_SIZE or height < H3_MIN_SIZE or width % 32 or height % 32:
                 raise ValueError("MiniMax H3 视频宽高必须是 32 的倍数")
+            if width > H3_MAX_SIZE or height > H3_MAX_SIZE or width * height > H3_MAX_PIXELS:
+                raise ValueError("MiniMax H3 画面不能超过 1344×768 的官方 Base 范围")
             expected_length = max(5, round(duration * 24))
             while expected_length % 17 != 5:
                 expected_length += 1
@@ -1460,6 +1468,8 @@ class ComfyWorker:
             if has_reference and command.get("input_image_path"):
                 raise ValueError("MiniMax H3 首帧输入与参考图不能同时提供")
         else:
+            if width % 16 or height % 16:
+                raise ValueError("视频宽高必须是 16 的倍数")
             if length != duration * fps + 1:
                 raise ValueError("视频 length 必须等于 duration_seconds * fps + 1")
             if (length - 1) % 4:

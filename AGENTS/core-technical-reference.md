@@ -227,7 +227,7 @@ I2V-14B 双阶段采样必须与 ComfyUI `KSamplerAdvanced` 一致：第一阶�
 剩余噪声，第二阶段禁用新增噪声并传入全零 noise；HTTP/TUI/前端对 14B 默认选择 `euler`。
 
 MiniMax H3 支持 FL2VA 与 Ref2VA：FL2VA 无输入图为 T2V，单张输入图作为首帧时为 I2V；Ref2VA 第一阶段支持单张参考图 R2V，不支持多图、参考视频或参考音频。现有单图
-API 通过受控 `reference_image` 接口接收参考图，不能与首帧同时提供。H3 固定 24 FPS、CFG 1，宽高为 32 的倍数，帧数从请求秒数向上
+API 通过受控 `reference_image` 接口接收参考图，不能与首帧同时提供。H3 固定 24 FPS、CFG 1，宽高为 32 的倍数，单边为 32–1344，面积不超过 768×1344，帧数从请求秒数向上
 对齐到 `17n+5`（5 秒为 124 帧）；默认 sampler 为 `res_multistep`，视频/audio shift
 分别为 12/3。Worker 使用 ComfyUI 原生 H3 节点建立联合 AV latent，采样后分别用视频
 VAE 和音频 VAE 解码，并封装为 H.264 + 32 kHz 双声道 AAC MP4。负面提示词保留在任务

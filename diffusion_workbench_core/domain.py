@@ -51,6 +51,12 @@ SAMPLERS = (
     "uni_pc",
     "uni_pc_bh2",
 )
+
+VIDEO_MIN_SIZE = 16
+VIDEO_MAX_SIZE = 4096
+H3_MIN_SIZE = 32
+H3_MAX_SIZE = 1344
+H3_MAX_PIXELS = 768 * 1344
 SCHEDULERS = (
     "simple",
     "sgm_uniform",
@@ -352,13 +358,17 @@ class VideoGenerationSettings:
             raise ValueError("视频时长必须是整数秒")
         if not isinstance(self.fps, int) or isinstance(self.fps, bool):
             raise ValueError("帧率必须是整数")
-        if self.width <= 0 or self.height <= 0 or self.width % 16 or self.height % 16:
-            raise ValueError("视频宽高必须为正数且是 16 的倍数")
+        if self.width < VIDEO_MIN_SIZE or self.height < VIDEO_MIN_SIZE:
+            raise ValueError(f"视频宽高必须至少为 {VIDEO_MIN_SIZE} 像素")
         if self.duration_seconds <= 0:
             raise ValueError("视频时长必须是正整数")
         if not 1 <= self.fps <= 120:
             raise ValueError("帧率必须在 1 到 120 之间")
         if self.video_model == VideoModel.MINIMAX_H3:
+            if self.width > H3_MAX_SIZE or self.height > H3_MAX_SIZE:
+                raise ValueError(f"MiniMax H3 宽高不能超过 {H3_MAX_SIZE} 像素")
+            if self.width * self.height > H3_MAX_PIXELS:
+                raise ValueError("MiniMax H3 画面面积不能超过 768×1344")
             if self.fps != 24:
                 raise ValueError("MiniMax H3 帧率固定为 24")
             if self.length % 17 != 5:
@@ -376,6 +386,11 @@ class VideoGenerationSettings:
             raise ValueError("参考图片只支持 MiniMax H3 Ref2VA")
         elif (self.length - 1) % 4:
             raise ValueError("视频总帧数必须满足 length = 4n + 1")
+        if self.video_model == VideoModel.MINIMAX_H3:
+            if self.width % 32 or self.height % 32:
+                raise ValueError("MiniMax H3 视频宽高必须是 32 的倍数")
+        elif self.width % 16 or self.height % 16:
+            raise ValueError("视频宽高必须是 16 的倍数")
         if self.seed < -1:
             raise ValueError("seed 必须为 -1 或非负整数")
         if self.video_model == VideoModel.WAN22_I2V_14B and self.input_image is None:

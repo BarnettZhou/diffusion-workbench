@@ -9,6 +9,7 @@ const LIMITS = {
   steps: { min: 1, max: 100 },
   count: { min: 1, max: 8 },
   size: { min: 16, max: 4096, multiple: 16 },
+  h3Size: { min: 32, max: 1344, multiple: 32, maxPixels: 768 * 1344 },
   duration: { min: 1, max: 60 },
   fps: { min: 1, max: 60 },
 };
@@ -93,6 +94,22 @@ export default function VideoParameterForm({
   const framesValid =
     framesComputable &&
     (isMiniMaxH3 ? fpsNum === 24 && totalFrames % 17 === 5 : (totalFrames - 1) % 4 === 0);
+  const visibleSizePresets = (sizePresets ?? []).filter(([presetWidth, presetHeight]) => {
+    if (isMiniMaxH3) {
+      return (
+        presetWidth >= LIMITS.h3Size.min && presetHeight >= LIMITS.h3Size.min &&
+        presetWidth <= LIMITS.h3Size.max && presetHeight <= LIMITS.h3Size.max &&
+        presetWidth % LIMITS.h3Size.multiple === 0 &&
+        presetHeight % LIMITS.h3Size.multiple === 0 &&
+        presetWidth * presetHeight <= LIMITS.h3Size.maxPixels
+      );
+    }
+    return (
+      presetWidth >= LIMITS.size.min && presetHeight >= LIMITS.size.min &&
+      presetWidth <= LIMITS.size.max && presetHeight <= LIMITS.size.max &&
+      presetWidth % LIMITS.size.multiple === 0 && presetHeight % LIMITS.size.multiple === 0
+    );
+  });
 
   // 拉取全部可用采样器/调度器,失败时保留兜底列表
   useEffect(() => {
@@ -290,13 +307,17 @@ export default function VideoParameterForm({
     if (requiresInputImage && !inputImage) {
       return `${videoModelLabel} 必须提供输入图片`;
     }
-    const { multiple, min, max } = LIMITS.size;
+    const sizeLimit = isMiniMaxH3 ? LIMITS.h3Size : LIMITS.size;
+    const { multiple, min, max } = sizeLimit;
     for (const [label, raw] of [["宽度", width], ["高度", height]]) {
       const value = Number(raw);
       const requiredMultiple = isMiniMaxH3 ? 32 : multiple;
       if (!Number.isInteger(value) || value < min || value > max || value % requiredMultiple) {
         return `${label}必须是 ${min}-${max} 之间 ${requiredMultiple} 的倍数`;
       }
+    }
+    if (isMiniMaxH3 && Number(width) * Number(height) > LIMITS.h3Size.maxPixels) {
+      return "MiniMax H3 画面面积不能超过 768×1344（1,032,192 像素）";
     }
     if (!Number.isInteger(durationNum) || durationNum < LIMITS.duration.min || durationNum > LIMITS.duration.max) {
       return `视频长度必须是 ${LIMITS.duration.min}-${LIMITS.duration.max} 秒的整数`;
@@ -637,23 +658,28 @@ export default function VideoParameterForm({
         <div className="field" id="field-video-width">
           <label htmlFor="video-width-input">宽度 (px)</label>
           <input
-            id="video-width-input" type="number" step={isMiniMaxH3 ? 32 : LIMITS.size.multiple}
-            min={LIMITS.size.min} max={LIMITS.size.max}
+            id="video-width-input" type="number" step={isMiniMaxH3 ? LIMITS.h3Size.multiple : LIMITS.size.multiple}
+            min={isMiniMaxH3 ? LIMITS.h3Size.min : LIMITS.size.min} max={isMiniMaxH3 ? LIMITS.h3Size.max : LIMITS.size.max}
             value={width} onChange={(e) => setWidth(e.target.value)}
           />
         </div>
         <div className="field" id="field-video-height">
           <label htmlFor="video-height-input">高度 (px)</label>
           <input
-            id="video-height-input" type="number" step={isMiniMaxH3 ? 32 : LIMITS.size.multiple}
-            min={LIMITS.size.min} max={LIMITS.size.max}
+            id="video-height-input" type="number" step={isMiniMaxH3 ? LIMITS.h3Size.multiple : LIMITS.size.multiple}
+            min={isMiniMaxH3 ? LIMITS.h3Size.min : LIMITS.size.min} max={isMiniMaxH3 ? LIMITS.h3Size.max : LIMITS.size.max}
             value={height} onChange={(e) => setHeight(e.target.value)}
           />
         </div>
       </div>
+      <p className="form-hint" id="video-size-hint">
+        {isMiniMaxH3
+          ? "MiniMax H3：宽高 32 的倍数，单边 32–1344，画面面积不超过 768×1344"
+          : "Wan：宽高 16 的倍数，单边 16–4096"}
+      </p>
 
       <div className="preset-row" id="video-size-presets">
-        {(sizePresets ?? []).map(([presetWidth, presetHeight]) => (
+        {visibleSizePresets.map(([presetWidth, presetHeight]) => (
           <button
             key={`${presetWidth}x${presetHeight}`}
             id={`video-preset-${presetWidth}x${presetHeight}`}
