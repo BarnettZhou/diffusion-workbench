@@ -131,11 +131,13 @@ export default function VideoParameterForm({
   }, [resources]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    // 切回 FL2VA 时清除不再适用的 Ref2VA 参考图，避免表单进入不可提交状态。
-    if ((!isMiniMaxH3 || (modelIndex !== null && !isRef2va)) && referenceImage) {
+    // Ref2VA 与首帧输入是互斥模式，切换模型时清除另一种图片状态。
+    if (isRef2va) {
+      if (inputImage) clearInputImage();
+    } else if (referenceImage) {
       clearReferenceImage();
     }
-  }, [isMiniMaxH3, isRef2va, modelIndex]);
+  }, [isRef2va]);
 
   // 按模型家族写入已验证的默认采样参数。
   useEffect(() => {
@@ -190,7 +192,7 @@ export default function VideoParameterForm({
 
   // 相册"发送到视频生成"带过来的输入图片:直接引用受控 URL,不走本地上传
   useEffect(() => {
-    if (!inputImagePrefill) return;
+    if (!inputImagePrefill || isRef2va) return;
     setInputImage((prev) => {
       if (prev?.previewUrl?.startsWith("blob:")) URL.revokeObjectURL(prev.previewUrl);
       return {
@@ -199,7 +201,7 @@ export default function VideoParameterForm({
         name: inputImagePrefill.name,
       };
     });
-  }, [inputImagePrefill]);
+  }, [inputImagePrefill, isRef2va]);
 
   // 选择文件后立即上传,本地用 object URL 预览;清除时仅移除引用,服务端文件保留
   async function handleInputImageSelect(file) {
@@ -426,7 +428,7 @@ export default function VideoParameterForm({
         />
       </div>
 
-      {isMiniMaxH3 && (
+      {isRef2va && (
         <div className="field" id="field-video-reference-image">
           <div className="label-row">
             <label htmlFor="video-reference-image-input">Ref2VA 参考图片</label>
@@ -489,7 +491,7 @@ export default function VideoParameterForm({
         />
       </div>
 
-      <div className="field" id="field-video-input-image">
+      {!isRef2va && <div className="field" id="field-video-input-image">
         <div className="label-row">
           <label htmlFor="video-input-image-input">
             {requiresInputImage ? "输入图片(必选,图生视频)" : "输入图片(可选,图生视频)"}
@@ -548,7 +550,7 @@ export default function VideoParameterForm({
             已上传:{inputImage.name},本次提交将按图生视频(I2V)生成。
           </p>
         )}
-      </div>
+      </div>}
 
       {usesDualModels ? (
         <div className="row" id="video-dual-model-row">
