@@ -14,6 +14,8 @@ from diffusion_workbench_core.domain import (
     ResourceItem,
     UpscaleMethod,
     UpscaleSettings,
+    VideoGenerationSettings,
+    VideoModel,
 )
 from diffusion_workbench_core.storage import JobStore
 from diffusion_workbench_core.controller import GenerationController
@@ -211,6 +213,36 @@ worker_timeout_seconds: 300
 
 
 class JobStoreTests(unittest.TestCase):
+    def test_video_jobs_persist_input_and_reference_columns(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            store = JobStore(root / "jobs.sqlite3", root / "output")
+            settings = VideoGenerationSettings(
+                video_model=VideoModel.MINIMAX_H3,
+                model=ResourceItem(1, root / "minimax_h3_fl2va_pruned_int4_convrot.safetensors"),
+                vae=ResourceItem(1, root / "video-vae.safetensors"),
+                text_encoder=root / "qwen.safetensors",
+                audio_vae=root / "audio-vae.safetensors",
+                prompt="a quiet studio",
+                width=608,
+                height=352,
+                duration_seconds=5,
+                fps=24,
+                steps=8,
+                cfg=1.0,
+                sampler="res_multistep",
+                scheduler="simple",
+                shift=12.0,
+            )
+
+            jobs = store.create_video_jobs(settings, 1)
+            persisted = store.get_video_job(jobs[0].id)
+
+            self.assertEqual(persisted.generation_type, "t2v")
+            self.assertIsNone(persisted.input_image_path)
+            self.assertIsNone(persisted.reference_image_path)
+            self.assertEqual(persisted.length, 124)
+
     def test_batch_reserves_daily_mode_paths_and_persists_settings(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
