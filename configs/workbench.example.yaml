@@ -42,13 +42,13 @@ upscaling:
   models:
     - D:\models\upscale_models
 
-# 视频资源。MiniMax H3 需分别配置视频 VAE 与音频 VAE；当前只接入 FL2VA 模型。
+# 视频资源。MiniMax H3 需分别配置视频 VAE 与音频 VAE；diffusion 目录可同时放置 FL2VA/Ref2VA 模型。
 # Wan 14B I2V 的 diffusion 目录需要同时包含同格式的 high_noise 与 low_noise 文件；
 # 可使用 safetensors，或在已安装 ComfyUI-GGUF 时使用 GGUF。
 video_resources:
   minimax-h3:
     diffusion:
-      - D:\models\diffusion_models\h3\minimax_h3_fl2va_pruned_int4_convrot.safetensors
+      - D:\models\diffusion_models\h3
     vae:
       - D:\models\vae\h3\minimax_h3_video_vae_fp16.safetensors
     text_encoder: D:\models\text_encoders\qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors

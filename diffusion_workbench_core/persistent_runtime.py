@@ -229,6 +229,9 @@ class PersistentComfyRuntime:
             "input_image_path": (
                 str(job.input_image_path.resolve()) if job.input_image_path else None
             ),
+            "reference_image_path": (
+                str(job.reference_image_path.resolve()) if job.reference_image_path else None
+            ),
             "width": job.width,
             "height": job.height,
             "duration_seconds": job.duration_seconds,

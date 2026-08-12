@@ -51,6 +51,9 @@ export default function VideoParameterForm({
   const [inputImage, setInputImage] = useState(null);
   const [inputImageUploading, setInputImageUploading] = useState(false);
   const inputImageRef = useRef(null);
+  const [referenceImage, setReferenceImage] = useState(null);
+  const [referenceImageUploading, setReferenceImageUploading] = useState(false);
+  const referenceImageRef = useRef(null);
   // 预设提示词选择弹窗:null 关闭;"positive"/"negative" 表示替换目标输入框
   const [presetTarget, setPresetTarget] = useState(null);
   // prompt/负面提示词输入框高度倍率,循环 1x → 2x → 3x
@@ -61,6 +64,7 @@ export default function VideoParameterForm({
   const vaes = resources?.vaes ?? [];
   const usesDualModels = videoModel === "wan2.2-i2v-14b";
   const isMiniMaxH3 = videoModel === "minimax-h3";
+  const isRef2va = isMiniMaxH3 && models.find((item) => item.index === modelIndex)?.name.toLowerCase().includes("ref2va");
   const highModels = models.filter((item) =>
     item.name.toLowerCase().includes("_high_noise_"),
   );
@@ -125,6 +129,13 @@ export default function VideoParameterForm({
       vaes.some((item) => item.index === prev) ? prev : (vaes[0]?.index ?? null),
     );
   }, [resources]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    // 切回 FL2VA 时清除不再适用的 Ref2VA 参考图，避免表单进入不可提交状态。
+    if ((!isMiniMaxH3 || (modelIndex !== null && !isRef2va)) && referenceImage) {
+      clearReferenceImage();
+    }
+  }, [isMiniMaxH3, isRef2va, modelIndex]);
 
   // 按模型家族写入已验证的默认采样参数。
   useEffect(() => {
@@ -210,6 +221,29 @@ export default function VideoParameterForm({
     }
   }
 
+  async function handleReferenceImageSelect(file) {
+    if (!file) return;
+    setError(null);
+    setReferenceImageUploading(true);
+    const previewUrl = URL.createObjectURL(file);
+    try {
+      const saved = await api.uploadVideoInputImage(file);
+      setReferenceImage({ id: saved.id, previewUrl, name: file.name });
+    } catch (err) {
+      URL.revokeObjectURL(previewUrl);
+      setError(err.message);
+    } finally {
+      setReferenceImageUploading(false);
+    }
+  }
+
+  function clearReferenceImage() {
+    setReferenceImage((prev) => {
+      if (prev?.previewUrl?.startsWith("blob:")) URL.revokeObjectURL(prev.previewUrl);
+      return null;
+    });
+  }
+
   function clearInputImage() {
     setInputImage((prev) => {
       if (prev?.previewUrl?.startsWith("blob:")) URL.revokeObjectURL(prev.previewUrl);
@@ -247,7 +281,10 @@ export default function VideoParameterForm({
       return "请选择模型和 VAE";
     }
     if (!prompt.trim()) return "prompt 不能为空";
-    if (inputImageUploading) return "输入图片上传中,请稍候";
+    if (inputImageUploading || referenceImageUploading) return "图片上传中,请稍候";
+    if (isRef2va && !referenceImage) return "Ref2VA 必须提供一张参考图片";
+    if (!isRef2va && referenceImage) return "只有 Ref2VA 模型可以使用参考图片";
+    if (referenceImage && inputImage) return "首帧输入与 Ref2VA 参考图不能同时提供";
     if (requiresInputImage && !inputImage) {
       return `${videoModelLabel} 必须提供输入图片`;
     }
@@ -301,6 +338,7 @@ export default function VideoParameterForm({
         prompt: prompt.trim(),
         negative_prompt: negativePrompt,
         input_image_id: inputImage?.id ?? null,
+        reference_image_id: referenceImage?.id ?? null,
         width: Number(width),
         height: Number(height),
         duration_seconds: durationNum,
@@ -387,6 +425,23 @@ export default function VideoParameterForm({
           onChange={(e) => setPrompt(e.target.value)}
         />
       </div>
+
+      {isMiniMaxH3 && (
+        <div className="field" id="field-video-reference-image">
+          <div className="label-row">
+            <label htmlFor="video-reference-image-input">Ref2VA 参考图片</label>
+            {referenceImage && <button type="button" className="prompt-assist-btn" onClick={clearReferenceImage}>移除</button>}
+          </div>
+          <div className={`video-input-image${referenceImage ? " has-image" : ""}`} role="button" tabIndex={0}
+            onClick={() => referenceImageRef.current?.click()}
+            onKeyDown={(e) => e.key === "Enter" && referenceImageRef.current?.click()}>
+            {referenceImage ? <img src={referenceImage.previewUrl} alt={referenceImage.name} /> : <div className="video-input-image-empty">{isRef2va ? "点击上传一张参考图片" : "选择 Ref2VA 模型后可上传参考图片"}</div>}
+            <input ref={referenceImageRef} id="video-reference-image-input" type="file"
+              accept="image/png,image/jpeg,image/webp" hidden disabled={referenceImageUploading || !isRef2va}
+              onChange={(e) => { handleReferenceImageSelect(e.target.files?.[0]); e.target.value = ""; }} />
+          </div>
+        </div>
+      )}
 
       <div className="field" id="field-video-negative-prompt">
         <div className="label-row">

@@ -142,10 +142,10 @@ schema v1-v3 的旧 PNG 仍可读取；v1 没有 `negative_prompt`/`negative_con
 `video_saved` 阶段事件，完成事件 `job_finished` 带 `artifact_type: "video"`，输出为
 H.264 MP4，路径格式为 `output/YYYY-MM-DD/<video_model>-NNNNN.mp4`。MP4 使用 ComfyUI
 Video API 写入 `diffusion_workbench` 容器 metadata，值为 JSON，包含模型、提示词、尺寸、
-时长、帧率、length、采样参数、latent multiplier、输入图片路径、资源指纹、运行时和性能字段。输入图片的
+时长、帧率、length、采样参数、latent multiplier、输入图片/参考图片路径、资源指纹、运行时和性能字段。输入图片和参考图片的
 服务端路径不能由 HTTP 客户端直接指定，应由受控资产引用解析。
 
-MiniMax H3 的 metadata 还包含固定内部参数 `audio_shift`；输出在 H.264 视频流之外包含
+MiniMax H3 的 metadata 还包含 `generation_type`（`t2v`/`i2v`/`r2v`）和固定内部参数 `audio_shift`；输出在 H.264 视频流之外包含
 32 kHz 双声道 AAC 音轨。H3 的 `duration_seconds` 保留用户请求值，实际媒体时长由向上
 对齐后的 `length / 24` 决定，因此 5 秒请求会生成 124 帧，约 5.17 秒。
 

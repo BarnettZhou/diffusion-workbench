@@ -103,7 +103,9 @@ SDXL 的 VAE 内嵌在 checkpoint 中，只需选择模型。
 
 切换到 `minimax-h3` 时自动采用 608x352、5 秒（向上对齐为 124 帧）、24 FPS、8 步、
 CFG 1、shift 12 和 `res_multistep + simple`。H3 宽高必须为 32 的倍数，FPS 固定 24，
-CFG 固定 1；无图片时为 T2V，单张图片作为首帧时为 I2V。当前不接 Ref2VA 多参考。
+CFG 固定 1；FL2VA 无图片时为 T2V，单张图片作为首帧时为 I2V；选择文件名含 `ref2va`
+的模型后，`/video reference set <path>` 设置一张参考图即为 R2V。第一阶段不支持多图、
+参考视频或参考音频，参考图不能与首帧同时设置。
 音频 VAE 从配置固定注入，输出 MP4 包含 H.264 视频与 32 kHz 双声道 AAC 音轨。
 
 `/resources status` 和 `/status` 会显示系统 RAM、显存容量占用及 GPU 核心利用率；资源探测尚未完成或不可用时显示 `不可用`。

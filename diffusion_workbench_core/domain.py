@@ -312,6 +312,7 @@ class VideoGenerationSettings:
     audio_vae: Path | None = None
     negative_prompt: str = ""
     input_image: Path | None = None
+    reference_image: Path | None = None
     width: int = 704
     height: int = 960
     duration_seconds: int = 5
@@ -338,6 +339,8 @@ class VideoGenerationSettings:
 
     @property
     def generation_type(self) -> str:
+        if self.reference_image is not None:
+            return "r2v"
         return "i2v" if self.input_image is not None else "t2v"
 
     def validate(self) -> None:
@@ -364,6 +367,13 @@ class VideoGenerationSettings:
                 raise ValueError("MiniMax H3 CFG 固定为 1")
             if self.audio_vae is None:
                 raise ValueError("MiniMax H3 必须配置音频 VAE")
+            model_is_ref2va = "ref2va" in self.model.path.name.casefold()
+            if model_is_ref2va != (self.reference_image is not None):
+                raise ValueError("MiniMax H3 Ref2VA 必须使用 ref2va 模型和单张参考图；FL2VA 不接受参考图")
+            if self.input_image is not None and self.reference_image is not None:
+                raise ValueError("MiniMax H3 首帧输入与参考图不能同时提供")
+        elif self.reference_image is not None:
+            raise ValueError("参考图片只支持 MiniMax H3 Ref2VA")
         elif (self.length - 1) % 4:
             raise ValueError("视频总帧数必须满足 length = 4n + 1")
         if self.seed < -1:
@@ -426,6 +436,7 @@ class VideoJobRecord:
     latent_multiplier: float = 1.0
     negative_prompt: str = ""
     input_image_path: Path | None = None
+    reference_image_path: Path | None = None
     started_at: datetime | None = None
     completed_at: datetime | None = None
     elapsed_seconds: float | None = None
@@ -433,4 +444,6 @@ class VideoJobRecord:
 
     @property
     def generation_type(self) -> str:
+        if self.reference_image_path is not None:
+            return "r2v"
         return "i2v" if self.input_image_path is not None else "t2v"

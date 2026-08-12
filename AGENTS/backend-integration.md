@@ -199,8 +199,8 @@ Core 不是 request-scoped 对象，不允许在 dependency 中重复构造。
 
 视频端点遵守同一规则：调用 `core.submit_video()`，不能另起 Worker。MiniMax H3 的
 text encoder、`clip_type=minimax` 和音频 VAE 全部由 `video_resources` 固定注入；客户端
-只能选择 diffusion、视频 VAE 和受控输入图片。H3 首期只暴露 FL2VA T2V/单首帧 I2V，
-不把 Ref2VA 多参考路径伪装成现有单图接口。
+只能选择 diffusion、视频 VAE 和受控输入图片。H3 的 FL2VA 支持 T2V/单首帧 I2V，Ref2VA
+第一阶段支持单张参考图 R2V；不支持多图、参考视频或参考音频，且首帧与参考图不能并用。
 
 ```python
 from typing import Literal

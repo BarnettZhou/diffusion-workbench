@@ -310,6 +310,7 @@ class CreateVideoJobsRequest(BaseModel):
     prompt: str = Field(min_length=1, max_length=16_000)
     negative_prompt: str = Field(default="", max_length=16_000)
     input_image_id: str | None = Field(default=None, max_length=64)
+    reference_image_id: str | None = Field(default=None, max_length=64)
     width: int = 704
     height: int = 960
     duration_seconds: int = Field(default=5, ge=1)
@@ -369,6 +370,7 @@ class VideoJobResponse(BaseModel):
     output_name: str
     video_url: str | None
     input_image_url: str | None
+    reference_image_url: str | None
     error: str | None
 
 
@@ -380,6 +382,10 @@ def video_job_to_response(job: VideoJobRecord) -> VideoJobResponse:
         f"/api/v1/video/input-images/{job.input_image_path.name}"
         if job.input_image_path is not None
         else None
+    )
+    reference_image_url = (
+        f"/api/v1/video/input-images/{job.reference_image_path.name}"
+        if job.reference_image_path is not None else None
     )
     return VideoJobResponse(
         id=job.id,
@@ -411,5 +417,6 @@ def video_job_to_response(job: VideoJobRecord) -> VideoJobResponse:
         output_name=job.output_path.name,
         video_url=video_url,
         input_image_url=input_image_url,
+        reference_image_url=reference_image_url,
         error=_error_summary(job.error),
     )

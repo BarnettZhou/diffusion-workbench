@@ -26,7 +26,7 @@ FastAPI 服务共同复用的核心层，不包含 HTTP、WebSocket 或界面状
 - SQLite 任务记录、资源别名和原子 PNG 输出；
 - 队列、执行阶段、采样速度/ETA、可选 latent 预览、错误和完成事件；
 - 带版本化生成参数 iTXt 元数据的 PNG 输出。
-- Wan 2.2 TI2V-5B 的 T2V/I2V、I2V-14B，以及 MiniMax H3 FL2VA 的 T2V/I2V
+- Wan 2.2 TI2V-5B 的 T2V/I2V、I2V-14B，以及 MiniMax H3 FL2VA/Ref2VA 的 T2V/I2V/R2V
   视频任务；H3 输出带 AAC 立体声音轨的 H.264 MP4。视频与图片任务共享串行队列，
   但使用独立的 `VideoGenerationSettings` / `VideoJobRecord`。
 - 独立的 UTF-8 轮转运行日志和 Worker stdout/stderr 持久化。
@@ -226,8 +226,8 @@ ResourceKind.VAE        # "vae"
 I2V-14B 双阶段采样必须与 ComfyUI `KSamplerAdvanced` 一致：第一阶段生成随机噪声并保留
 剩余噪声，第二阶段禁用新增噪声并传入全零 noise；HTTP/TUI/前端对 14B 默认选择 `euler`。
 
-MiniMax H3 首期只接入 FL2VA：无输入图为 T2V，单张输入图作为首帧时为 I2V；现有单图
-API 不接 Ref2VA 多参考。H3 固定 24 FPS、CFG 1，宽高为 32 的倍数，帧数从请求秒数向上
+MiniMax H3 支持 FL2VA 与 Ref2VA：FL2VA 无输入图为 T2V，单张输入图作为首帧时为 I2V；Ref2VA 第一阶段支持单张参考图 R2V，不支持多图、参考视频或参考音频。现有单图
+API 通过受控 `reference_image` 接口接收参考图，不能与首帧同时提供。H3 固定 24 FPS、CFG 1，宽高为 32 的倍数，帧数从请求秒数向上
 对齐到 `17n+5`（5 秒为 124 帧）；默认 sampler 为 `res_multistep`，视频/audio shift
 分别为 12/3。Worker 使用 ComfyUI 原生 H3 节点建立联合 AV latent，采样后分别用视频
 VAE 和音频 VAE 解码，并封装为 H.264 + 32 kHz 双声道 AAC MP4。负面提示词保留在任务

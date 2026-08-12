@@ -163,6 +163,8 @@ class WorkbenchCore:
             )
         if settings.input_image is not None and not settings.input_image.is_file():
             raise FileNotFoundError(f"找不到输入图片: {settings.input_image}")
+        if settings.reference_image is not None and not settings.reference_image.is_file():
+            raise FileNotFoundError(f"找不到参考图片: {settings.reference_image}")
         settings.validate()
         return self.controller.submit_video(settings, count)
 

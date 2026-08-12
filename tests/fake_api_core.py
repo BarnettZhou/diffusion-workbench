@@ -112,6 +112,7 @@ class FakeApiCore:
             ],
             VideoModel.MINIMAX_H3: [
                 ResourceItem(1, root / "h3-models" / "minimax_h3_fl2va_int4.safetensors"),
+                ResourceItem(2, root / "h3-models" / "minimax_h3_ref2va_int4.safetensors"),
             ],
         }
         self.video_vae_items = {
@@ -280,6 +281,7 @@ class FakeApiCore:
             shift=settings.shift,
             latent_multiplier=settings.latent_multiplier,
             input_image_path=settings.input_image,
+            reference_image_path=settings.reference_image,
         )
 
     def submit_video(self, settings, count):

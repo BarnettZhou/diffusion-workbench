@@ -675,7 +675,7 @@ mp4 没有内嵌元数据,改为按输出文件(日期目录名 + 文件名)反�
 
 ## 视频
 
-视频生成（Wan TI2V-5B/I2V-14B、MiniMax H3 FL2VA）经独立端点暴露；任务仍走同一条串行队列，全局 stop/skip 对
+视频生成（Wan TI2V-5B/I2V-14B、MiniMax H3 FL2VA/Ref2VA）经独立端点暴露；任务仍走同一条串行队列，全局 stop/skip 对
 视频任务同样生效。不带输入图片为 T2V(文生视频),带 `input_image_id` 为 I2V
 (图生视频);text encoder 由服务端 `video_resources` 配置固定注入,客户端不能指定；H3
 的音频 VAE 同样由服务端固定注入，不出现在资源选择响应中。
@@ -702,7 +702,7 @@ mp4 没有内嵌元数据,改为按输出文件(日期目录名 + 文件名)反�
   {
     "video_model": "minimax-h3",
     "label": "MiniMax H3",
-    "generation_types": ["t2v", "i2v"],
+    "generation_types": ["t2v", "i2v", "r2v"],
     "requires_input_image": false
   }
 ] }
@@ -804,8 +804,9 @@ domain 的 SAMPLERS/SCHEDULERS);`latent_multiplier` 为大于 0 的有限浮点�
 0.8 以缓解过饱和。请求未提供 `sampler` 时，I2V-14B 默认使用官方工作流的
 `euler`，其他视频模型默认使用 `uni_pc`。
 
-MiniMax H3 首期只支持 FL2VA：不带图片为 T2V，单张图片为首帧 I2V，不支持 Ref2VA
-多参考。H3 宽高必须为 32 的倍数，FPS 固定 24，CFG 固定 1；`length` 从
+MiniMax H3 的 FL2VA 不带图片为 T2V，单张 `input_image_id` 为首帧 I2V；Ref2VA 模型使用
+单张 `reference_image_id` 生成 R2V。第一阶段不支持多图、参考视频或参考音频，且
+`input_image_id` 与 `reference_image_id` 不能同时提供。H3 宽高必须为 32 的倍数，FPS 固定 24，CFG 固定 1；`length` 从
 `duration_seconds * 24` 向上对齐到 `17n+5`（5 秒对应 124 帧），因此实际媒体时长可
 略长于请求秒数。H3 请求未提供 sampler 时默认 `res_multistep`，shift 默认 12；内部
 audio shift 固定为 3。输出 MP4 含 H.264 视频和 32 kHz 双声道 AAC 音频。
@@ -851,10 +852,10 @@ audio shift 固定为 3。输出 MP4 含 H.264 视频和 32 kHz 双声道 AAC �
 }
 ```
 
-- `generation_type` 为 `t2v` 或 `i2v`(取决于是否带 `input_image_id`);
+- `generation_type` 为 `t2v`、`i2v` 或 `r2v`(取决于输入图片/参考图片);
   `duration_seconds` 是视频时长秒,`elapsed_seconds` 是实际耗时。
 - `video_url` 在 mp4 文件实际存在时为 `/api/v1/videos/{job_id}`,否则为 `null`。
-- `input_image_url` 仅 I2V 任务有值,为 `/api/v1/video/input-images/{id}`。
+- `input_image_url` 仅 I2V 任务有值,为 `/api/v1/video/input-images/{id}`；`reference_image_url` 仅 R2V 任务有值，路径格式相同。
 - 错误:404 资源 index 或 input_image_id 不存在;422 参数校验失败(含未配置的
   video_model 以外的非法枚举值)。
 

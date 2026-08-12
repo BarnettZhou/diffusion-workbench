@@ -38,7 +38,7 @@ VIDEO_MODEL_CAPABILITIES = {
     },
     VideoModel.MINIMAX_H3: {
         "label": "MiniMax H3",
-        "generation_types": ("t2v", "i2v"),
+        "generation_types": ("t2v", "i2v", "r2v"),
         "requires_input_image": False,
     },
 }
@@ -272,6 +272,12 @@ def submit_video_jobs(core: WorkbenchCore, payload: CreateVideoJobsRequest):
         if payload.input_image_id
         else None
     )
+    reference_image = (
+        resolve_video_input_image(core, payload.reference_image_id)
+        if payload.reference_image_id else None
+    )
+    if video_model == VideoModel.MINIMAX_H3 and input_image is not None and reference_image is not None:
+        raise ValueError("MiniMax H3 首帧输入与参考图不能同时提供")
     capabilities = video_model_capabilities(video_model)
     if capabilities["requires_input_image"] and input_image is None:
         raise ValueError(f"{capabilities['label']} 必须提供输入图片")
@@ -297,6 +303,7 @@ def submit_video_jobs(core: WorkbenchCore, payload: CreateVideoJobsRequest):
         prompt=payload.prompt,
         negative_prompt=payload.negative_prompt,
         input_image=input_image,
+        reference_image=reference_image,
         width=payload.width,
         height=payload.height,
         duration_seconds=payload.duration_seconds,

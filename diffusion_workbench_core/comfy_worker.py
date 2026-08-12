@@ -155,6 +155,7 @@ class ComfyWorker:
         from comfy_extras.nodes_audio import VAEDecodeAudio
         from comfy_extras.nodes_minimax_h3 import (
             MiniMaxH3ImageToVideo,
+            MiniMaxH3ReferenceToVideo,
             MiniMaxH3SigmaShift,
         )
         from comfy_extras.nodes_wan import WanImageToVideo, Wan22ImageToVideoLatent
@@ -183,6 +184,7 @@ class ComfyWorker:
         self.ModelSamplingSD3 = ModelSamplingSD3
         self.VAEDecodeAudio = VAEDecodeAudio
         self.MiniMaxH3ImageToVideo = MiniMaxH3ImageToVideo
+        self.MiniMaxH3ReferenceToVideo = MiniMaxH3ReferenceToVideo
         self.MiniMaxH3SigmaShift = MiniMaxH3SigmaShift
         self.WanImageToVideo = WanImageToVideo
         self.Wan22ImageToVideoLatent = Wan22ImageToVideoLatent
@@ -856,15 +858,19 @@ class ComfyWorker:
             }
         )
         first_frame = self._load_input_image(command.get("input_image_path"))
-        positive, latent = self.MiniMaxH3ImageToVideo.execute(
-            self.clip,
-            self.vae,
-            command["prompt"],
-            int(command["width"]),
-            int(command["height"]),
-            int(command["length"]),
-            first_frame=first_frame,
-        )
+        reference_image = self._load_input_image(command.get("reference_image_path"))
+        if reference_image is not None:
+            positive, latent = self.MiniMaxH3ReferenceToVideo.execute(
+                self.clip, self.vae, self.audio_vae, command["prompt"],
+                int(command["width"]), int(command["height"]), int(command["length"]),
+                ref_images={"ref_image_1": reference_image},
+            )
+        else:
+            positive, latent = self.MiniMaxH3ImageToVideo.execute(
+                self.clip, self.vae, command["prompt"],
+                int(command["width"]), int(command["height"]), int(command["length"]),
+                first_frame=first_frame,
+            )
         sampling_model = self.MiniMaxH3SigmaShift.execute(
             self.model,
             float(command.get("shift", 12.0)),
@@ -975,7 +981,7 @@ class ComfyWorker:
             },
             "parameters": {
                 "mode": command["video_model"],
-                "generation_type": "i2v" if command.get("input_image_path") else "t2v",
+                "generation_type": "r2v" if command.get("reference_image_path") else "i2v" if command.get("input_image_path") else "t2v",
                 "prompt": command["prompt"],
                 "negative_prompt": command.get("negative_prompt", ""),
                 "width": int(command["width"]),
@@ -993,6 +999,7 @@ class ComfyWorker:
                 "audio_shift": float(command.get("audio_shift", 3.0)),
                 "latent_multiplier": float(command.get("latent_multiplier", 1.0)),
                 "input_image": command.get("input_image_path"),
+                "reference_image": command.get("reference_image_path"),
             },
             "resources": {
                 **resource_metadata,
@@ -1445,6 +1452,13 @@ class ComfyWorker:
                 raise ValueError("MiniMax H3 CFG 固定为 1")
             if not command.get("audio_vae_path"):
                 raise ValueError("MiniMax H3 必须提供音频 VAE")
+            has_reference = bool(command.get("reference_image_path"))
+            model_path = command.get("model_path", "")
+            model_is_ref2va = "ref2va" in Path(model_path).name.casefold()
+            if model_is_ref2va != has_reference:
+                raise ValueError("MiniMax H3 Ref2VA 必须使用 ref2va 模型和参考图")
+            if has_reference and command.get("input_image_path"):
+                raise ValueError("MiniMax H3 首帧输入与参考图不能同时提供")
         else:
             if length != duration * fps + 1:
                 raise ValueError("视频 length 必须等于 duration_seconds * fps + 1")

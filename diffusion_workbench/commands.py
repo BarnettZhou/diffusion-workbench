@@ -73,6 +73,7 @@ class CommandSession:
         self.video_sampler = "uni_pc"
         self.video_scheduler = "simple"
         self.video_image: Path | None = None
+        self.video_reference: Path | None = None
         self._video_models: dict[VideoModel, ResourceItem | None] = {
             model: None for model in VideoModel
         }
@@ -172,7 +173,7 @@ class CommandSession:
         if not args:
             raise ValueError(
                 "用法: /video type|model|vae|prompt|negative|size|duration|fps|steps|"
-                "seed|cfg|shift|latent-multiplier|sampler|scheduler|image|status|start"
+                "seed|cfg|shift|latent-multiplier|sampler|scheduler|image|reference|status|start"
             )
         action = args[0].lower()
         rest = args[1:]
@@ -288,6 +289,21 @@ class CommandSession:
                 self.video_image = path
                 return CommandResponse((f"video image 已设置为 {path}",))
             raise ValueError("用法: /video image set <path> | clear")
+        if action == "reference":
+            if rest == ["clear"]:
+                self.video_reference = None
+                return CommandResponse(("video reference 已清除",))
+            if len(rest) >= 2 and rest[0].lower() == "set":
+                raw = command_line.split(None, 2)[2].strip()
+                if raw.lower().startswith("set "):
+                    raw = raw[4:].strip()
+                raw = raw.strip('"\'')
+                path = Path(raw).expanduser().resolve()
+                if not path.is_file():
+                    raise FileNotFoundError(f"找不到参考图片: {path}")
+                self.video_reference = path
+                return CommandResponse((f"video reference 已设置为 {path}",))
+            raise ValueError("用法: /video reference set <path> | clear")
         if action == "status":
             model = self._video_models[self.video_model]
             vae = self._video_vaes[self.video_model]
@@ -362,6 +378,7 @@ class CommandSession:
             audio_vae=resources.audio_vae,
             negative_prompt=self.video_negative_prompt,
             input_image=self.video_image,
+            reference_image=self.video_reference,
             width=self.video_width,
             height=self.video_height,
             duration_seconds=self.video_duration,

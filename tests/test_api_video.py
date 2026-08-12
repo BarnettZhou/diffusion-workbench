@@ -33,7 +33,7 @@ class VideoModelsTests(ApiTestCase):
                     {
                         "video_model": H3,
                         "label": "MiniMax H3",
-                        "generation_types": ["t2v", "i2v"],
+                        "generation_types": ["t2v", "i2v", "r2v"],
                         "requires_input_image": False,
                     },
                 ]
@@ -163,6 +163,58 @@ class CreateVideoJobsTests(ApiTestCase):
             settings.audio_vae,
             self.core.config.video_resources[VideoModel.MINIMAX_H3].audio_vae,
         )
+
+    def test_h3_ref2va_accepts_single_reference_image(self):
+        image_id = self.client.post(
+            "/api/v1/video/input-images",
+            content=_png_bytes(),
+            headers={"Content-Type": "image/png"},
+        ).json()["id"]
+        response = self.client.post(
+            "/api/v1/video/jobs",
+            json=self._payload(
+                video_model=H3,
+                model_index=2,
+                reference_image_id=image_id,
+            ),
+        )
+        self.assertEqual(response.status_code, 202)
+        body = response.json()["jobs"][0]
+        self.assertEqual(body["generation_type"], "r2v")
+        self.assertEqual(body["reference_image_url"], f"/api/v1/video/input-images/{image_id}")
+        settings, _ = self.core.video_submitted[-1]
+        self.assertEqual(settings.reference_image.name, image_id)
+        self.assertIsNone(settings.input_image)
+
+    def test_h3_rejects_reference_image_with_fl2va_or_first_frame(self):
+        image_id = self.client.post(
+            "/api/v1/video/input-images",
+            content=_png_bytes(),
+            headers={"Content-Type": "image/png"},
+        ).json()["id"]
+        response = self.client.post(
+            "/api/v1/video/jobs",
+            json=self._payload(video_model=H3, model_index=1, reference_image_id=image_id),
+        )
+        self.assertEqual(response.status_code, 422)
+        response = self.client.post(
+            "/api/v1/video/jobs",
+            json=self._payload(video_model=H3, model_index=2, reference_image_id=image_id, input_image_id=image_id),
+        )
+        self.assertEqual(response.status_code, 422)
+
+    def test_wan_rejects_reference_image(self):
+        image_id = self.client.post(
+            "/api/v1/video/input-images",
+            content=_png_bytes(),
+            headers={"Content-Type": "image/png"},
+        ).json()["id"]
+        response = self.client.post(
+            "/api/v1/video/jobs",
+            json=self._payload(video_model=WAN, reference_image_id=image_id),
+        )
+        self.assertEqual(response.status_code, 422)
+        self.assertIn("只支持 MiniMax H3 Ref2VA", response.json()["detail"])
 
     def test_unknown_resource_index_returns_404(self):
         response = self.client.post(

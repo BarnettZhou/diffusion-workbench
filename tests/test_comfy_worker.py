@@ -115,6 +115,29 @@ class ComfyWorkerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "帧率固定"):
             ComfyWorker._validate_video(None, command)
 
+    def test_h3_ref2va_requires_matching_model_and_reference(self):
+        command = {
+            "video_model": "minimax-h3",
+            "clip_type": "minimax",
+            "model_path": "minimax_h3_ref2va_int4.safetensors",
+            "reference_image_path": "reference.png",
+            "audio_vae_path": "audio.safetensors",
+            "width": 608,
+            "height": 352,
+            "duration_seconds": 5,
+            "fps": 24,
+            "length": 124,
+            "steps": 8,
+            "cfg": 1,
+            "sampler": "res_multistep",
+            "scheduler": "simple",
+            "denoise": 1,
+        }
+        ComfyWorker._validate_video(None, command)
+        command["reference_image_path"] = None
+        with self.assertRaisesRegex(ValueError, "Ref2VA"):
+            ComfyWorker._validate_video(None, command)
+
     def test_save_video_forwards_native_audio(self):
         captured = {}
 

@@ -149,11 +149,13 @@ class PersistentRuntimeTests(unittest.TestCase):
                 seed=settings.seed,
                 cfg=settings.cfg,
                 shift=settings.shift,
+                reference_image_path=root / "reference.png",
             )
             command = runtime._video_command(job)
             runtime.close()
             self.assertEqual(command["clip_type"], "minimax")
             self.assertEqual(command["audio_vae_path"], str((root / "audio-vae.safetensors").resolve()))
+            self.assertEqual(command["reference_image_path"], str((root / "reference.png").resolve()))
 
     def test_release_resources_keeps_idle_worker_alive(self):
         with tempfile.TemporaryDirectory() as temp_dir:

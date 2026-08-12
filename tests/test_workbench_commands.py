@@ -57,7 +57,10 @@ class FakeCore:
         }
         self.submitted = []
         self.submitted_videos = []
-        self.video_items = [ResourceItem(1, root / "wan5b.safetensors")]
+        self.video_items = [
+            ResourceItem(1, root / "wan5b.safetensors"),
+            ResourceItem(2, root / "minimax_h3_ref2va_int4.safetensors"),
+        ]
         self.video_vae_items = [ResourceItem(1, root / "wan-vae.safetensors")]
         self.upscale_models = [ResourceItem(1, root / "4x-UltraSharp.pth")]
         self.stopped = False
@@ -163,6 +166,26 @@ class CommandSessionTests(unittest.TestCase):
             self.assertIn("视频队列", "\n".join(response.lines))
             self.assertIn("固定为 24", "\n".join(session.handle("/video fps 30").lines))
             self.assertIn("固定为 1", "\n".join(session.handle("/video cfg 2").lines))
+
+    def test_h3_ref2va_command_submits_reference_snapshot(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            reference = root / "reference.png"
+            reference.touch()
+            core = FakeCore(root)
+            session = CommandSession(core)
+
+            session.handle("/video type set minimax-h3")
+            session.handle("/video model set 2")
+            session.handle("/video vae set 1")
+            session.handle("/video prompt <Picture 1> walks through a studio")
+            session.handle(f'/video reference set "{reference}"')
+            response = session.handle("/video start")
+
+            settings, _ = core.submitted_videos[0]
+            self.assertEqual(settings.generation_type, "r2v")
+            self.assertEqual(settings.reference_image, reference)
+            self.assertIn("视频队列", "\n".join(response.lines))
 
     def test_resource_release_command_calls_core(self):
         with tempfile.TemporaryDirectory() as temp_dir:

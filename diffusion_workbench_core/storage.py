@@ -59,6 +59,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     upscale_json TEXT NOT NULL DEFAULT '{}',
     job_kind TEXT NOT NULL DEFAULT 'image',
     input_image TEXT,
+    reference_image TEXT,
     video_duration_seconds INTEGER,
     fps INTEGER,
     frame_count INTEGER,
@@ -101,6 +102,7 @@ class JobStore:
             migrations = {
                 "job_kind": "TEXT NOT NULL DEFAULT 'image'",
                 "input_image": "TEXT",
+                "reference_image": "TEXT",
                 "video_duration_seconds": "INTEGER",
                 "fps": "INTEGER",
                 "frame_count": "INTEGER",
@@ -335,6 +337,11 @@ class JobStore:
                         if settings.input_image is not None
                         else None
                     ),
+                    (
+                        str(settings.reference_image.resolve())
+                        if settings.reference_image is not None
+                        else None
+                    ),
                     settings.duration_seconds,
                     settings.fps,
                     settings.length,
@@ -348,13 +355,13 @@ class JobStore:
                         id, batch_id, status, submitted_at, output_path, output_date,
                         daily_index, mode, prompt, negative_prompt, model, vae,
                         text_encoder, audio_vae, sampler, scheduler, width, height, steps, seed,
-                        cfg, model_loader, upscale_json, job_kind, input_image,
+                        cfg, model_loader, upscale_json, job_kind, input_image, reference_image,
                         video_duration_seconds, fps, frame_count, denoise, shift,
                         latent_multiplier
                     ) VALUES (
                         ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                         ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
                     )
                     """,
                     values,
@@ -578,6 +585,9 @@ class JobStore:
             negative_prompt=row["negative_prompt"],
             input_image_path=(
                 Path(row["input_image"]) if row["input_image"] else None
+            ),
+            reference_image_path=(
+                Path(row["reference_image"]) if row["reference_image"] else None
             ),
             model_path=Path(row["model"]),
             vae_path=Path(row["vae"]),
