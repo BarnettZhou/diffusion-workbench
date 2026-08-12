@@ -8,8 +8,20 @@ from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
-from diffusion_workbench_core.config import ComfyConfig, ModeResources, WorkbenchConfig
-from diffusion_workbench_core.domain import JobRecord, Mode
+from diffusion_workbench_core.config import (
+    ComfyConfig,
+    ModeResources,
+    VideoResources,
+    WorkbenchConfig,
+)
+from diffusion_workbench_core.domain import (
+    JobRecord,
+    Mode,
+    ResourceItem,
+    VideoGenerationSettings,
+    VideoJobRecord,
+    VideoModel,
+)
 from diffusion_workbench_core.persistent_runtime import PersistentComfyRuntime
 from diffusion_workbench_core.runtime import GenerationCancelled
 
@@ -77,6 +89,72 @@ while True:
 
 
 class PersistentRuntimeTests(unittest.TestCase):
+    def test_video_command_injects_configured_clip_and_audio_vae(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            config = WorkbenchConfig(
+                path=root / "config.yaml",
+                comfyui=ComfyConfig(root, Path(sys.executable)),
+                resources={},
+                output_dir=root / "output",
+                database=root / "jobs.sqlite3",
+                worker_timeout_seconds=10,
+                video_resources={
+                    VideoModel.MINIMAX_H3: VideoResources(
+                        (root,),
+                        (root,),
+                        root / "qwen.safetensors",
+                        "minimax",
+                        root / "audio-vae.safetensors",
+                    )
+                },
+            )
+            runtime = PersistentComfyRuntime(config, worker_script=root / "unused.py")
+            settings = VideoGenerationSettings(
+                video_model=VideoModel.MINIMAX_H3,
+                model=ResourceItem(1, root / "h3.safetensors"),
+                vae=ResourceItem(1, root / "video-vae.safetensors"),
+                text_encoder=root / "wrong.safetensors",
+                audio_vae=root / "audio-vae.safetensors",
+                prompt="a quiet room",
+                width=608,
+                height=352,
+                duration_seconds=5,
+                fps=24,
+                steps=8,
+                cfg=1.0,
+                shift=12.0,
+                sampler="res_multistep",
+            )
+            job = VideoJobRecord(
+                id="h3",
+                batch_id=None,
+                status="queued",
+                submitted_at=datetime.now(timezone.utc),
+                output_path=root / "h3.mp4",
+                video_model=VideoModel.MINIMAX_H3,
+                prompt=settings.prompt,
+                model_path=settings.model.path,
+                vae_path=settings.vae.path,
+                text_encoder_path=settings.text_encoder,
+                audio_vae_path=settings.audio_vae,
+                sampler=settings.sampler,
+                scheduler=settings.scheduler,
+                width=settings.width,
+                height=settings.height,
+                duration_seconds=settings.duration_seconds,
+                fps=settings.fps,
+                length=settings.length,
+                steps=settings.steps,
+                seed=settings.seed,
+                cfg=settings.cfg,
+                shift=settings.shift,
+            )
+            command = runtime._video_command(job)
+            runtime.close()
+            self.assertEqual(command["clip_type"], "minimax")
+            self.assertEqual(command["audio_vae_path"], str((root / "audio-vae.safetensors").resolve()))
+
     def test_release_resources_keeps_idle_worker_alive(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

@@ -32,6 +32,7 @@ class VideoResources:
     vae: tuple[Path, ...]
     text_encoder: Path
     clip_type: str = "wan"
+    audio_vae: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -44,7 +45,7 @@ class WorkbenchConfig:
     worker_timeout_seconds: float
     upscaling: UpscalingConfig = field(default_factory=UpscalingConfig)
     video_resources: dict[VideoModel, VideoResources] = field(default_factory=dict)
-    video_worker_timeout_seconds: float = 1800
+    video_worker_timeout_seconds: float = 3600
 
 
 def _resolve(value: str, base: Path) -> Path:
@@ -83,10 +84,10 @@ def load_config(path: str | Path) -> WorkbenchConfig:
             clip_type=clip_type,
             model_loader=model_loader,
         )
-    timeout = float(raw.get("worker_timeout_seconds", 300))
+    timeout = float(raw.get("worker_timeout_seconds", 3600))
     if timeout <= 0:
         raise ValueError("worker_timeout_seconds 必须大于 0")
-    video_timeout = float(raw.get("video_worker_timeout_seconds", 1800))
+    video_timeout = float(raw.get("video_worker_timeout_seconds", 3600))
     if video_timeout <= 0:
         raise ValueError("video_worker_timeout_seconds 必须大于 0")
     video_resources_raw = raw.get("video_resources") or {}
@@ -97,14 +98,23 @@ def load_config(path: str | Path) -> WorkbenchConfig:
         if video_model.value not in video_resources_raw:
             continue
         item = video_resources_raw[video_model.value]
-        clip_type = str(item.get("clip_type", "wan"))
-        if clip_type != "wan":
-            raise ValueError(f"{video_model.value} clip_type 固定为 wan")
+        expected_clip_type = (
+            "minimax" if video_model == VideoModel.MINIMAX_H3 else "wan"
+        )
+        clip_type = str(item.get("clip_type", expected_clip_type))
+        if clip_type != expected_clip_type:
+            raise ValueError(
+                f"{video_model.value} clip_type 固定为 {expected_clip_type}"
+            )
+        audio_vae = item.get("audio_vae")
+        if video_model == VideoModel.MINIMAX_H3 and not audio_vae:
+            raise ValueError("minimax-h3 必须配置 audio_vae")
         video_resources[video_model] = VideoResources(
             diffusion=tuple(_resolve(value, base) for value in item["diffusion"]),
             vae=tuple(_resolve(value, base) for value in item["vae"]),
             text_encoder=_resolve(item["text_encoder"], base),
             clip_type=clip_type,
+            audio_vae=_resolve(audio_vae, base) if audio_vae else None,
         )
     if not resources and not video_resources:
         raise ValueError("resources 或 video_resources 至少必须配置一种生成模式")

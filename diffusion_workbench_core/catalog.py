@@ -27,6 +27,8 @@ class ResourceCatalog:
                 for pattern in ("*.safetensors", "*.sft"):
                     for path in configured_path.glob(pattern):
                         paths[path.resolve()] = path.resolve()
+        # 模型文件已从磁盘删除时,自动删除索引中对应的别名记录
+        self.store.prune_aliases(mode, kind, set(paths.values()))
         aliases = self.store.get_aliases(mode, kind)
         ordered = sorted(paths.values(), key=lambda path: path.name.casefold())
         return [
@@ -58,7 +60,7 @@ class ResourceCatalog:
         resources = self.config.video_resources.get(video_model)
         if resources is None:
             return []
-        return self._list_model_files(resources.diffusion)
+        return self._list_model_files(resources.diffusion, include_gguf=True)
 
     def list_video_vaes(self, video_model: VideoModel) -> list[ResourceItem]:
         resources = self.config.video_resources.get(video_model)
@@ -67,16 +69,20 @@ class ResourceCatalog:
         return self._list_model_files(resources.vae)
 
     @staticmethod
-    def _list_model_files(configured_paths: tuple[Path, ...]) -> list[ResourceItem]:
+    def _list_model_files(
+        configured_paths: tuple[Path, ...], *, include_gguf: bool = False
+    ) -> list[ResourceItem]:
         paths: dict[Path, Path] = {}
+        suffixes = {".safetensors", ".sft"}
+        patterns = ["*.safetensors", "*.sft"]
+        if include_gguf:
+            suffixes.add(".gguf")
+            patterns.append("*.gguf")
         for configured_path in configured_paths:
-            if configured_path.is_file() and configured_path.suffix.casefold() in {
-                ".safetensors",
-                ".sft",
-            }:
+            if configured_path.is_file() and configured_path.suffix.casefold() in suffixes:
                 paths[configured_path.resolve()] = configured_path.resolve()
             elif configured_path.is_dir():
-                for pattern in ("*.safetensors", "*.sft"):
+                for pattern in patterns:
                     for path in configured_path.glob(pattern):
                         paths[path.resolve()] = path.resolve()
         ordered = sorted(paths.values(), key=lambda path: path.name.casefold())

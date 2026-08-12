@@ -108,6 +108,8 @@ class Mode(StrEnum):
 
 class VideoModel(StrEnum):
     WAN22_TI2V_5B = "wan2.2-ti2v-5b"
+    WAN22_I2V_14B = "wan2.2-i2v-14b"
+    MINIMAX_H3 = "minimax-h3"
 
 
 class ModelLoader(StrEnum):
@@ -307,6 +309,7 @@ class VideoGenerationSettings:
     vae: ResourceItem
     text_encoder: Path
     prompt: str
+    audio_vae: Path | None = None
     negative_prompt: str = ""
     input_image: Path | None = None
     width: int = 704
@@ -320,9 +323,17 @@ class VideoGenerationSettings:
     cfg: float = 5.0
     denoise: float = 1.0
     shift: float = 8.0
+    latent_multiplier: float = 1.0
 
     @property
     def length(self) -> int:
+        if self.video_model == VideoModel.MINIMAX_H3:
+            if self.width % 32 or self.height % 32:
+                raise ValueError("MiniMax H3 视频宽高必须是 32 的倍数")
+            length = max(5, round(self.duration_seconds * 24))
+            while length % 17 != 5:
+                length += 1
+            return length
         return self.duration_seconds * self.fps + 1
 
     @property
@@ -344,15 +355,47 @@ class VideoGenerationSettings:
             raise ValueError("视频时长必须是正整数")
         if not 1 <= self.fps <= 120:
             raise ValueError("帧率必须在 1 到 120 之间")
-        if (self.length - 1) % 4:
+        if self.video_model == VideoModel.MINIMAX_H3:
+            if self.fps != 24:
+                raise ValueError("MiniMax H3 帧率固定为 24")
+            if self.length % 17 != 5:
+                raise ValueError("MiniMax H3 总帧数必须满足 length = 17n + 5")
+            if self.cfg != 1.0:
+                raise ValueError("MiniMax H3 CFG 固定为 1")
+            if self.audio_vae is None:
+                raise ValueError("MiniMax H3 必须配置音频 VAE")
+        elif (self.length - 1) % 4:
             raise ValueError("视频总帧数必须满足 length = 4n + 1")
         if self.seed < -1:
             raise ValueError("seed 必须为 -1 或非负整数")
+        if self.video_model == VideoModel.WAN22_I2V_14B and self.input_image is None:
+            raise ValueError("Wan I2V-14B 必须提供输入图片")
         if self.denoise != 1.0:
-            raise ValueError("Wan TI2V-5B denoise 固定为 1")
+            raise ValueError("视频 denoise 固定为 1")
         if not math.isfinite(self.shift) or not 0.0 <= self.shift <= 100.0:
             raise ValueError("shift 必须在 0 到 100 之间")
+        if not math.isfinite(self.latent_multiplier) or self.latent_multiplier <= 0:
+            raise ValueError("latent_multiplier 必须是大于 0 的有限数值")
         validate_sampling(self.steps, self.cfg, self.sampler, self.scheduler)
+
+
+def resolve_video_diffusion_pair(
+    video_model: VideoModel, selected: Path
+) -> tuple[Path, Path | None]:
+    """解析视频模型需要的 diffusion 文件;14B I2V 必须同时使用 high/low 两个模型。"""
+    selected = selected.resolve()
+    if video_model != VideoModel.WAN22_I2V_14B:
+        return selected, None
+    name = selected.name
+    if "_high_noise_" in name:
+        high = selected
+        low = selected.with_name(name.replace("_high_noise_", "_low_noise_", 1))
+    elif "_low_noise_" in name:
+        low = selected
+        high = selected.with_name(name.replace("_low_noise_", "_high_noise_", 1))
+    else:
+        raise ValueError("Wan I2V-14B diffusion 文件名必须包含 high_noise 或 low_noise")
+    return high, low
 
 
 @dataclass(frozen=True)
@@ -377,8 +420,10 @@ class VideoJobRecord:
     steps: int
     seed: int
     cfg: float
+    audio_vae_path: Path | None = None
     denoise: float = 1.0
     shift: float = 8.0
+    latent_multiplier: float = 1.0
     negative_prompt: str = ""
     input_image_path: Path | None = None
     started_at: datetime | None = None

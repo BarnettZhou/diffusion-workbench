@@ -5,7 +5,8 @@ import Modal from "./Modal";
 // 视频模型分类显示名(与 App 顶部视频生成 tab 同款映射)
 const VIDEO_MODEL_LABELS = {
   "wan2.2-ti2v-5b": "Wan 2.2 TI2V-5B",
-  "wan2.2-i2v-14b": "Wan 2.2 I2V-14B FP8",
+  "wan2.2-i2v-14b": "Wan 2.2 I2V-14B",
+  "minimax-h3": "MiniMax H3",
 };
 
 function formatSize(bytes) {

@@ -26,7 +26,8 @@ FastAPI 服务共同复用的核心层，不包含 HTTP、WebSocket 或界面状
 - SQLite 任务记录、资源别名和原子 PNG 输出；
 - 队列、执行阶段、采样速度/ETA、可选 latent 预览、错误和完成事件；
 - 带版本化生成参数 iTXt 元数据的 PNG 输出。
-- Wan 2.2 TI2V-5B 的 T2V/I2V 视频任务，输出 H.264 MP4；视频与图片任务共享串行队列，
+- Wan 2.2 TI2V-5B 的 T2V/I2V、I2V-14B，以及 MiniMax H3 FL2VA 的 T2V/I2V
+  视频任务；H3 输出带 AAC 立体声音轨的 H.264 MP4。视频与图片任务共享串行队列，
   但使用独立的 `VideoGenerationSettings` / `VideoJobRecord`。
 - 独立的 UTF-8 轮转运行日志和 Worker stdout/stderr 持久化。
 
@@ -124,13 +125,14 @@ finally:
 | `submit(settings, count)` | `list[JobRecord]` | 只入队，不等待图片完成 |
 | `list_video_models(video_model)` | `list[ResourceItem]` | 扫描已配置视频类型的 diffusion 目录 |
 | `list_video_vaes(video_model)` | `list[ResourceItem]` | 扫描已配置视频类型的 VAE 目录 |
-| `submit_video(settings, count)` | `list[VideoJobRecord]` | 只入队；模型/VAE 受目录约束，text encoder 固定，shift 默认 8 |
+| `submit_video(settings, count)` | `list[VideoJobRecord]` | 只入队；模型/VAE 受目录约束，text encoder 固定，shift 默认 8，latent multiplier 默认 1 |
 | `runtime_status()` | `dict` | GPU 数据最多约 2 秒陈旧 |
 | `release_resources()` | 无 | 仅队列空闲时调用，主动卸载 Worker 模型并清空显存 |
 | `set_event_sink(callback)` | 无 | 只有一个 sink，后设置会覆盖前一个 |
 | `set_preview_enabled(enabled)` | 无 | 默认关闭；FastAPI 启用后发送 base64 JPEG 预览事件 |
 | `get_job(job_id)` | `JobRecord` | 读取任务审计记录，不检查图片是否存在 |
 | `get_video_job(job_id)` | `VideoJobRecord` | 读取视频任务审计记录，不检查 MP4 是否存在 |
+| `find_video_job_by_output(date_dir, name)` | `VideoJobRecord` | 按输出文件(日期目录名+文件名)反查视频任务,供相册 mp4 元数据使用 |
 | `list_jobs(...)` | `(list[JobRecord], cursor)` | 按提交时间/id 做稳定 keyset 分页 |
 | `skip_current()` | `str | None` | 接受时返回 job id；无可跳过任务时返回 `None`；失败时抛 `RuntimeError` |
 | `stop()` | 无 | 取消当前任务并清空全部等待任务 |
@@ -176,10 +178,10 @@ resources:
 
 output_dir: output
 database: .cache\diffusion_workbench.sqlite3
-worker_timeout_seconds: 300
+worker_timeout_seconds: 3600
 ```
 
-`diffusion` 和 `vae` 接受多个目录；也可配置单个 `.safetensors`/`.sft` 文件以限制
+`diffusion` 和 `vae` 接受多个目录；图片资源也可配置单个 `.safetensors`/`.sft` 文件以限制
 可选资源。`model_loader: checkpoint` 表示模型文件内嵌 CLIP 和 VAE，此时不配置
 `vae`、`text_encoder` 或 `clip_type`。相对路径通常相对于 YAML 所在目录；当 YAML 的
 父目录名恰好是 `configs` 时，基准目录会上移到项目根目录。服务部署建议对 ComfyUI、
@@ -188,9 +190,13 @@ worker_timeout_seconds: 300
 `worker_timeout_seconds` 同时限定单任务等待时间；Worker 启动等待时间为该值与 60 秒
 中的较小值。
 
-视频资源使用独立的 `video_resources` 配置段：`diffusion` 与 `vae` 为目录列表，
-`text_encoder` 为固定文件，`clip_type` 必须是 `wan`；视频任务使用
-`video_worker_timeout_seconds`。
+视频资源使用独立的 `video_resources` 配置段：`diffusion` 与 `vae` 为目录或文件列表，
+`text_encoder` 为固定文件。Wan 的 `clip_type` 必须是 `wan`；MiniMax H3 必须是
+`minimax`，并额外配置固定的 `audio_vae`。视频任务使用 `video_worker_timeout_seconds`。
+
+视频 diffusion 目录还扫描 `.gguf`。GGUF 只对 Wan diffusion 模型生效，Worker 会按后缀
+使用 ComfyUI-GGUF 的 `UnetLoaderGGUF`；ComfyUI 根目录下必须存在
+`custom_nodes/ComfyUI-GGUF`。视频 VAE 和 UMT5 text encoder 仍使用 safetensors。
 
 `resources` 可以只包含实际启用的 mode；未配置的 mode 不会出现在客户端能力列表中，
 旧配置无需为了新增 mode 立即迁移。
@@ -209,10 +215,23 @@ ResourceKind.DIFFUSION  # "diffusion"
 ResourceKind.VAE        # "vae"
 ```
 
-视频类型由 `VideoModel` 表示，当前只有 `VideoModel.WAN22_TI2V_5B`（值为
-`wan2.2-ti2v-5b`）。`VideoGenerationSettings` 与 `VideoJobRecord` 是独立于图片 DTO
-的参数和持久化对象；`input_image`/`input_image_path` 存在时为 I2V，否则为 T2V。
-`shift` 默认 8，范围为 0 到 100，传给 ComfyUI `ModelSamplingSD3`。
+视频类型由 `VideoModel` 表示，当前支持 `VideoModel.WAN22_TI2V_5B`（值为
+`wan2.2-ti2v-5b`）、`VideoModel.WAN22_I2V_14B`（值为 `wan2.2-i2v-14b`）和
+`VideoModel.MINIMAX_H3`（值为 `minimax-h3`）。
+`VideoGenerationSettings` 与 `VideoJobRecord` 是独立于图片 DTO 的参数和持久化对象；
+5B 的 `input_image`/`input_image_path` 存在时为 I2V，否则为 T2V；14B 类型必须有输入图片，
+并自动配对 diffusion 目录中的 high-noise/low-noise 两个模型。
+`shift` 默认 8，范围为 0 到 100，传给 ComfyUI `ModelSamplingSD3`；
+`latent_multiplier` 默认 1，是采样前乘到 Wan latent samples 的有限正数，Turbo 模型可设为 0.8。
+I2V-14B 双阶段采样必须与 ComfyUI `KSamplerAdvanced` 一致：第一阶段生成随机噪声并保留
+剩余噪声，第二阶段禁用新增噪声并传入全零 noise；HTTP/TUI/前端对 14B 默认选择 `euler`。
+
+MiniMax H3 首期只接入 FL2VA：无输入图为 T2V，单张输入图作为首帧时为 I2V；现有单图
+API 不接 Ref2VA 多参考。H3 固定 24 FPS、CFG 1，宽高为 32 的倍数，帧数从请求秒数向上
+对齐到 `17n+5`（5 秒为 124 帧）；默认 sampler 为 `res_multistep`，视频/audio shift
+分别为 12/3。Worker 使用 ComfyUI 原生 H3 节点建立联合 AV latent，采样后分别用视频
+VAE 和音频 VAE 解码，并封装为 H.264 + 32 kHz 双声道 AAC MP4。负面提示词保留在任务
+审计记录中，但 distilled CFG 1 推理路径不单独编码它。
 
 ### 5.2 `ResourceItem`
 
@@ -274,7 +293,8 @@ settings = GenerationSettings(
 资源扫描规则：
 
 - 只扫描配置目录的第一层，不递归；
-- 识别 `*.safetensors` 和 `*.sft`；
+- 图片 diffusion/VAE 识别 `*.safetensors` 和 `*.sft`；视频 diffusion 另外识别 `*.gguf`，
+  视频 VAE 不识别 GGUF；
 - 以解析后的绝对路径去重；
 - 按文件名大小写不敏感排序；
 - alias 按绝对路径保存在 SQLite；
@@ -522,11 +542,19 @@ step 从 1 开始。进入 sampling 但尚无 step callback 时，调用端可�
     "pid": 1234 or None,
     "loaded_model": "absolute-path-or-None",
     "gpu": "10.42/15.92 GiB" or "查询中" or "不可用",
+    "memory": {"used_gib": 12.3, "total_gib": 31.8, "percent": 38.7},
+    "gpu_memory_used_gib": 10.42 or None,
+    "gpu_memory_total_gib": 15.92 or None,
+    "gpu_memory_percent": 65.5 or None,
+    "gpu_utilization_percent": 92.0 or None,
 }
 ```
 
 `worker="stopped"` 在尚未执行首个任务时是正常状态，不等于服务不健康。GPU 查询使用
-后台 `nvidia-smi`，最多每 2 秒触发一次，不阻塞调用者，也不表示当前 job 的独占显存。
+后台探测，最多每 2 秒触发一次，不阻塞调用者。`memory` 是系统 RAM；
+`gpu_memory_*` 是显存容量；`gpu_utilization_percent` 是 GPU 核心利用率，不表示当前
+job 的独占显存。探测尚未完成或工具不可用时，相应值为 `None`，旧版 `gpu` 字符串为
+`查询中` / `不可用`。
 
 ## 13. SQLite 与输出
 

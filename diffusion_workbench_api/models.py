@@ -10,10 +10,11 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from diffusion_workbench_core import Mode, ResourceKind
+from diffusion_workbench_core import Mode, ResourceKind, VideoModel
 
 from .dependencies import get_core, get_model_info_store
 from .jobs import ModeParam
+from .video import _require_video_model
 
 router = APIRouter(prefix="/api/v1")
 
@@ -264,4 +265,122 @@ async def update_model_info(
             raise HTTPException(status_code=422, detail=str(exc)) from exc
     if payload.note is not None:
         await asyncio.to_thread(store.set_note, mode, name, payload.note)
+    return {"ok": True}
+
+
+
+def _find_video_model(core, video_model: VideoModel, name: str):
+    for item in core.list_video_models(video_model):
+        if item.path.name == name:
+            return item
+    raise HTTPException(status_code=404, detail=f"视频模型 {name} 不存在")
+
+
+@router.get("/video-models/{video_model}")
+async def list_video_model_cards(
+    video_model: VideoModel,
+    core=Depends(get_core),
+    store=Depends(get_model_info_store),
+):
+    """视频模型卡片,字段与图片 models 端点一致;视频目录没有 alias 机制,固定为 None。
+
+    ModelInfoStore 以 video_model 字符串作 mode key,与图片 mode 不会冲突。
+    """
+    _require_video_model(core, video_model)
+    key = video_model.value
+
+    def collect():
+        models = []
+        for item in core.list_video_models(video_model):
+            name = item.path.name
+            try:
+                size = item.path.stat().st_size
+            except OSError:
+                size = None
+            has_cover = store.cover_path(key, name) is not None
+            models.append(
+                {
+                    "index": item.index,
+                    "name": name,
+                    "alias": None,
+                    "mode": key,
+                    "size_bytes": size,
+                    "quant": store.quant(key, name),
+                    "note": store.note(key, name),
+                    "has_cover": has_cover,
+                    "cover_url": (
+                        f"/api/v1/video-models/{key}/{name}/cover" if has_cover else None
+                    ),
+                }
+            )
+        return models
+
+    return {"models": await asyncio.to_thread(collect)}
+
+
+@router.get("/video-models/{video_model}/{name}/cover")
+async def get_video_model_cover(
+    video_model: VideoModel, name: str, store=Depends(get_model_info_store)
+):
+    path = await asyncio.to_thread(store.cover_path, video_model.value, name)
+    if path is None:
+        raise HTTPException(status_code=404, detail="暂无封面")
+    return FileResponse(path, media_type=COVER_EXTENSIONS[path.suffix.lower()])
+
+
+@router.put("/video-models/{video_model}/{name}/cover")
+async def upload_video_model_cover(
+    video_model: VideoModel,
+    name: str,
+    request: Request,
+    core=Depends(get_core),
+    store=Depends(get_model_info_store),
+):
+    _require_video_model(core, video_model)
+    await asyncio.to_thread(_find_video_model, core, video_model, name)
+    media_type = (request.headers.get("content-type") or "").split(";")[0].strip()
+    ext = COVER_MEDIA_TYPES.get(media_type)
+    if ext is None:
+        raise HTTPException(status_code=415, detail="封面只支持 png/jpeg/webp")
+    data = await request.body()
+    if not data:
+        raise HTTPException(status_code=422, detail="封面内容为空")
+    if len(data) > MAX_COVER_BYTES:
+        raise HTTPException(status_code=422, detail="封面不能超过 10MB")
+    await asyncio.to_thread(store.save_cover, video_model.value, name, ext, data)
+    return {"ok": True, "cover_url": f"/api/v1/video-models/{video_model.value}/{name}/cover"}
+
+
+@router.post("/video-models/{video_model}/{name}/quant")
+async def fetch_video_model_quant(
+    video_model: VideoModel,
+    name: str,
+    core=Depends(get_core),
+    store=Depends(get_model_info_store),
+):
+    """扫描 safetensors 头部识别量化方式,写入 model_info.json 后返回。"""
+    _require_video_model(core, video_model)
+    item = await asyncio.to_thread(_find_video_model, core, video_model, name)
+    quant = await asyncio.to_thread(scan_safetensors_quant, item.path)
+    if quant is None:
+        raise HTTPException(status_code=422, detail="无法从文件识别量化方式")
+    await asyncio.to_thread(store.set_quant, video_model.value, name, quant)
+    return {"ok": True, "quant": quant}
+
+
+@router.put("/video-models/{video_model}/{name}/info")
+async def update_video_model_info(
+    video_model: VideoModel,
+    name: str,
+    payload: ModelInfoUpdate,
+    core=Depends(get_core),
+    store=Depends(get_model_info_store),
+):
+    """只支持 note:视频目录没有 alias 机制,payload 带 alias 时按 422 拒绝。"""
+    _require_video_model(core, video_model)
+    await asyncio.to_thread(_find_video_model, core, video_model, name)
+    if payload.alias is not None:
+        raise HTTPException(status_code=422, detail="视频模型不支持 alias")
+    if payload.note is not None:
+        await asyncio.to_thread(store.set_note, video_model.value, name, payload.note)
     return {"ok": True}

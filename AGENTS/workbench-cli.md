@@ -72,12 +72,13 @@ encoder 都在 `configs/workbench.yaml` 中设置；SDXL 则配置完整 checkpo
 SDXL 的 VAE 内嵌在 checkpoint 中，只需选择模型。
 `/start` 省略 `num` 时默认提交 1 个任务。
 
-## Wan 视频
+## 视频生成
 
-视频功能与图片参数独立，当前支持 `wan2.2-ti2v-5b`：
+视频功能与图片参数独立，当前支持 `wan2.2-ti2v-5b`、`wan2.2-i2v-14b` 和
+`minimax-h3`：
 
 ```text
-/video type list|set <wan2.2-ti2v-5b>
+/video type list|set <video-model>
 /video model list|set <index>
 /video vae list|set <index>
 /video prompt <prompt>
@@ -89,6 +90,7 @@ SDXL 的 VAE 内嵌在 checkpoint 中，只需选择模型。
 /video seed <-1|非负整数>
 /video cfg <positive-number>
 /video shift <0-100>
+/video latent-multiplier <positive-number>
 /video sampler list|set <name|index>
 /video scheduler list|set <name|index>
 /video image set <path>|clear
@@ -97,7 +99,14 @@ SDXL 的 VAE 内嵌在 checkpoint 中，只需选择模型。
 /resources status|release
 ```
 
-默认视频为 704x960、5 秒、24 FPS（121 帧）、20 步、CFG 5、shift 8、`uni_pc` + `simple`，denoise 固定为 1。shift 可设置为 0 到 100，用于 ComfyUI 的 `ModelSamplingSD3`。模型和 VAE 均从配置目录扫描并需要选择。设置图片是 I2V，不设置图片是 T2V。视频写入 `output/YYYY-MM-DD/wan2.2-ti2v-5b-NNNNN.mp4`。`/resources release` 只允许在队列空闲时执行。
+默认视频为 704x960、5 秒、24 FPS（121 帧）、20 步、CFG 5、shift 8、latent multiplier 1、`simple` 调度器，denoise 固定为 1。TI2V-5B 默认 `uni_pc`，切换到 I2V-14B 时默认使用官方工作流的 `euler`。shift 可设置为 0 到 100，用于 ComfyUI 的 `ModelSamplingSD3`；latent multiplier 为采样前的 latent 缩放系数，Turbo 模型可设为 0.8。模型和 VAE 均从配置目录扫描并需要选择。TI2V-5B 设置图片是 I2V，不设置图片是 T2V；I2V-14B 必须设置图片，并自动配对 diffusion 目录中的同格式 high/low 两个模型。视频 diffusion 也可选择 `.gguf`，但需要 ComfyUI 安装 `ComfyUI-GGUF`；视频 VAE 仍使用 safetensors。视频写入对应模型前缀的 `output/YYYY-MM-DD/` 目录。`/resources release` 只允许在队列空闲时执行。
+
+切换到 `minimax-h3` 时自动采用 608x352、5 秒（向上对齐为 124 帧）、24 FPS、8 步、
+CFG 1、shift 12 和 `res_multistep + simple`。H3 宽高必须为 32 的倍数，FPS 固定 24，
+CFG 固定 1；无图片时为 T2V，单张图片作为首帧时为 I2V。当前不接 Ref2VA 多参考。
+音频 VAE 从配置固定注入，输出 MP4 包含 H.264 视频与 32 kHz 双声道 AAC 音轨。
+
+`/resources status` 和 `/status` 会显示系统 RAM、显存容量占用及 GPU 核心利用率；资源探测尚未完成或不可用时显示 `不可用`。
 
 ## 图片放大
 

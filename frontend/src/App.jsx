@@ -14,7 +14,8 @@ const MODE_LABELS = { zit: "ZIT", zib: "ZIB", krea2: "Krea2", sdxl: "SDXL" };
 // 视频模型分类显示名(设置页「视频模型」tab 同款映射)
 const VIDEO_MODEL_LABELS = {
   "wan2.2-ti2v-5b": "Wan 2.2 TI2V-5B",
-  "wan2.2-i2v-14b": "Wan 2.2 I2V-14B FP8",
+  "wan2.2-i2v-14b": "Wan 2.2 I2V-14B",
+  "minimax-h3": "MiniMax H3",
 };
 
 export default function App() {
@@ -336,6 +337,7 @@ export default function App() {
       height: meta.height,
       steps: meta.steps,
       cfg: meta.cfg,
+      seed: meta.seed,
       sampler: meta.sampler,
       scheduler: meta.scheduler,
       modelName: meta.model_name,
@@ -568,6 +570,7 @@ export default function App() {
               inputImagePrefill={videoPrefill}
               paramsPrefill={videoParamsPrefill}
               promptPresets={settings?.prompt_presets ?? []}
+              sizePresets={settings?.video_size_presets ?? []}
               onSubmit={handleVideoSubmit}
             />
           )}

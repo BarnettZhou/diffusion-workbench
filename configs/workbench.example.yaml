@@ -42,13 +42,30 @@ upscaling:
   models:
     - D:\models\upscale_models
 
-# Wan TI2V-5B 视频资源。diffusion / vae 为目录列表，text_encoder 为固定文件。
+# 视频资源。MiniMax H3 需分别配置视频 VAE 与音频 VAE；当前只接入 FL2VA 模型。
+# Wan 14B I2V 的 diffusion 目录需要同时包含同格式的 high_noise 与 low_noise 文件；
+# 可使用 safetensors，或在已安装 ComfyUI-GGUF 时使用 GGUF。
 video_resources:
+  minimax-h3:
+    diffusion:
+      - D:\models\diffusion_models\h3\minimax_h3_fl2va_pruned_int4_convrot.safetensors
+    vae:
+      - D:\models\vae\h3\minimax_h3_video_vae_fp16.safetensors
+    text_encoder: D:\models\text_encoders\qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors
+    audio_vae: D:\models\vae\h3\minimax_h3_audio_vae_fp32.safetensors
+    clip_type: minimax
   wan2.2-ti2v-5b:
     diffusion:
       - D:\models\diffusion_models\wan2.2
     vae:
       - D:\models\vae\wan2.2
+    text_encoder: D:\models\text_encoders\umt5_xxl_fp8_e4m3fn_scaled.safetensors
+    clip_type: wan
+  wan2.2-i2v-14b:
+    diffusion:
+      - D:\models\diffusion_models\wan2.2-i2v-14b
+    vae:
+      - D:\models\vae\wan_2.1_vae.safetensors
     text_encoder: D:\models\text_encoders\umt5_xxl_fp8_e4m3fn_scaled.safetensors
     clip_type: wan
 
@@ -57,6 +74,6 @@ output_dir: output
 # SQLite 任务库路径
 database: .cache\diffusion_workbench.sqlite3
 # Worker 子进程无响应超时(秒)
-worker_timeout_seconds: 300
+worker_timeout_seconds: 3600
 # 视频任务通常比图片耗时更长，单独设置超时(秒)
-video_worker_timeout_seconds: 1800
+video_worker_timeout_seconds: 3600

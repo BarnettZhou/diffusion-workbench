@@ -22,11 +22,14 @@ export default function VideoParameterForm({
   inputImagePrefill,
   paramsPrefill,
   promptPresets,
+  sizePresets,
   onSubmit,
 }) {
   const [prompt, setPrompt] = useState("");
   const [negativePrompt, setNegativePrompt] = useState("");
   const [modelIndex, setModelIndex] = useState(null);
+  const [highModelIndex, setHighModelIndex] = useState(null);
+  const [lowModelIndex, setLowModelIndex] = useState(null);
   const [vaeIndex, setVaeIndex] = useState(null);
   // 数字输入框一律存原始字符串:允许删空和 "-1" 这类中间态,提交时才校验/转换
   const [width, setWidth] = useState("704");
@@ -37,6 +40,7 @@ export default function VideoParameterForm({
   const [count, setCount] = useState("1");
   const [cfg, setCfg] = useState("5");
   const [shift, setShift] = useState("8");
+  const [latentMultiplier, setLatentMultiplier] = useState("1");
   const [sampler, setSampler] = useState("uni_pc");
   const [scheduler, setScheduler] = useState("simple");
   const [seed, setSeed] = useState("-1");
@@ -55,6 +59,19 @@ export default function VideoParameterForm({
 
   const models = resources?.models ?? [];
   const vaes = resources?.vaes ?? [];
+  const usesDualModels = videoModel === "wan2.2-i2v-14b";
+  const isMiniMaxH3 = videoModel === "minimax-h3";
+  const highModels = models.filter((item) =>
+    item.name.toLowerCase().includes("_high_noise_"),
+  );
+  const lowModels = models.filter((item) =>
+    item.name.toLowerCase().includes("_low_noise_"),
+  );
+  function pairedModelIndex(item, candidates, fromMarker, toMarker) {
+    if (!item) return null;
+    const pairName = item.name.replace(fromMarker, toMarker);
+    return candidates.find((candidate) => candidate.name === pairName)?.index ?? null;
+  }
   // 兼容尚未返回能力字段的旧 API；14B 始终只允许 I2V。
   const requiresInputImage =
     modelInfo?.requires_input_image ?? videoModel === "wan2.2-i2v-14b";
@@ -65,8 +82,13 @@ export default function VideoParameterForm({
   const durationNum = Number(duration);
   const fpsNum = Number(fps);
   const framesComputable = Number.isInteger(durationNum) && Number.isInteger(fpsNum);
-  const totalFrames = durationNum * fpsNum + 1;
-  const framesValid = framesComputable && (totalFrames - 1) % 4 === 0;
+  const wanTotalFrames = durationNum * fpsNum + 1;
+  const h3BaseFrames = Math.max(5, Math.round(durationNum * 24));
+  const h3TotalFrames = h3BaseFrames + ((5 - (h3BaseFrames % 17) + 17) % 17);
+  const totalFrames = isMiniMaxH3 ? h3TotalFrames : wanTotalFrames;
+  const framesValid =
+    framesComputable &&
+    (isMiniMaxH3 ? fpsNum === 24 && totalFrames % 17 === 5 : (totalFrames - 1) % 4 === 0);
 
   // 拉取全部可用采样器/调度器,失败时保留兜底列表
   useEffect(() => {
@@ -89,10 +111,36 @@ export default function VideoParameterForm({
     setModelIndex((prev) =>
       models.some((item) => item.index === prev) ? prev : (models[0]?.index ?? null),
     );
+    setHighModelIndex((prev) =>
+      highModels.some((item) => item.index === prev)
+        ? prev
+        : (highModels[0]?.index ?? null),
+    );
+    setLowModelIndex((prev) =>
+      lowModels.some((item) => item.index === prev)
+        ? prev
+        : (lowModels[0]?.index ?? null),
+    );
     setVaeIndex((prev) =>
       vaes.some((item) => item.index === prev) ? prev : (vaes[0]?.index ?? null),
     );
   }, [resources]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // 按模型家族写入已验证的默认采样参数。
+  useEffect(() => {
+    if (videoModel === "minimax-h3") {
+      setWidth("608");
+      setHeight("352");
+      setDuration("5");
+      setFps("24");
+      setSteps("8");
+      setCfg("1");
+      setShift("12");
+      setSampler("res_multistep");
+    } else {
+      setSampler(videoModel === "wan2.2-i2v-14b" ? "euler" : "uni_pc");
+    }
+  }, [videoModel]);
 
   // 相册视频抽屉"发送到工作台"带过来的生成参数预填;
   // 模型/VAE 按文件名匹配当前分类的资源,匹配不到保留默认选中
@@ -109,11 +157,22 @@ export default function VideoParameterForm({
     if (Number.isInteger(paramsPrefill.steps)) setSteps(String(paramsPrefill.steps));
     if (paramsPrefill.cfg != null) setCfg(String(paramsPrefill.cfg));
     if (paramsPrefill.shift != null) setShift(String(paramsPrefill.shift));
+    if (paramsPrefill.latent_multiplier != null) {
+      setLatentMultiplier(String(paramsPrefill.latent_multiplier));
+    }
     if (paramsPrefill.sampler) setSampler(paramsPrefill.sampler);
     if (paramsPrefill.scheduler) setScheduler(paramsPrefill.scheduler);
     if (Number.isInteger(paramsPrefill.seed)) setSeed(String(paramsPrefill.seed));
     const model = models.find((item) => item.name === paramsPrefill.model_name);
-    if (model) setModelIndex(model.index);
+    if (model) {
+      setModelIndex(model.index);
+      if (model.name.toLowerCase().includes("_high_noise_")) {
+        setHighModelIndex(model.index);
+        const lowName = model.name.replace("_high_noise_", "_low_noise_");
+        const lowModel = lowModels.find((item) => item.name === lowName);
+        if (lowModel) setLowModelIndex(lowModel.index);
+      }
+    }
     const vae = vaes.find((item) => item.name === paramsPrefill.vae_name);
     if (vae) setVaeIndex(vae.index);
   }, [paramsPrefill, resources]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -160,17 +219,33 @@ export default function VideoParameterForm({
 
   // 用内置默认采样参数填写表单(对齐图片表单的「重置」)
   function resetToDefaults() {
-    setSteps("20");
-    setCfg("5");
-    setShift("8");
-    setSampler("uni_pc");
+    setSteps(isMiniMaxH3 ? "8" : "20");
+    setCfg(isMiniMaxH3 ? "1" : "5");
+    setShift(isMiniMaxH3 ? "12" : "8");
+    setLatentMultiplier("1");
+    setSampler(
+      isMiniMaxH3
+        ? "res_multistep"
+        : videoModel === "wan2.2-i2v-14b"
+          ? "euler"
+          : "uni_pc",
+    );
     setScheduler("simple");
     setError(null);
   }
 
   function validate() {
     if (!models.length || !vaes.length) return "资源列表尚未加载";
-    if (modelIndex === null || vaeIndex === null) return "请选择模型和 VAE";
+    if (usesDualModels) {
+      if (!highModels.length || !lowModels.length) {
+        return "缺少 high-noise 或 low-noise 模型";
+      }
+      if (highModelIndex === null || lowModelIndex === null || vaeIndex === null) {
+        return "请选择 high-noise、low-noise 模型和 VAE";
+      }
+    } else if (modelIndex === null || vaeIndex === null) {
+      return "请选择模型和 VAE";
+    }
     if (!prompt.trim()) return "prompt 不能为空";
     if (inputImageUploading) return "输入图片上传中,请稍候";
     if (requiresInputImage && !inputImage) {
@@ -179,8 +254,9 @@ export default function VideoParameterForm({
     const { multiple, min, max } = LIMITS.size;
     for (const [label, raw] of [["宽度", width], ["高度", height]]) {
       const value = Number(raw);
-      if (!Number.isInteger(value) || value < min || value > max || value % multiple) {
-        return `${label}必须是 ${min}-${max} 之间 ${multiple} 的倍数`;
+      const requiredMultiple = isMiniMaxH3 ? 32 : multiple;
+      if (!Number.isInteger(value) || value < min || value > max || value % requiredMultiple) {
+        return `${label}必须是 ${min}-${max} 之间 ${requiredMultiple} 的倍数`;
       }
     }
     if (!Number.isInteger(durationNum) || durationNum < LIMITS.duration.min || durationNum > LIMITS.duration.max) {
@@ -189,6 +265,7 @@ export default function VideoParameterForm({
     if (!Number.isInteger(fpsNum) || fpsNum < LIMITS.fps.min || fpsNum > LIMITS.fps.max) {
       return `帧率必须是 ${LIMITS.fps.min}-${LIMITS.fps.max} 的整数`;
     }
+    if (isMiniMaxH3 && fpsNum !== 24) return "MiniMax H3 帧率固定为 24";
     const stepsNum = Number(steps);
     if (!Number.isInteger(stepsNum) || stepsNum < LIMITS.steps.min || stepsNum > LIMITS.steps.max) {
       return `steps 必须在 ${LIMITS.steps.min} 到 ${LIMITS.steps.max} 之间`;
@@ -198,8 +275,12 @@ export default function VideoParameterForm({
       return `批次数量必须在 ${LIMITS.count.min} 到 ${LIMITS.count.max} 之间`;
     }
     if (!Number.isFinite(Number(cfg)) || Number(cfg) <= 0) return "CFG 必须是大于 0 的数值";
-    if (!Number.isFinite(Number(shift)) || Number(shift) < 8 || Number(shift) > 12) {
-      return "Shift 必须在 8 到 12 之间";
+    if (isMiniMaxH3 && Number(cfg) !== 1) return "MiniMax H3 CFG 固定为 1";
+    if (!Number.isFinite(Number(shift)) || Number(shift) < 0 || Number(shift) > 100) {
+      return "Shift 必须在 0 到 100 之间";
+    }
+    if (!Number.isFinite(Number(latentMultiplier)) || Number(latentMultiplier) <= 0) {
+      return "Latent multiplier 必须是大于 0 的数值";
     }
     const seedNum = Number(seed);
     if (seed.trim() === "" || !Number.isInteger(seedNum) || seedNum < -1) {
@@ -214,9 +295,8 @@ export default function VideoParameterForm({
     setError(problem);
     if (problem) return;
     try {
-      await onSubmit({
+      const payload = {
         video_model: videoModel,
-        model_index: modelIndex,
         vae_index: vaeIndex,
         prompt: prompt.trim(),
         negative_prompt: negativePrompt,
@@ -230,9 +310,17 @@ export default function VideoParameterForm({
         count: Number(count),
         cfg: Number(cfg),
         shift: Number(shift),
+        latent_multiplier: Number(latentMultiplier),
         sampler,
         scheduler,
-      });
+      };
+      if (usesDualModels) {
+        payload.high_model_index = highModelIndex;
+        payload.low_model_index = lowModelIndex;
+      } else {
+        payload.model_index = modelIndex;
+      }
+      await onSubmit(payload);
     } catch (err) {
       // 服务端校验(如总帧数须满足 4n+1)返回的 422 错误直接展示
       setError(err.message);
@@ -407,21 +495,70 @@ export default function VideoParameterForm({
         )}
       </div>
 
-      <div className="field" id="field-video-model">
-        <label htmlFor="video-model-select">模型 Checkpoint</label>
-        <select
-          id="video-model-select"
-          value={modelIndex ?? ""}
-          disabled={!models.length}
-          onChange={(e) => setModelIndex(Number(e.target.value))}
-        >
-          {models.map((item) => (
-            <option key={item.index} value={item.index}>
-              {item.display_name}
-            </option>
-          ))}
-        </select>
-      </div>
+      {usesDualModels ? (
+        <div className="row" id="video-dual-model-row">
+          <div className="field" id="field-video-high-model">
+            <label htmlFor="video-high-model-select">High Noise 模型</label>
+            <select
+              id="video-high-model-select"
+              value={highModelIndex ?? ""}
+              disabled={!highModels.length}
+              onChange={(e) => {
+                const nextIndex = Number(e.target.value);
+                const nextModel = highModels.find((item) => item.index === nextIndex);
+                setHighModelIndex(nextIndex);
+                setLowModelIndex(
+                  pairedModelIndex(nextModel, lowModels, "_high_noise_", "_low_noise_"),
+                );
+              }}
+            >
+              {highModels.map((item) => (
+                <option key={item.index} value={item.index}>
+                  {item.display_name}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="field" id="field-video-low-model">
+            <label htmlFor="video-low-model-select">Low Noise 模型</label>
+            <select
+              id="video-low-model-select"
+              value={lowModelIndex ?? ""}
+              disabled={!lowModels.length}
+              onChange={(e) => {
+                const nextIndex = Number(e.target.value);
+                const nextModel = lowModels.find((item) => item.index === nextIndex);
+                setLowModelIndex(nextIndex);
+                setHighModelIndex(
+                  pairedModelIndex(nextModel, highModels, "_low_noise_", "_high_noise_"),
+                );
+              }}
+            >
+              {lowModels.map((item) => (
+                <option key={item.index} value={item.index}>
+                  {item.display_name}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+      ) : (
+        <div className="field" id="field-video-model">
+          <label htmlFor="video-model-select">模型 Checkpoint</label>
+          <select
+            id="video-model-select"
+            value={modelIndex ?? ""}
+            disabled={!models.length}
+            onChange={(e) => setModelIndex(Number(e.target.value))}
+          >
+            {models.map((item) => (
+              <option key={item.index} value={item.index}>
+                {item.display_name}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
 
       <div className="field" id="field-video-vae">
         <label htmlFor="video-vae-select">VAE</label>
@@ -443,7 +580,7 @@ export default function VideoParameterForm({
         <div className="field" id="field-video-width">
           <label htmlFor="video-width-input">宽度 (px)</label>
           <input
-            id="video-width-input" type="number" step={LIMITS.size.multiple}
+            id="video-width-input" type="number" step={isMiniMaxH3 ? 32 : LIMITS.size.multiple}
             min={LIMITS.size.min} max={LIMITS.size.max}
             value={width} onChange={(e) => setWidth(e.target.value)}
           />
@@ -451,11 +588,27 @@ export default function VideoParameterForm({
         <div className="field" id="field-video-height">
           <label htmlFor="video-height-input">高度 (px)</label>
           <input
-            id="video-height-input" type="number" step={LIMITS.size.multiple}
+            id="video-height-input" type="number" step={isMiniMaxH3 ? 32 : LIMITS.size.multiple}
             min={LIMITS.size.min} max={LIMITS.size.max}
             value={height} onChange={(e) => setHeight(e.target.value)}
           />
         </div>
+      </div>
+
+      <div className="preset-row" id="video-size-presets">
+        {(sizePresets ?? []).map(([presetWidth, presetHeight]) => (
+          <button
+            key={`${presetWidth}x${presetHeight}`}
+            id={`video-preset-${presetWidth}x${presetHeight}`}
+            type="button"
+            className="chip"
+            onClick={() => { setWidth(String(presetWidth)); setHeight(String(presetHeight)); }}
+          >
+            {presetWidth === presetHeight
+              ? `${presetWidth}²`
+              : `${presetWidth}×${presetHeight}`}
+          </button>
+        ))}
       </div>
 
       <div className="row" id="video-duration-fps-row">
@@ -472,16 +625,19 @@ export default function VideoParameterForm({
           <input
             id="video-fps-input" type="number" step={1}
             min={LIMITS.fps.min} max={LIMITS.fps.max}
+            disabled={isMiniMaxH3}
             value={fps} onChange={(e) => setFps(e.target.value)}
           />
         </div>
       </div>
       <p className="form-hint" id="video-frames-hint">
-        总帧数 length = {duration} × {fps} + 1 = <strong>{framesComputable ? totalFrames : "-"}</strong>
+        {isMiniMaxH3 ? "对齐后总帧数" : `总帧数 length = ${duration} × ${fps} + 1`} = <strong>{framesComputable ? totalFrames : "-"}</strong>
         {framesValid ? (
-          "(满足 4n+1)"
+          isMiniMaxH3 ? "(满足 17n+5)" : "(满足 4n+1)"
         ) : (
-          <span className="form-hint-error">,不满足 4n+1:时长 × 帧率 必须是 4 的倍数</span>
+          <span className="form-hint-error">
+            {isMiniMaxH3 ? ",MiniMax H3 帧率固定为 24" : ",不满足 4n+1:时长 × 帧率 必须是 4 的倍数"}
+          </span>
         )}
       </p>
 
@@ -540,14 +696,22 @@ export default function VideoParameterForm({
           <label htmlFor="video-cfg-input">CFG</label>
           <input
             id="video-cfg-input" type="number" min={0} step="any"
+            disabled={isMiniMaxH3}
             value={cfg} onChange={(e) => setCfg(e.target.value)}
           />
         </div>
         <div className="field" id="field-video-shift">
-          <label htmlFor="video-shift-input">Shift (8–12)</label>
+          <label htmlFor="video-shift-input">Shift (0–100)</label>
           <input
-            id="video-shift-input" type="number" min={8} max={12} step="any"
+            id="video-shift-input" type="number" min={0} max={100} step="any"
             value={shift} onChange={(e) => setShift(e.target.value)}
+          />
+        </div>
+        <div className="field" id="field-video-latent-multiplier">
+          <label htmlFor="video-latent-multiplier-input">Latent multiplier</label>
+          <input
+            id="video-latent-multiplier-input" type="number" min={0} step="any"
+            value={latentMultiplier} onChange={(e) => setLatentMultiplier(e.target.value)}
           />
         </div>
       </div>

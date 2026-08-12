@@ -11,6 +11,7 @@ from .domain import (
     UpscaleMethod,
     VideoGenerationSettings,
     VideoModel,
+    resolve_video_diffusion_pair,
 )
 from .instance_lock import InstanceLock
 from .logging_config import CoreLogManager
@@ -129,12 +130,29 @@ class WorkbenchCore:
             raise ValueError(
                 f"{settings.video_model.value} text encoder 固定为 {resources.text_encoder}"
             )
+        if (
+            (settings.audio_vae is None) != (resources.audio_vae is None)
+            or settings.audio_vae is not None
+            and settings.audio_vae.resolve() != resources.audio_vae.resolve()
+        ):
+            raise ValueError(
+                f"{settings.video_model.value} audio VAE 固定为 {resources.audio_vae}"
+            )
+        if resources.audio_vae is not None and not resources.audio_vae.is_file():
+            raise FileNotFoundError(f"找不到音频 VAE: {resources.audio_vae}")
         model_paths = {
             item.path.resolve() for item in self.list_video_models(settings.video_model)
         }
         if settings.model.path.resolve() not in model_paths:
             raise ValueError(
                 f"model 不属于 {settings.video_model.value} 配置的 diffusion 目录或文件路径"
+            )
+        high_path, low_path = resolve_video_diffusion_pair(
+            settings.video_model, settings.model.path
+        )
+        if not high_path.is_file() or (low_path is not None and not low_path.is_file()):
+            raise FileNotFoundError(
+                "Wan I2V-14B 必须同时存在 high_noise 和 low_noise diffusion 模型"
             )
         vae_paths = {
             item.path.resolve() for item in self.list_video_vaes(settings.video_model)
@@ -162,6 +180,9 @@ class WorkbenchCore:
 
     def get_video_job(self, job_id: str):
         return self.store.get_video_job(job_id)
+
+    def find_video_job_by_output(self, date_dir: str, name: str):
+        return self.store.find_video_job_by_output(date_dir, name)
 
     def release_resources(self) -> None:
         self.controller.release_resources()

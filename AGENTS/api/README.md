@@ -74,6 +74,7 @@ vite preview 的 `preview.proxy` 当前版本不会转发 `/api`，不要用它�
 | `DELETE` | `/api/v1/album/dirs/{dir_id}` | 移除相册目录（不动磁盘文件） |
 | `GET` | `/api/v1/album/image/{path}` | 按相对路径读取图片 |
 | `DELETE` | `/api/v1/album/image/{path}` | 从本机删除该图片 |
+| `POST` | `/api/v1/album/batch-delete` | 批量删除图片/视频（单个失败不影响其余） |
 | `GET` | `/api/v1/album/image/{path}/metadata` | 按相对路径读取 PNG 元数据（mp4 返回 404） |
 | `GET` | `/api/v1/video/models` | 已配置的视频模型及 T2V/I2V 能力 |
 | `GET` | `/api/v1/video/models/{video_model}/resources` | 视频模型的 diffusion/VAE 资源 |

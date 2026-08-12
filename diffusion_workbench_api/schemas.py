@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
@@ -8,10 +9,12 @@ from pydantic import BaseModel, Field, field_validator
 from diffusion_workbench_core.domain import (
     SAMPLERS,
     SCHEDULERS,
+    VideoJobRecord,
     JobRecord,
     Mode,
     ResourceItem,
     UpscaleSettings,
+    VideoModel,
 )
 
 
@@ -196,6 +199,12 @@ class StatusResponse(BaseModel):
     running: str | None
     worker: str
     gpu: str
+    memory: dict
+    gpu_memory_used_gib: float | None
+    gpu_memory_total_gib: float | None
+    gpu_memory_percent: float | None
+    gpu_utilization_percent: float | None
+    loaded_resources: dict | None
 
 
 def status_to_response(status: dict) -> StatusResponse:
@@ -204,7 +213,30 @@ def status_to_response(status: dict) -> StatusResponse:
         running=status.get("running"),
         worker=str(status.get("worker", "unknown")),
         gpu=str(status.get("gpu", "不可用")),
+        memory=dict(status.get("memory") or {}),
+        gpu_memory_used_gib=status.get("gpu_memory_used_gib"),
+        gpu_memory_total_gib=status.get("gpu_memory_total_gib"),
+        gpu_memory_percent=status.get("gpu_memory_percent"),
+        gpu_utilization_percent=status.get("gpu_utilization_percent"),
+        loaded_resources=_public_loaded_resources(status.get("loaded_resources")),
     )
+
+
+def _public_loaded_resources(loaded: dict | None) -> dict | None:
+    """Worker 已加载资源;模型、VAE、音频 VAE 和文本编码器只公开文件名。
+
+    空 dict 表示 Worker 未加载任何资源,归一为 None。
+    """
+    if not loaded:
+        return None
+    return {
+        key: (
+            Path(str(value)).name
+            if key in ("model", "vae", "audio_vae", "text_encoder") and value
+            else value
+        )
+        for key, value in loaded.items()
+    }
 
 
 STEP_METRIC_KEYS = (
@@ -233,6 +265,7 @@ _ALLOWED_EVENT_KEYS = frozenset(
         "height",
         "data",
         *STEP_METRIC_KEYS,
+        "artifact_type",
     }
 )
 
@@ -240,7 +273,14 @@ _ALLOWED_EVENT_KEYS = frozenset(
 def public_event(event: dict, event_id: int) -> dict:
     """把 Core 内部事件转成可公开的事件，隐藏本机路径和完整错误。"""
     result = {key: event[key] for key in _ALLOWED_EVENT_KEYS if key in event}
-    if event.get("output_path") and event.get("job_id"):
+    # 视频产物走独立的 /videos 端点,此时不再设置 image_url;图片逻辑保持原样
+    if (
+        event.get("artifact_type") == "video"
+        and event.get("output_path")
+        and event.get("job_id")
+    ):
+        result["video_url"] = f"/api/v1/videos/{event['job_id']}"
+    elif event.get("output_path") and event.get("job_id"):
         result["image_url"] = f"/api/v1/images/{event['job_id']}"
     if (
         event.get("status") == "completed"
@@ -252,3 +292,124 @@ def public_event(event: dict, event_id: int) -> dict:
         result["error"] = _error_summary(str(event["error"]))
     result["event_id"] = event_id
     return result
+
+
+
+class CreateVideoJobsRequest(BaseModel):
+    """视频生成任务参数;结构校验在这里,合法组合以 core domain 为最终事实来源。
+
+    input_image_id 引用受控上传接口(`POST /video/input-images`)落盘的图片,
+    设置后为 I2V,不设置为 T2V;text_encoder 由服务端配置固定注入。
+    """
+
+    video_model: VideoModel
+    model_index: int | None = Field(default=None, ge=1)
+    high_model_index: int | None = Field(default=None, ge=1)
+    low_model_index: int | None = Field(default=None, ge=1)
+    vae_index: int = Field(ge=1)
+    prompt: str = Field(min_length=1, max_length=16_000)
+    negative_prompt: str = Field(default="", max_length=16_000)
+    input_image_id: str | None = Field(default=None, max_length=64)
+    width: int = 704
+    height: int = 960
+    duration_seconds: int = Field(default=5, ge=1)
+    fps: int = Field(default=24, ge=1, le=120)
+    steps: int = Field(default=20, ge=1, le=100)
+    seed: int = Field(default=-1, ge=-1)
+    count: int = Field(default=1, ge=1, le=8)
+    cfg: float = Field(default=5.0, gt=0, allow_inf_nan=False)
+    shift: float = Field(default=8.0, ge=0, le=100, allow_inf_nan=False)
+    latent_multiplier: float = Field(default=1.0, gt=0, allow_inf_nan=False)
+    sampler: str = "uni_pc"
+    scheduler: str = "simple"
+
+    # 合法值以 core domain 的 SAMPLERS/SCHEDULERS 为唯一事实来源
+    @field_validator("sampler")
+    @classmethod
+    def _check_sampler(cls, value: str) -> str:
+        if value not in SAMPLERS:
+            raise ValueError(f"不支持 sampler: {value}")
+        return value
+
+    @field_validator("scheduler")
+    @classmethod
+    def _check_scheduler(cls, value: str) -> str:
+        if value not in SCHEDULERS:
+            raise ValueError(f"不支持 scheduler: {value}")
+        return value
+
+
+class VideoJobResponse(BaseModel):
+    id: str
+    batch_id: str | None
+    status: str
+    video_model: str
+    generation_type: str
+    seed: int
+    width: int
+    height: int
+    duration_seconds: int
+    fps: int
+    length: int
+    steps: int
+    sampler: str
+    scheduler: str
+    cfg: float
+    shift: float
+    denoise: float
+    latent_multiplier: float
+    model_name: str
+    vae_name: str
+    prompt: str
+    negative_prompt: str
+    submitted_at: datetime
+    started_at: datetime | None
+    completed_at: datetime | None
+    elapsed_seconds: float | None
+    output_name: str
+    video_url: str | None
+    input_image_url: str | None
+    error: str | None
+
+
+def video_job_to_response(job: VideoJobRecord) -> VideoJobResponse:
+    # 与图片一致:URL 以文件实际存在为准,不只看 completed
+    video_url = f"/api/v1/videos/{job.id}" if job.output_path.is_file() else None
+    # I2V 输入图片来自受控上传目录,文件名即上传接口返回的 id
+    input_image_url = (
+        f"/api/v1/video/input-images/{job.input_image_path.name}"
+        if job.input_image_path is not None
+        else None
+    )
+    return VideoJobResponse(
+        id=job.id,
+        batch_id=job.batch_id,
+        status=job.status,
+        video_model=job.video_model.value,
+        generation_type=job.generation_type,
+        seed=job.seed,
+        width=job.width,
+        height=job.height,
+        duration_seconds=job.duration_seconds,
+        fps=job.fps,
+        length=job.length,
+        steps=job.steps,
+        sampler=job.sampler,
+        scheduler=job.scheduler,
+        cfg=job.cfg,
+        shift=job.shift,
+        denoise=job.denoise,
+        latent_multiplier=job.latent_multiplier,
+        model_name=job.model_path.name,
+        vae_name=job.vae_path.name,
+        prompt=job.prompt,
+        negative_prompt=job.negative_prompt,
+        submitted_at=job.submitted_at,
+        started_at=job.started_at,
+        completed_at=job.completed_at,
+        elapsed_seconds=job.elapsed_seconds,
+        output_name=job.output_path.name,
+        video_url=video_url,
+        input_image_url=input_image_url,
+        error=_error_summary(job.error),
+    )

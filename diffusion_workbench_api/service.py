@@ -19,6 +19,7 @@ from diffusion_workbench_core.domain import (
     UpscaleSettings,
     VideoGenerationSettings,
     VideoModel,
+    resolve_video_diffusion_pair,
 )
 
 from .schemas import CreateJobsRequest, CreateVideoJobsRequest, UpscaleRequest
@@ -31,9 +32,14 @@ VIDEO_MODEL_CAPABILITIES = {
         "requires_input_image": False,
     },
     VideoModel.WAN22_I2V_14B: {
-        "label": "Wan 2.2 I2V-14B FP8",
+        "label": "Wan 2.2 I2V-14B",
         "generation_types": ("i2v",),
         "requires_input_image": True,
+    },
+    VideoModel.MINIMAX_H3: {
+        "label": "MiniMax H3",
+        "generation_types": ("t2v", "i2v"),
+        "requires_input_image": False,
     },
 }
 
@@ -230,7 +236,35 @@ def submit_video_jobs(core: WorkbenchCore, payload: CreateVideoJobsRequest):
     video_model = VideoModel(payload.video_model)
     if video_model not in core.config.video_resources:
         raise LookupError(f"未配置视频模型: {video_model.value}")
-    model = video_resource_at(core, video_model, "diffusion", payload.model_index)
+    if video_model == VideoModel.WAN22_I2V_14B and (
+        payload.high_model_index is not None or payload.low_model_index is not None
+    ):
+        if payload.high_model_index is None or payload.low_model_index is None:
+            raise ValueError("Wan I2V-14B 必须同时选择 high-noise 和 low-noise 模型")
+        high_model = video_resource_at(
+            core, video_model, "diffusion", payload.high_model_index
+        )
+        low_model = video_resource_at(
+            core, video_model, "diffusion", payload.low_model_index
+        )
+        expected_high, expected_low = resolve_video_diffusion_pair(
+            video_model, high_model.path
+        )
+        if high_model.path.resolve() != expected_high:
+            raise ValueError("high_model_index 必须引用 high_noise 模型")
+        if expected_low is None or low_model.path.resolve() != expected_low:
+            raise ValueError("high-noise 与 low-noise 模型不匹配")
+        model = high_model
+    else:
+        if payload.model_index is None:
+            field = (
+                "high_model_index/low_model_index"
+                if video_model == VideoModel.WAN22_I2V_14B
+                else "model_index"
+            )
+            raise ValueError(f"必须提供 {field}")
+        # 兼容旧客户端：14B 仍可由任一专家的 model_index 自动解析配对。
+        model = video_resource_at(core, video_model, "diffusion", payload.model_index)
     vae = video_resource_at(core, video_model, "vae", payload.vae_index)
     # 输入图片只接受受控上传接口的 id,路径解析在服务端完成
     input_image = (
@@ -242,24 +276,37 @@ def submit_video_jobs(core: WorkbenchCore, payload: CreateVideoJobsRequest):
     if capabilities["requires_input_image"] and input_image is None:
         raise ValueError(f"{capabilities['label']} 必须提供输入图片")
     fixed = core.config.video_resources[video_model]
+    sampler = payload.sampler
+    if (
+        video_model == VideoModel.WAN22_I2V_14B
+        and "sampler" not in payload.model_fields_set
+    ):
+        sampler = "euler"
+    if video_model == VideoModel.MINIMAX_H3 and "sampler" not in payload.model_fields_set:
+        sampler = "res_multistep"
+    fps = 24 if video_model == VideoModel.MINIMAX_H3 else payload.fps
+    cfg = 1.0 if video_model == VideoModel.MINIMAX_H3 else payload.cfg
+    shift = 12.0 if video_model == VideoModel.MINIMAX_H3 else payload.shift
     settings = VideoGenerationSettings(
         video_model=video_model,
         model=model,
         vae=vae,
         # text encoder 固定为服务端配置,不接受客户端指定
         text_encoder=fixed.text_encoder,
+        audio_vae=fixed.audio_vae,
         prompt=payload.prompt,
         negative_prompt=payload.negative_prompt,
         input_image=input_image,
         width=payload.width,
         height=payload.height,
         duration_seconds=payload.duration_seconds,
-        fps=payload.fps,
+        fps=fps,
         steps=payload.steps,
         seed=payload.seed,
-        cfg=payload.cfg,
-        shift=payload.shift,
-        sampler=payload.sampler,
+        cfg=cfg,
+        shift=shift,
+        latent_multiplier=payload.latent_multiplier,
+        sampler=sampler,
         scheduler=payload.scheduler,
     )
     return core.submit_video(settings, payload.count)

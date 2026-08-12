@@ -9,8 +9,10 @@ from collections import deque
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
+import psutil
+
 from .config import WorkbenchConfig
-from .domain import JobRecord, VideoJobRecord
+from .domain import JobRecord, VideoJobRecord, resolve_video_diffusion_pair
 from .logging_config import silent_logger, worker_output_level
 from .runtime import GenerationCancelled
 
@@ -60,6 +62,15 @@ class PersistentComfyRuntime:
         self._active_job_id: str | None = None
         self._preview_enabled = False
         self._gpu_value = "查询中"
+        self._memory_status: dict = {
+            "used_gib": None,
+            "total_gib": None,
+            "percent": None,
+        }
+        self._gpu_memory_used_gib: float | None = None
+        self._gpu_memory_total_gib: float | None = None
+        self._gpu_memory_percent: float | None = None
+        self._gpu_utilization_percent: float | None = None
         self._gpu_probe_running = False
         self._gpu_probe_time = 0.0
         self._closed = False
@@ -145,7 +156,10 @@ class PersistentComfyRuntime:
                 }
                 return event
             elif event_type == "cancelled" and event.get("job_id") == job.id:
-                if event.get("model_path"):
+                if event.get("resources_released"):
+                    self._loaded_model = None
+                    self._loaded_resources = {}
+                elif event.get("model_path"):
                     self._loaded_model = event["model_path"]
                 raise GenerationCancelled("任务已取消")
             elif event_type == "error" and event.get("job_id") == job.id:
@@ -192,17 +206,24 @@ class PersistentComfyRuntime:
             "workbench_version": _workbench_version(),
         }
 
-    @staticmethod
-    def _video_command(job: VideoJobRecord) -> dict:
+    def _video_command(self, job: VideoJobRecord) -> dict:
+        model_high, model_low = resolve_video_diffusion_pair(
+            job.video_model, job.model_path
+        )
         return {
             "type": "generate_video",
             "job_id": job.id,
             "batch_id": job.batch_id,
             "video_model": job.video_model.value,
             "model_path": str(job.model_path.resolve()),
+            "model_high_path": str(model_high),
+            "model_low_path": str(model_low) if model_low is not None else None,
             "vae_path": str(job.vae_path.resolve()),
             "text_encoder_path": str(job.text_encoder_path.resolve()),
-            "clip_type": "wan",
+            "audio_vae_path": (
+                str(job.audio_vae_path.resolve()) if job.audio_vae_path else None
+            ),
+            "clip_type": self.config.video_resources[job.video_model].clip_type,
             "prompt": job.prompt,
             "negative_prompt": job.negative_prompt,
             "input_image_path": (
@@ -220,6 +241,7 @@ class PersistentComfyRuntime:
             "scheduler": job.scheduler,
             "denoise": job.denoise,
             "shift": job.shift,
+            "latent_multiplier": job.latent_multiplier,
             "output_path": str(job.output_path.resolve()),
             "preview_enabled": False,
             "workbench_version": _workbench_version(),
@@ -308,6 +330,11 @@ class PersistentComfyRuntime:
             "loaded_resources": dict(self._loaded_resources),
             "preview_enabled": self._preview_enabled,
             "gpu": self._gpu_value,
+            "memory": dict(self._memory_status),
+            "gpu_memory_used_gib": self._gpu_memory_used_gib,
+            "gpu_memory_total_gib": self._gpu_memory_total_gib,
+            "gpu_memory_percent": self._gpu_memory_percent,
+            "gpu_utilization_percent": self._gpu_utilization_percent,
         }
 
     def _request_gpu_probe(self) -> None:
@@ -327,7 +354,19 @@ class PersistentComfyRuntime:
 
     def _refresh_gpu_memory(self) -> None:
         try:
-            value = self._gpu_memory()
+            probe = self._gpu_memory()
+            if isinstance(probe, dict):
+                value = str(probe["display"])
+                memory = probe.get("memory")
+                if isinstance(memory, dict):
+                    self._memory_status = memory
+                self._gpu_memory_used_gib = probe.get("gpu_memory_used_gib")
+                self._gpu_memory_total_gib = probe.get("gpu_memory_total_gib")
+                self._gpu_memory_percent = probe.get("gpu_memory_percent")
+                self._gpu_utilization_percent = probe.get("gpu_utilization_percent")
+            else:
+                # 兼容旧测试或外部覆盖的字符串探测器。
+                value = str(probe)
         except Exception:
             value = "不可用"
         finally:
@@ -524,12 +563,18 @@ class PersistentComfyRuntime:
         )
 
     @staticmethod
-    def _gpu_memory() -> str:
+    def _gpu_memory() -> dict | str:
+        memory = psutil.virtual_memory()
+        memory_status = {
+            "used_gib": round(memory.used / 1024**3, 2),
+            "total_gib": round(memory.total / 1024**3, 2),
+            "percent": round(float(memory.percent), 1),
+        }
         try:
             result = subprocess.run(
                 [
                     "nvidia-smi",
-                    "--query-gpu=memory.used,memory.total",
+                    "--query-gpu=memory.used,memory.total,utilization.gpu",
                     "--format=csv,noheader,nounits",
                 ],
                 capture_output=True,
@@ -538,11 +583,29 @@ class PersistentComfyRuntime:
                 check=False,
             )
             if result.returncode == 0:
-                used, total = result.stdout.strip().split(",", 1)
-                return f"{int(used.strip()) / 1024:.2f}/{int(total.strip()) / 1024:.2f} GiB"
+                used, total, utilization = result.stdout.strip().split(",", 2)
+                used_gib = round(int(used.strip()) / 1024, 2)
+                total_gib = round(int(total.strip()) / 1024, 2)
+                memory_percent = round(used_gib / total_gib * 100, 1) if total_gib else None
+                utilization_percent = float(utilization.strip())
+                return {
+                    "display": f"{used_gib:.2f}/{total_gib:.2f} GiB",
+                    "memory": memory_status,
+                    "gpu_memory_used_gib": used_gib,
+                    "gpu_memory_total_gib": total_gib,
+                    "gpu_memory_percent": memory_percent,
+                    "gpu_utilization_percent": utilization_percent,
+                }
         except (OSError, ValueError, subprocess.TimeoutExpired):
             pass
-        return "不可用"
+        return {
+            "display": "不可用",
+            "memory": memory_status,
+            "gpu_memory_used_gib": None,
+            "gpu_memory_total_gib": None,
+            "gpu_memory_percent": None,
+            "gpu_utilization_percent": None,
+        }
 
     @staticmethod
     def _close_pipes(process: subprocess.Popen) -> None:

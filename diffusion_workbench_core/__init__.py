@@ -11,7 +11,7 @@ from .domain import (
     VideoModel,
 )
 from .core import WorkbenchCore
-from .png_metadata import read_generation_metadata
+from .png_metadata import read_comfyui_metadata, read_generation_metadata
 
 __all__ = [
     "GenerationSettings",
@@ -23,5 +23,6 @@ __all__ = [
     "VideoGenerationSettings",
     "VideoModel",
     "WorkbenchCore",
+    "read_comfyui_metadata",
     "read_generation_metadata",
 ]

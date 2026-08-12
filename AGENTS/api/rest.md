@@ -283,8 +283,8 @@ index 同样按文件名排序，目录变化后会重排，不是永久 ID。
 
 ### `POST /api/v1/control/stop`
 
-**全局停止**：取消正在运行的任务并清空整个等待队列。Worker 进程和已加载的模型
-资源保留，下一张任务直接复用，无需重新加载。本服务没有单任务取消端点。
+**全局停止**：取消正在运行的任务并清空整个等待队列。图片 Worker 和已加载的模型
+资源保留；被取消的视频任务会释放其视频模型资源，下一张任务按需重新加载。本服务没有单任务取消端点。
 
 ```json
 { "accepted": true, "scope": "running-and-entire-queue" }
@@ -294,8 +294,8 @@ index 同样按文件名排序，目录变化后会重排，不是永久 ID。
 
 ### `POST /api/v1/control/skip`
 
-**跳过当前任务**：只取消正在运行的那一张，队列其余任务继续执行（Worker 与已加载
-资源保留）。没有正在运行或可取消的任务时不算错误。
+**跳过当前任务**：只取消正在运行的那一张，队列其余任务继续执行。图片任务保留 Worker
+与已加载资源；被取消的视频任务会释放视频模型资源。没有正在运行或可取消的任务时不算错误。
 
 有任务被跳过：
 
@@ -490,6 +490,18 @@ SDXL 的 `vae_name` 为 `null`，因为 VAE 来自同一 checkpoint。
 从本机删除该图片，查询参数 `dir` 同上，返回 `{"deleted": "<path>"}`。路径校验与
 读取一致：越界 400，文件不存在 404。
 
+### `POST /api/v1/album/batch-delete`
+
+批量删除图片/视频。请求体：`{"dir": "output", "relpaths": ["2026-07-27/a.png", "..."]}`，
+`relpaths` 为非空字符串列表（≤200 个）。逐个解析并删除，单个失败不影响其余；
+已不存在的文件视为删除成功（幂等）。返回：
+
+```json
+{"deleted": ["a.png"], "failed": [{"relpath": "b.png", "reason": "..."}]}
+```
+
+`relpaths` 为空、非列表或含非字符串项时返回 422。
+
 ### `GET /api/v1/album/image/{path}/metadata`
 
 PNG 同 `/images/{job_id}/metadata`，返回脱敏的内嵌生成参数，查询参数 `dir` 同上。
@@ -540,6 +552,7 @@ mp4 没有内嵌元数据,改为按输出文件(日期目录名 + 文件名)反�
 ```json
 {
   "size_presets": [[576, 576], [768, 768], [1024, 1024], [960, 1280]],
+  "video_size_presets": [[704, 960], [960, 704], [1280, 720], [720, 1280]],
   "prompt_presets": [
     {"id": "a1b2", "title": "通用质量词", "kind": "positive", "text": "masterpiece, best quality"}
   ],
@@ -571,8 +584,8 @@ mp4 没有内嵌元数据,改为按输出文件(日期目录名 + 文件名)反�
 ### `PUT /api/v1/settings`
 
 部分更新：请求体只需包含要修改的设置项，校验通过后原子写入并返回完整设置。
-`size_presets` 的每项必须是 `[宽, 高]`，正整数且为 16 的倍数，自动去重。未知设置项
-或非法值返回 422。
+`size_presets` 与 `video_size_presets`（视频表单的尺寸标签）的每项必须是 `[宽, 高]`，
+正整数且为 16 的倍数，自动去重。未知设置项或非法值返回 422。
 
 `sampling_defaults` 是工作台表单「重置」按钮使用的各模式默认采样参数，键为模式名
 （`zit` / `krea2` / `zib` / `sdxl`）。允许只提交部分模式或部分字段，服务端用默认值补齐；
@@ -662,9 +675,10 @@ mp4 没有内嵌元数据,改为按输出文件(日期目录名 + 文件名)反�
 
 ## 视频
 
-视频生成(Wan TI2V-5B/I2V-14B)经独立端点暴露;任务仍走同一条串行队列,全局 stop/skip 对
+视频生成（Wan TI2V-5B/I2V-14B、MiniMax H3 FL2VA）经独立端点暴露；任务仍走同一条串行队列，全局 stop/skip 对
 视频任务同样生效。不带输入图片为 T2V(文生视频),带 `input_image_id` 为 I2V
-(图生视频);text encoder 由服务端 `video_resources` 配置固定注入,客户端不能指定。
+(图生视频);text encoder 由服务端 `video_resources` 配置固定注入,客户端不能指定；H3
+的音频 VAE 同样由服务端固定注入，不出现在资源选择响应中。
 
 ### `GET /api/v1/video/models`
 
@@ -681,9 +695,15 @@ mp4 没有内嵌元数据,改为按输出文件(日期目录名 + 文件名)反�
   },
   {
     "video_model": "wan2.2-i2v-14b",
-    "label": "Wan 2.2 I2V-14B FP8",
+    "label": "Wan 2.2 I2V-14B",
     "generation_types": ["i2v"],
     "requires_input_image": true
+  },
+  {
+    "video_model": "minimax-h3",
+    "label": "MiniMax H3",
+    "generation_types": ["t2v", "i2v"],
+    "requires_input_image": false
   }
 ] }
 ```
@@ -693,6 +713,12 @@ mp4 没有内嵌元数据,改为按输出文件(日期目录名 + 文件名)反�
 指定视频模型可选的 diffusion/VAE 资源,字段与 `/resources/{mode}/{kind}` 一致
 (index/name/display_name,视频资源没有 alias 机制,`alias` 固定为 `null`);
 `video_model` 未配置返回 404。
+
+Wan 2.2 I2V-14B 的 diffusion 列表可以同时包含 safetensors 和 `.gguf`。前端应将
+包含 `_high_noise_` 的文件作为 high-noise 选项，将包含 `_low_noise_` 的文件作为
+low-noise 选项；两者必须是文件名互换 `_high_noise_`/`_low_noise_` 后的精确配对，
+不能混用 FP8 与 GGUF。选择 GGUF 时服务端要求 ComfyUI 安装 `ComfyUI-GGUF`；VAE
+列表只包含 safetensors。
 
 ```json
 {
@@ -736,6 +762,8 @@ id 或文件不存在一律 404。
 {
   "video_model": "wan2.2-ti2v-5b",
   "model_index": 1,
+  "high_model_index": null,
+  "low_model_index": null,
   "vae_index": 1,
   "prompt": "一只猫在雪地里奔跑",
   "negative_prompt": "",
@@ -748,24 +776,39 @@ id 或文件不存在一律 404。
   "count": 1,
   "cfg": 5.0,
   "shift": 8.0,
+  "latent_multiplier": 1.0,
   "sampler": "uni_pc",
   "scheduler": "simple",
   "input_image_id": null
 }
 ```
 
-`input_image_id` 对 TI2V-5B 可选:引用 `POST /video/input-images` 返回的 id,设置后为
+14B 请求必须同时提供 `high_model_index` 和 `low_model_index`；它们分别引用上述
+high-noise/low-noise 列表中的 index，且必须是同格式的精确配对。`model_index` 对
+14B 仍保留，用于兼容旧客户端，服务端会根据文件名自动解析配对；新客户端应优先
+使用两个显式字段。TI2V-5B 等其他视频模型继续使用 `model_index`，并将
+`high_model_index`/`low_model_index` 省略。`input_image_id` 对 TI2V-5B 可选:引用 `POST /video/input-images` 返回的 id,设置后为
 I2V,不设置为 T2V。I2V-14B 必须设置 `input_image_id`，否则 API 返回 422；Core 会自动
 配对 high-noise 与 low-noise diffusion 模型并执行双阶段采样。
 
-约束:`video_model` 必填且必须是已配置的视频模型;`model_index`/`vae_index` ≥ 1;
+约束:`video_model` 必填且必须是已配置的视频模型;`model_index`、`high_model_index`、
+`low_model_index`、`vae_index`（适用时）均 ≥ 1;
 `prompt` 1–16000 字符;宽高必须是 16 的倍数(默认 704×960);`duration_seconds`
 为 ≥ 1 的整数秒(默认 5);`fps` 1–120(默认 24);总帧数
 length = duration_seconds × fps + 1 且必须满足 4n + 1;`steps` 1–100(默认 20);
 `seed` ≥ -1(`-1` 表示随机);`count` 1–8(HTTP admission limit);`cfg` 为大于 0
 的有限浮点数(默认 5.0);`shift` 0–100(默认 8.0,ComfyUI `ModelSamplingSD3`,
-前端表单一般只开放 8–12);`sampler`/`scheduler` 的合法值与图片任务同源(core
-domain 的 SAMPLERS/SCHEDULERS)。
+前端表单同样开放 0–100);`sampler`/`scheduler` 的合法值与图片任务同源(core
+domain 的 SAMPLERS/SCHEDULERS);`latent_multiplier` 为大于 0 的有限浮点数(默认
+1.0),在采样前乘到 Wan latent 的 samples 上。Turbo 模型可按模型说明设置为
+0.8 以缓解过饱和。请求未提供 `sampler` 时，I2V-14B 默认使用官方工作流的
+`euler`，其他视频模型默认使用 `uni_pc`。
+
+MiniMax H3 首期只支持 FL2VA：不带图片为 T2V，单张图片为首帧 I2V，不支持 Ref2VA
+多参考。H3 宽高必须为 32 的倍数，FPS 固定 24，CFG 固定 1；`length` 从
+`duration_seconds * 24` 向上对齐到 `17n+5`（5 秒对应 124 帧），因此实际媒体时长可
+略长于请求秒数。H3 请求未提供 sampler 时默认 `res_multistep`，shift 默认 12；内部
+audio shift 固定为 3。输出 MP4 含 H.264 视频和 32 kHz 双声道 AAC 音频。
 
 响应 202(已持久化并入队,不代表视频完成):
 
@@ -790,6 +833,7 @@ domain 的 SAMPLERS/SCHEDULERS)。
       "cfg": 5.0,
       "shift": 8.0,
       "denoise": 1.0,
+      "latent_multiplier": 1.0,
       "model_name": "wan2.2-ti2v-5b.safetensors",
       "vae_name": "wan2.2_vae.safetensors",
       "prompt": "一只猫在雪地里奔跑",

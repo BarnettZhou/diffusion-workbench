@@ -136,17 +136,21 @@ schema v1-v3 的旧 PNG 仍可读取；v1 没有 `negative_prompt`/`negative_con
 旧 PNG 不会自动补写元数据。图片编辑器、聊天软件或图床可能删除 PNG 文本块，SQLite
 仍是本机历史记录的最终事实来源。
 
-## 5. Wan 视频任务
+## 5. 视频任务
 
-Wan 2.2 TI2V-5B 任务不发送 latent 图片预览。Worker 会发送 `video_encoding` 与
+视频任务不发送 latent 图片预览。Worker 会发送 `video_encoding` 与
 `video_saved` 阶段事件，完成事件 `job_finished` 带 `artifact_type: "video"`，输出为
-H.264 MP4，路径格式为 `output/YYYY-MM-DD/wan2.2-ti2v-5b-NNNNN.mp4`。MP4 使用 ComfyUI
+H.264 MP4，路径格式为 `output/YYYY-MM-DD/<video_model>-NNNNN.mp4`。MP4 使用 ComfyUI
 Video API 写入 `diffusion_workbench` 容器 metadata，值为 JSON，包含模型、提示词、尺寸、
-时长、帧率、length、采样参数、输入图片路径、资源指纹、运行时和性能字段。输入图片的
+时长、帧率、length、采样参数、latent multiplier、输入图片路径、资源指纹、运行时和性能字段。输入图片的
 服务端路径不能由 HTTP 客户端直接指定，应由受控资产引用解析。
 
-`runtime_status()` 的 `loaded_resources` 显示当前 workload、model、vae、text_encoder 和
-clip_type；`release_resources()` 在无运行任务且队列为空时卸载 Worker 资源。图片与视频
+MiniMax H3 的 metadata 还包含固定内部参数 `audio_shift`；输出在 H.264 视频流之外包含
+32 kHz 双声道 AAC 音轨。H3 的 `duration_seconds` 保留用户请求值，实际媒体时长由向上
+对齐后的 `length / 24` 决定，因此 5 秒请求会生成 124 帧，约 5.17 秒。
+
+`runtime_status()` 的 `loaded_resources` 显示当前 workload、model、vae、audio_vae（H3）、
+text_encoder 和 clip_type；`release_resources()` 在无运行任务且队列为空时卸载 Worker 资源。图片与视频
 workload 切换时 Worker 会自动执行同样的释放。
 
 ## 6. 读取与恢复
@@ -171,3 +175,23 @@ uv run python -m demo.demo_png_metadata output.png
 `GenerationSettings`。PNG 来自不可信输入时，不能直接打开其中记录的绝对路径，也不能
 绕过 `ResourceCatalog` 的目录边界。`schema_version` 不受支持、JSON 损坏或资源哈希无法
 匹配时，应明确拒绝自动恢复并让用户重新选择资源。
+
+## 7. ComfyUI 生成 PNG 的参数展示
+
+相册对不含本应用 iTXt 块的 PNG 回退解析 ComfyUI 原生 `prompt` tEXt 块（API prompt
+节点图），由 `diffusion_workbench_core.png_metadata.read_comfyui_metadata(path)`
+实现，只用于展示，不参与任务恢复：
+
+- `model_name`/`vae_name`/`text_encoder_name`：文档序第一个 UNETLoader/VAELoader/
+  CLIPLoader 的文件名（仅 basename，去掉子目录）。
+- `mode`：按 unet 文件名小写 best-effort 推断，匹配顺序 krea2 → zib → sdxl → zit，
+  匹配不到为 null。
+- 采样器/调度器/步数/cfg/seed：文档序第一个 KSampler 或 KSamplerAdvanced
+  （后者的种子字段为 `noise_seed`）；多轮采样也只取第一个。输入为链接而非字面量时
+  取不到，记 null。
+- 正/负提示词：该采样器 positive/negative 链接指向的 CLIPTextEncode 的 `text`；
+  链接到 ConditioningZeroOut 时透传一层其 `conditioning` 输入。
+
+返回 dict 带 `source: "comfyui"`；非 ComfyUI PNG（无 `prompt` 块或格式不符）返回
+None。API 形状见 `AGENTS/api/rest.md` 相册 metadata 小节，前端在文件抽屉顶部展示
+「由 ComfyUI 生成」。

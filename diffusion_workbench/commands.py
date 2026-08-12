@@ -26,6 +26,16 @@ class CommandResponse:
     exit_requested: bool = False
 
 
+def _memory_status_text(status: dict) -> str:
+    memory = status.get("memory") or {}
+    used = memory.get("used_gib")
+    total = memory.get("total_gib")
+    percent = memory.get("percent")
+    if used is None or total is None or percent is None:
+        return "不可用"
+    return f"{used:.2f}/{total:.2f} GiB ({percent:g}%)"
+
+
 class CommandSession:
     def __init__(self, core):
         self.core = core
@@ -59,6 +69,7 @@ class CommandSession:
         self.video_seed = -1
         self.video_cfg = 5.0
         self.video_shift = 8.0
+        self.video_latent_multiplier = 1.0
         self.video_sampler = "uni_pc"
         self.video_scheduler = "simple"
         self.video_image: Path | None = None
@@ -68,6 +79,7 @@ class CommandSession:
         self._video_vaes: dict[VideoModel, ResourceItem | None] = {
             model: None for model in VideoModel
         }
+        self._apply_video_model_defaults(self.video_model)
 
     @property
     def selected_model(self) -> ResourceItem | None:
@@ -160,7 +172,7 @@ class CommandSession:
         if not args:
             raise ValueError(
                 "用法: /video type|model|vae|prompt|negative|size|duration|fps|steps|"
-                "seed|cfg|shift|sampler|scheduler|image|status|start"
+                "seed|cfg|shift|latent-multiplier|sampler|scheduler|image|status|start"
             )
         action = args[0].lower()
         rest = args[1:]
@@ -173,13 +185,14 @@ class CommandSession:
             if not rest:
                 return CommandResponse((f"video type: {self.video_model.value}",))
             if len(rest) != 2 or rest[0].lower() != "set":
-                raise ValueError("用法: /video type list | set <wan2.2-ti2v-5b>")
+                raise ValueError("用法: /video type list | set <video-model>")
             model = VideoModel(rest[1].lower())
             if model not in self.core.config.video_resources:
                 raise ValueError(f"未配置视频模型: {model.value}")
             self.video_model = model
             self._video_models[model] = None
             self._video_vaes[model] = None
+            self._apply_video_model_defaults(model)
             return CommandResponse((f"video type 已设置为 {model.value}",))
         if action == "model":
             items = self.core.list_video_models(self.video_model)
@@ -215,23 +228,39 @@ class CommandSession:
         if action == "size":
             self._set_video_size(rest)
             return CommandResponse((f"video size 已设置为 {self.video_width}*{self.video_height}",))
-        if action in {"duration", "fps", "steps", "seed", "cfg", "shift"}:
+        if action in {
+            "duration", "fps", "steps", "seed", "cfg", "shift", "latent-multiplier"
+        }:
             if len(rest) != 1:
                 raise ValueError(f"用法: /video {action} <value>")
-            value = float(rest[0]) if action == "cfg" else int(rest[0])
+            value = (
+                float(rest[0])
+                if action in {"cfg", "shift", "latent-multiplier"}
+                else int(rest[0])
+            )
             if action == "duration" and value <= 0:
                 raise ValueError("视频时长必须大于 0")
             if action == "fps" and not 1 <= value <= 120:
                 raise ValueError("帧率必须在 1 到 120 之间")
+            if (
+                action == "fps"
+                and self.video_model == VideoModel.MINIMAX_H3
+                and value != 24
+            ):
+                raise ValueError("MiniMax H3 帧率固定为 24")
             if action == "steps":
                 validate_steps(value)
             if action == "seed" and value < -1:
                 raise ValueError("seed 必须为 -1 或非负整数")
             if action == "cfg":
                 validate_cfg(value)
+                if self.video_model == VideoModel.MINIMAX_H3 and value != 1.0:
+                    raise ValueError("MiniMax H3 CFG 固定为 1")
             if action == "shift" and not 0.0 <= value <= 100.0:
                 raise ValueError("shift 必须在 0 到 100 之间")
-            setattr(self, f"video_{action}", value)
+            if action == "latent-multiplier" and value <= 0:
+                raise ValueError("latent-multiplier 必须大于 0")
+            setattr(self, f"video_{action.replace('-', '_')}", value)
             displayed = f"{value:g}" if isinstance(value, float) else str(value)
             return CommandResponse((f"video {action} 已设置为 {displayed}",))
         if action in {"sampler", "scheduler"}:
@@ -270,8 +299,9 @@ class CommandSession:
                 f"prompt: {self.video_prompt or '未设置'}",
                 f"size: {self.video_width}*{self.video_height}  "
                 f"duration: {self.video_duration}s  fps: {self.video_fps}  "
-                f"length: {self.video_duration * self.video_fps + 1}",
+                f"length: {self._video_length()}",
                 f"steps: {self.video_steps}  seed: {self.video_seed}  cfg: {self.video_cfg:g}  shift: {self.video_shift:g}",
+                f"latent multiplier: {self.video_latent_multiplier:g}",
                 f"sampler: {self.video_sampler}  scheduler: {self.video_scheduler}  denoise: 1",
                 f"image: {image}",
             ))
@@ -285,7 +315,33 @@ class CommandSession:
         width, height = (int(value) for value in args[0].split("*", 1))
         if width <= 0 or height <= 0 or width % 16 or height % 16:
             raise ValueError("视频宽高必须为正数且是 16 的倍数")
+        if self.video_model == VideoModel.MINIMAX_H3 and (width % 32 or height % 32):
+            raise ValueError("MiniMax H3 视频宽高必须是 32 的倍数")
         self.video_width, self.video_height = width, height
+
+    def _apply_video_model_defaults(self, model: VideoModel) -> None:
+        if model == VideoModel.MINIMAX_H3:
+            self.video_width = 608
+            self.video_height = 352
+            self.video_duration = 5
+            self.video_fps = 24
+            self.video_steps = 8
+            self.video_cfg = 1.0
+            self.video_shift = 12.0
+            self.video_sampler = "res_multistep"
+            self.video_scheduler = "simple"
+            return
+        self.video_sampler = (
+            "euler" if model == VideoModel.WAN22_I2V_14B else "uni_pc"
+        )
+
+    def _video_length(self) -> int:
+        if self.video_model == VideoModel.MINIMAX_H3:
+            length = max(5, round(self.video_duration * 24))
+            while length % 17 != 5:
+                length += 1
+            return length
+        return self.video_duration * self.video_fps + 1
 
     def _start_video(self, args: list[str]) -> CommandResponse:
         if len(args) > 1:
@@ -303,6 +359,7 @@ class CommandSession:
             vae=vae,
             text_encoder=resources.text_encoder,
             prompt=self.video_prompt,
+            audio_vae=resources.audio_vae,
             negative_prompt=self.video_negative_prompt,
             input_image=self.video_image,
             width=self.video_width,
@@ -313,6 +370,7 @@ class CommandSession:
             seed=self.video_seed,
             cfg=self.video_cfg,
             shift=self.video_shift,
+            latent_multiplier=self.video_latent_multiplier,
             sampler=self.video_sampler,
             scheduler=self.video_scheduler,
         )
@@ -327,9 +385,13 @@ class CommandSession:
                 f"worker: {status.get('worker', 'stopped')}  workload: {loaded.get('workload') or '无'}",
                 f"model: {loaded.get('model') or '无'}",
                 f"vae: {loaded.get('vae') or '无'}",
+                f"audio vae: {loaded.get('audio_vae') or '无'}",
                 f"text encoder: {loaded.get('text_encoder') or '无'}  "
                 f"clip_type: {loaded.get('clip_type') or '无'}",
                 f"gpu: {status.get('gpu', '不可用')}",
+                f"gpu utilization: {status.get('gpu_utilization_percent') if status.get('gpu_utilization_percent') is not None else '不可用'}%  "
+                f"gpu memory: {status.get('gpu_memory_percent') if status.get('gpu_memory_percent') is not None else '不可用'}%",
+                f"system memory: {_memory_status_text(status)}",
             ))
         if args == ["release"]:
             self.core.release_resources()
@@ -679,5 +741,8 @@ class CommandSession:
             f"queue: {runtime.get('queue', 0)}  running: {runtime.get('running') or '无'}",
             f"worker: {runtime.get('worker', 'stopped')}  pid: {runtime.get('pid') or '无'}",
             f"gpu: {runtime.get('gpu', '不可用')}",
+            f"gpu utilization: {runtime.get('gpu_utilization_percent') if runtime.get('gpu_utilization_percent') is not None else '不可用'}%  "
+            f"gpu memory: {runtime.get('gpu_memory_percent') if runtime.get('gpu_memory_percent') is not None else '不可用'}%",
+            f"system memory: {_memory_status_text(runtime)}",
         )
         return CommandResponse(lines)

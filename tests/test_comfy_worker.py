@@ -1,5 +1,6 @@
 import unittest
 import base64
+from pathlib import Path
 
 from PIL import Image
 
@@ -31,6 +32,46 @@ class FakeTorch:
 
 
 class ComfyWorkerTests(unittest.TestCase):
+    def test_gguf_diffusion_uses_installed_custom_loader(self):
+        calls = []
+
+        class BuiltinLoader:
+            def load_unet(self, name, dtype):
+                calls.append(("builtin", name, dtype))
+                return ("builtin-model",)
+
+        class GgufLoader:
+            def load_unet(self, name):
+                calls.append(("gguf", name))
+                return ("gguf-model",)
+
+        worker = object.__new__(ComfyWorker)
+        worker.nodes = type("Nodes", (), {"UNETLoader": BuiltinLoader})
+        worker._register_exact = lambda _category, path: path.name
+        worker._ensure_gguf_unet_loader = lambda: GgufLoader
+
+        model = worker._load_diffusion_model(Path("wan-high.gguf"))
+
+        self.assertEqual(model, "gguf-model")
+        self.assertEqual(calls, [("gguf", "wan-high.gguf")])
+
+    def test_safetensors_diffusion_keeps_builtin_loader(self):
+        calls = []
+
+        class BuiltinLoader:
+            def load_unet(self, name, dtype):
+                calls.append((name, dtype))
+                return ("builtin-model",)
+
+        worker = object.__new__(ComfyWorker)
+        worker.nodes = type("Nodes", (), {"UNETLoader": BuiltinLoader})
+        worker._register_exact = lambda _category, path: path.name
+
+        model = worker._load_diffusion_model(Path("wan-high.safetensors"))
+
+        self.assertEqual(model, "builtin-model")
+        self.assertEqual(calls, [("wan-high.safetensors", "default")])
+
     def test_wan_video_command_validates_length_and_fixed_denoise(self):
         command = {
             "video_model": "wan2.2-ti2v-5b",
@@ -51,6 +92,118 @@ class ComfyWorkerTests(unittest.TestCase):
         command["length"] = 120
         with self.assertRaisesRegex(ValueError, "length"):
             ComfyWorker._validate_video(None, command)
+
+    def test_h3_video_command_validates_native_av_contract(self):
+        command = {
+            "video_model": "minimax-h3",
+            "clip_type": "minimax",
+            "audio_vae_path": "audio.safetensors",
+            "width": 608,
+            "height": 352,
+            "duration_seconds": 5,
+            "fps": 24,
+            "length": 124,
+            "steps": 8,
+            "cfg": 1,
+            "sampler": "res_multistep",
+            "scheduler": "simple",
+            "denoise": 1,
+        }
+
+        ComfyWorker._validate_video(None, command)
+        command["fps"] = 25
+        with self.assertRaisesRegex(ValueError, "帧率固定"):
+            ComfyWorker._validate_video(None, command)
+
+    def test_save_video_forwards_native_audio(self):
+        captured = {}
+
+        class Video:
+            def save_to(self, path, **kwargs):
+                captured["path"] = path
+                captured.update(kwargs)
+                Path(path).touch()
+
+        class Input:
+            @staticmethod
+            def VideoFromComponents(components, bit_depth):
+                captured["components"] = components
+                captured["bit_depth"] = bit_depth
+                return Video()
+
+        class Components:
+            def __init__(self, images, frame_rate, audio):
+                self.images = images
+                self.frame_rate = frame_rate
+                self.audio = audio
+
+        class Types:
+            VideoComponents = Components
+            VideoContainer = type("VideoContainer", (), {"MP4": "mp4"})
+            VideoCodec = type("VideoCodec", (), {"H264": "h264"})
+
+        import tempfile
+        with tempfile.TemporaryDirectory() as temp_dir:
+            worker = object.__new__(ComfyWorker)
+            worker.Types = Types
+            worker.InputImpl = Input
+            output = Path(temp_dir) / "result.mp4"
+            worker._save_video("frames", output, 24, {}, "job", audio="stereo")
+
+        self.assertEqual(captured["components"].audio, "stereo")
+
+    def test_second_video_sampling_stage_uses_zero_noise(self):
+        class Samples:
+            dtype = "dtype"
+            layout = "layout"
+
+            @staticmethod
+            def size():
+                return (1, 16, 2, 2, 2)
+
+        class TorchStub:
+            @staticmethod
+            def zeros(size, dtype, layout, device):
+                return ("zero", size, dtype, layout, device)
+
+        class SamplingStub:
+            noise = None
+
+            @staticmethod
+            def fix_empty_latent_channels(_model, samples, *_ratios):
+                return samples
+
+            @staticmethod
+            def prepare_noise(*_args):
+                raise AssertionError("禁用噪声时不应生成随机噪声")
+
+            def sample(self, _model, noise, *args, **_kwargs):
+                self.noise = noise
+                return args[6]
+
+        sampling = SamplingStub()
+        worker = object.__new__(ComfyWorker)
+        worker.comfy_sample = sampling
+        worker.torch = TorchStub()
+        worker.model = object()
+        command = {
+            "seed": 1,
+            "steps": 20,
+            "cfg": 3.5,
+            "sampler": "euler",
+            "scheduler": "simple",
+        }
+
+        worker._sample(
+            command,
+            {"samples": Samples()},
+            [],
+            [],
+            lambda *_args: None,
+            disable_noise=True,
+        )
+
+        self.assertEqual(sampling.noise[0], "zero")
 
     def test_latent_upscale_inherits_sampling_values_and_reports_actual_steps(self):
         resolved = resolve_upscale_settings(

@@ -24,6 +24,21 @@ from diffusion_workbench_core.config import ComfyConfig, ModeResources, Workbenc
 
 
 class ResourceCatalogTests(unittest.TestCase):
+    def test_video_diffusion_catalog_can_include_gguf_without_exposing_gguf_vae(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            for name in ("high.gguf", "low.safetensors", "ignore.txt"):
+                (root / name).touch()
+
+            models = ResourceCatalog._list_model_files((root,), include_gguf=True)
+            vaes = ResourceCatalog._list_model_files((root,))
+
+            self.assertEqual(
+                [item.path.name for item in models],
+                ["high.gguf", "low.safetensors"],
+            )
+            self.assertEqual([item.path.name for item in vaes], ["low.safetensors"])
+
     def test_config_can_omit_modes_that_are_not_enabled(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -139,6 +154,60 @@ worker_timeout_seconds: 300
                     root / "two.safetensors",
                     "fast",
                 )
+
+    def test_list_prunes_alias_of_deleted_model_file(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            models = root / "models"
+            vae = root / "vae"
+            models.mkdir()
+            vae.mkdir()
+            (models / "alpha.safetensors").touch()
+            (vae / "ae.safetensors").touch()
+            text_encoder = root / "te.safetensors"
+            text_encoder.touch()
+            config_path = root / "workbench.yaml"
+            config_path.write_text(
+                f"""
+comfyui:
+  root: {root.as_posix()}
+  python: {text_encoder.as_posix()}
+resources:
+  zit:
+    diffusion: [{models.as_posix()}]
+    vae: [{vae.as_posix()}]
+    text_encoder: {text_encoder.as_posix()}
+    clip_type: stable_diffusion
+output_dir: output
+database: jobs.sqlite3
+worker_timeout_seconds: 300
+""",
+                encoding="utf-8",
+            )
+
+            config = load_config(config_path)
+            store = JobStore(config.database, config.output_dir)
+            catalog = ResourceCatalog(config, store)
+            items = catalog.list(Mode.ZIT, ResourceKind.DIFFUSION)
+            catalog.set_alias(Mode.ZIT, ResourceKind.DIFFUSION, items[0].path, "fast")
+            self.assertEqual(
+                store.get_aliases(Mode.ZIT, ResourceKind.DIFFUSION),
+                {items[0].path: "fast"},
+            )
+
+            # 模型文件从磁盘删除后,再次列表自动清理索引中对应的别名记录
+            items[0].path.unlink()
+            self.assertEqual(catalog.list(Mode.ZIT, ResourceKind.DIFFUSION), [])
+            self.assertEqual(store.get_aliases(Mode.ZIT, ResourceKind.DIFFUSION), {})
+
+            # 清理后同一别名可重新分配给新文件
+            new_model = models / "beta.safetensors"
+            new_model.touch()
+            store.set_alias(Mode.ZIT, ResourceKind.DIFFUSION, new_model, "fast")
+            self.assertEqual(
+                store.get_aliases(Mode.ZIT, ResourceKind.DIFFUSION),
+                {new_model: "fast"},
+            )
 
 
 class JobStoreTests(unittest.TestCase):

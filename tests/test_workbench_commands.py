@@ -35,7 +35,14 @@ class FakeCore:
             video_resources={
                 VideoModel.WAN22_TI2V_5B: VideoResources(
                     (root,), (root,), root / "umt5.safetensors"
-                )
+                ),
+                VideoModel.MINIMAX_H3: VideoResources(
+                    (root,),
+                    (root,),
+                    root / "qwen3vl.safetensors",
+                    "minimax",
+                    root / "h3-audio-vae.safetensors",
+                ),
             },
         )
         self.items = {
@@ -130,6 +137,32 @@ class CommandSessionTests(unittest.TestCase):
             self.assertEqual(settings.generation_type, "t2v")
             self.assertEqual(settings.sampler, "uni_pc")
             self.assertIn("视频队列", "\n".join(response.lines))
+
+    def test_h3_video_commands_apply_native_defaults_and_audio_vae(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            core = FakeCore(root)
+            session = CommandSession(core)
+
+            session.handle("/video type set minimax-h3")
+            session.handle("/video model set 1")
+            session.handle("/video vae set 1")
+            session.handle("/video prompt a quiet room")
+            status = "\n".join(session.handle("/video status").lines)
+            response = session.handle("/video start")
+
+            settings, count = core.submitted_videos[0]
+            self.assertEqual(count, 1)
+            self.assertEqual(settings.length, 124)
+            self.assertEqual((settings.width, settings.height), (608, 352))
+            self.assertEqual(settings.sampler, "res_multistep")
+            self.assertEqual(settings.cfg, 1.0)
+            self.assertEqual(settings.shift, 12.0)
+            self.assertEqual(settings.audio_vae, root / "h3-audio-vae.safetensors")
+            self.assertIn("length: 124", status)
+            self.assertIn("视频队列", "\n".join(response.lines))
+            self.assertIn("固定为 24", "\n".join(session.handle("/video fps 30").lines))
+            self.assertIn("固定为 1", "\n".join(session.handle("/video cfg 2").lines))
 
     def test_resource_release_command_calls_core(self):
         with tempfile.TemporaryDirectory() as temp_dir:

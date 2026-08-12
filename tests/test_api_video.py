@@ -7,6 +7,7 @@ from test_api_jobs import ApiTestCase
 
 WAN = VideoModel.WAN22_TI2V_5B.value
 WAN_14B = VideoModel.WAN22_I2V_14B.value
+H3 = VideoModel.MINIMAX_H3.value
 
 
 class VideoModelsTests(ApiTestCase):
@@ -25,9 +26,15 @@ class VideoModelsTests(ApiTestCase):
                     },
                     {
                         "video_model": WAN_14B,
-                        "label": "Wan 2.2 I2V-14B FP8",
+                        "label": "Wan 2.2 I2V-14B",
                         "generation_types": ["i2v"],
                         "requires_input_image": True,
+                    },
+                    {
+                        "video_model": H3,
+                        "label": "MiniMax H3",
+                        "generation_types": ["t2v", "i2v"],
+                        "requires_input_image": False,
                     },
                 ]
             },
@@ -65,6 +72,21 @@ class VideoModelsTests(ApiTestCase):
         self.core.config.video_resources.clear()
         response = self.client.get(f"/api/v1/video/models/{WAN}/resources")
         self.assertEqual(response.status_code, 404)
+
+    def test_status_hides_h3_audio_vae_path(self):
+        self.core.loaded_resources = {
+            "workload": H3,
+            "model": r"C:\models\h3.safetensors",
+            "vae": r"C:\models\video-vae.safetensors",
+            "audio_vae": r"C:\models\audio-vae.safetensors",
+            "text_encoder": r"C:\models\qwen.safetensors",
+            "clip_type": "minimax",
+        }
+        response = self.client.get("/api/v1/status")
+        self.assertEqual(
+            response.json()["loaded_resources"]["audio_vae"],
+            "audio-vae.safetensors",
+        )
 
     def test_unknown_video_model_value_returns_422(self):
         response = self.client.get("/api/v1/video/models/nope/resources")
@@ -121,6 +143,26 @@ class CreateVideoJobsTests(ApiTestCase):
         response = self.client.post("/api/v1/video/jobs", json=self._payload())
         self.assertEqual(response.status_code, 202)
         self.assertIsNone(response.json()["jobs"][0]["batch_id"])
+
+    def test_h3_uses_fixed_audio_vae_and_model_defaults(self):
+        response = self.client.post(
+            "/api/v1/video/jobs",
+            json=self._payload(video_model=H3),
+        )
+
+        self.assertEqual(response.status_code, 202)
+        body = response.json()["jobs"][0]
+        self.assertEqual(body["video_model"], H3)
+        self.assertEqual(body["fps"], 24)
+        self.assertEqual(body["length"], 124)
+        self.assertEqual(body["cfg"], 1.0)
+        self.assertEqual(body["shift"], 12.0)
+        self.assertEqual(body["sampler"], "res_multistep")
+        settings, _ = self.core.video_submitted[-1]
+        self.assertEqual(
+            settings.audio_vae,
+            self.core.config.video_resources[VideoModel.MINIMAX_H3].audio_vae,
+        )
 
     def test_unknown_resource_index_returns_404(self):
         response = self.client.post(
@@ -297,10 +339,55 @@ class VideoInputImageTests(ApiTestCase):
         self.assertEqual(job["vae_name"], "wan_2.1_vae.safetensors")
         settings, _ = self.core.video_submitted[-1]
         self.assertEqual(settings.video_model, VideoModel.WAN22_I2V_14B)
+        self.assertEqual(settings.sampler, "euler")
         self.assertEqual(
             settings.text_encoder,
             self.core.config.video_resources[VideoModel.WAN22_I2V_14B].text_encoder,
         )
+
+    def test_submit_14b_with_explicit_high_and_low_models(self):
+        image_id = self._upload().json()["id"]
+
+        response = self.client.post(
+            "/api/v1/video/jobs",
+            json={
+                "video_model": WAN_14B,
+                "high_model_index": 1,
+                "low_model_index": 2,
+                "vae_index": 1,
+                "prompt": "让人物自然转头",
+                "input_image_id": image_id,
+            },
+        )
+
+        self.assertEqual(response.status_code, 202)
+        settings, _ = self.core.video_submitted[-1]
+        self.assertEqual(
+            settings.model.path.name,
+            "wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors",
+        )
+
+    def test_submit_14b_rejects_incomplete_or_mismatched_explicit_pair(self):
+        image_id = self._upload().json()["id"]
+        base = {
+            "video_model": WAN_14B,
+            "vae_index": 1,
+            "prompt": "让人物自然转头",
+            "input_image_id": image_id,
+        }
+
+        incomplete = self.client.post(
+            "/api/v1/video/jobs", json={**base, "high_model_index": 1}
+        )
+        reversed_pair = self.client.post(
+            "/api/v1/video/jobs",
+            json={**base, "high_model_index": 2, "low_model_index": 1},
+        )
+
+        self.assertEqual(incomplete.status_code, 422)
+        self.assertIn("同时选择", incomplete.json()["detail"])
+        self.assertEqual(reversed_pair.status_code, 422)
+        self.assertIn("high_model_index", reversed_pair.json()["detail"])
 
     def test_submit_unknown_input_image_id_returns_404(self):
         response = self.client.post(

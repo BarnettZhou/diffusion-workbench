@@ -29,7 +29,7 @@ SQLite 任务持久化与资源别名、PNG 内嵌完整生成参数（iTXt 块�
   - `png_metadata.py`：生成参数写入/读取 PNG iTXt。
 - `diffusion_workbench/` — Textual TUI 与 CLI（入口 `diffusion-workbench = diffusion_workbench.cli:main`）。
 - `diffusion_workbench_api/` — FastAPI 服务，把唯一的 `WorkbenchCore` 包装为 HTTP/WebSocket API。
-  路由模块：`jobs`、`files`、`album`、`settings`、`models`、`llm`（提示词辅助）、`events`（WebSocket 事件流）。
+  路由模块：`jobs`、`files`、`album`、`settings`、`models`、`llm`（提示词辅助）、`events`（WebSocket 事件流）、`video`（视频生成）。
   `console_status.py`：TTY 终端底部的任务进度状态栏（rich Live，非 TTY 为 no-op，`DWB_CONSOLE_STATUS=0` 关闭）。
   `app.py` 在 lifespan 中创建/关闭 Core，并静态托管 `frontend/dist`（存在时挂载到 `/`）。
 - `frontend/` — React 18 + Vite 7 前端（`src/` 下 `App.jsx`、`api/client.js`、`components/`）。
@@ -95,7 +95,7 @@ uv run pytest tests/test_api_jobs.py   # 单个文件
 ## 代码与文档约定
 
 - 代码注释、docstring、错误信息和文档一律使用**中文**；标识符用英文。
-- 输出图片写入 `output/YYYY-MM-DD/<mode>-NNNNN.png`；任务与别名存
+- 输出图片写入 `output/YYYY-MM-DD/<mode>-NNNNN.png`，视频写入 `output/YYYY-MM-DD/<video_model>-NNNNN.mp4`；任务与别名存
   `.cache/diffusion_workbench.sqlite3`；日志为同目录 `.log`。
 - 默认采样参数：Euler + simple、CFG 1、576×576（宽高须为 16 的倍数）、8 步、
   seed -1 表示随机。合法值以 `diffusion_workbench_core/domain.py` 为唯一事实来源。

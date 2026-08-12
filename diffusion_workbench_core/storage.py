@@ -47,6 +47,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     model TEXT NOT NULL,
     vae TEXT NOT NULL,
     text_encoder TEXT NOT NULL,
+    audio_vae TEXT,
     sampler TEXT NOT NULL,
     scheduler TEXT NOT NULL,
     width INTEGER NOT NULL,
@@ -63,6 +64,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     frame_count INTEGER,
     denoise REAL NOT NULL DEFAULT 1.0,
     shift REAL NOT NULL DEFAULT 8.0,
+    latent_multiplier REAL NOT NULL DEFAULT 1.0,
     error TEXT,
     UNIQUE (output_date, mode, daily_index)
 );
@@ -104,6 +106,8 @@ class JobStore:
                 "frame_count": "INTEGER",
                 "denoise": "REAL NOT NULL DEFAULT 1.0",
                 "shift": "REAL NOT NULL DEFAULT 8.0",
+                "latent_multiplier": "REAL NOT NULL DEFAULT 1.0",
+                "audio_vae": "TEXT",
             }
             for name, declaration in migrations.items():
                 if name not in columns:
@@ -163,6 +167,27 @@ class JobStore:
             raise ValueError(
                 f"alias {alias!r} 已被当前 {mode.value} {kind.value} 使用"
             ) from exc
+
+    def prune_aliases(
+        self, mode: Mode, kind: ResourceKind, live_paths: set[Path]
+    ) -> None:
+        """删除索引中文件已不存在于磁盘的别名记录(模型被删除后自动清理)。"""
+        resolved = [str(path.resolve()) for path in live_paths]
+        with self._lock, self._connection() as connection:
+            if resolved:
+                placeholders = ",".join("?" for _ in resolved)
+                connection.execute(
+                    f"""
+                    DELETE FROM aliases
+                    WHERE mode = ? AND kind = ? AND path NOT IN ({placeholders})
+                    """,
+                    (mode.value, kind.value, *resolved),
+                )
+            else:
+                connection.execute(
+                    "DELETE FROM aliases WHERE mode = ? AND kind = ?",
+                    (mode.value, kind.value),
+                )
 
     def create_jobs(
         self,
@@ -294,6 +319,7 @@ class JobStore:
                     str(settings.model.path.resolve()),
                     str(settings.vae.path.resolve()),
                     str(settings.text_encoder.resolve()),
+                    str(settings.audio_vae.resolve()) if settings.audio_vae else None,
                     settings.sampler,
                     settings.scheduler,
                     settings.width,
@@ -314,16 +340,22 @@ class JobStore:
                     settings.length,
                     settings.denoise,
                     settings.shift,
+                    settings.latent_multiplier,
                 )
                 connection.execute(
                     """
                     INSERT INTO jobs(
                         id, batch_id, status, submitted_at, output_path, output_date,
                         daily_index, mode, prompt, negative_prompt, model, vae,
-                        text_encoder, sampler, scheduler, width, height, steps, seed,
+                        text_encoder, audio_vae, sampler, scheduler, width, height, steps, seed,
                         cfg, model_loader, upscale_json, job_kind, input_image,
-                        video_duration_seconds, fps, frame_count, denoise, shift
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        video_duration_seconds, fps, frame_count, denoise, shift,
+                        latent_multiplier
+                    ) VALUES (
+                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                    )
                     """,
                     values,
                 )
@@ -377,6 +409,22 @@ class JobStore:
         if row is None:
             raise KeyError(job_id)
         return self._video_job_from_row(row)
+
+    def find_video_job_by_output(self, date_dir: str, name: str) -> VideoJobRecord:
+        """按输出文件(日期目录名 + 文件名)反查视频任务,供相册视频元数据使用。
+
+        LIKE 只做粗筛(文件名可能含通配符),精确匹配在 Python 侧完成。
+        """
+        with self._connection() as connection:
+            rows = connection.execute(
+                "SELECT * FROM jobs WHERE job_kind = 'video' AND output_path LIKE ?",
+                (f"%{name}",),
+            ).fetchall()
+        for row in rows:
+            job = self._video_job_from_row(row)
+            if job.output_path.name == name and job.output_path.parent.name == date_dir:
+                return job
+        raise KeyError(f"{date_dir}/{name}")
 
     def _get_any_job(self, job_id: str):
         with self._connection() as connection:
@@ -534,6 +582,7 @@ class JobStore:
             model_path=Path(row["model"]),
             vae_path=Path(row["vae"]),
             text_encoder_path=Path(row["text_encoder"]),
+            audio_vae_path=Path(row["audio_vae"]) if row["audio_vae"] else None,
             sampler=row["sampler"],
             scheduler=row["scheduler"],
             width=row["width"],
@@ -546,5 +595,6 @@ class JobStore:
             cfg=row["cfg"],
             denoise=row["denoise"],
             shift=row["shift"],
+            latent_multiplier=row["latent_multiplier"],
             error=row["error"],
         )

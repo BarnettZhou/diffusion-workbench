@@ -50,6 +50,13 @@ class FakeApiCore:
                     (root / "wan14-vae" / "wan_2.1_vae.safetensors",),
                     root / "wan14-te.safetensors",
                 ),
+                VideoModel.MINIMAX_H3: VideoResources(
+                    (root / "h3-models",),
+                    (root / "h3-vae",),
+                    root / "h3-te.safetensors",
+                    "minimax",
+                    root / "h3-audio-vae.safetensors",
+                ),
             },
         )
         self.items = {
@@ -103,6 +110,9 @@ class FakeApiCore:
                     / "wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors",
                 ),
             ],
+            VideoModel.MINIMAX_H3: [
+                ResourceItem(1, root / "h3-models" / "minimax_h3_fl2va_int4.safetensors"),
+            ],
         }
         self.video_vae_items = {
             VideoModel.WAN22_TI2V_5B: [
@@ -113,9 +123,13 @@ class FakeApiCore:
                     1, root / "wan14-vae" / "wan_2.1_vae.safetensors"
                 ),
             ],
+            VideoModel.MINIMAX_H3: [
+                ResourceItem(1, root / "h3-vae" / "minimax_h3_video_vae_fp16.safetensors"),
+            ],
         }
         self.video_submitted: list = []
         self.video_jobs: dict[str, VideoJobRecord] = {}
+        self.loaded_resources = {}
 
     def list_resources(self, mode, kind):
         return self.items[(mode, kind)]
@@ -203,6 +217,7 @@ class FakeApiCore:
             "worker": "ready",
             "pid": 1234,
             "loaded_model": str(self.root / "secret-model.safetensors"),
+            "loaded_resources": self.loaded_resources,
         }
 
     def set_event_sink(self, sink):
@@ -251,6 +266,7 @@ class FakeApiCore:
             model_path=settings.model.path,
             vae_path=settings.vae.path,
             text_encoder_path=settings.text_encoder,
+            audio_vae_path=settings.audio_vae,
             sampler=settings.sampler,
             scheduler=settings.scheduler,
             width=settings.width,
@@ -262,6 +278,7 @@ class FakeApiCore:
             seed=settings.seed,
             cfg=settings.cfg,
             shift=settings.shift,
+            latent_multiplier=settings.latent_multiplier,
             input_image_path=settings.input_image,
         )
 

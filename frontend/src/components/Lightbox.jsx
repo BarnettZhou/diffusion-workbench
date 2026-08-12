@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "../api/client";
 import { useMessage } from "./Message";
 
@@ -11,7 +11,8 @@ const MODE_LABELS = {
 
 const VIDEO_MODEL_LABELS = {
   "wan2.2-ti2v-5b": "Wan 2.2 TI2V-5B",
-  "wan2.2-i2v-14b": "Wan 2.2 I2V-14B FP8",
+  "wan2.2-i2v-14b": "Wan 2.2 I2V-14B",
+  "minimax-h3": "MiniMax H3",
 };
 
 // 宽屏(桌面)默认展开抽屉,窄屏(移动端)默认收起,由右上角悬浮按钮切换
@@ -35,6 +36,21 @@ export default function Lightbox({
   const [drawerOpen, setDrawerOpen] = useState(
     () => window.matchMedia(DRAWER_DEFAULT_OPEN).matches,
   );
+  // 视频播放模式:false=单次播放(默认),true=循环播放;切换上一张/下一张时保留
+  const [loopPlayback, setLoopPlayback] = useState(false);
+  const loopRef = useRef(loopPlayback);
+  loopRef.current = loopPlayback;
+
+  // 切换循环/单次;开启循环时若视频已播完(点击与播放结束撞车)立即重播。
+  // 必须在事件处理函数内直接调用:被动 effect 里 play() 可能因激活过期被拒绝
+  function toggleLoopPlayback() {
+    const next = !loopRef.current;
+    setLoopPlayback(next);
+    if (next) {
+      const video = document.getElementById("lightbox-video");
+      if (video?.ended) video.play();
+    }
+  }
 
   // 预览打开时锁定背景页面滚动
   useEffect(() => {
@@ -51,6 +67,7 @@ export default function Lightbox({
       if (event.key === "ArrowLeft") onPrev?.();
       else if (event.key === "ArrowRight") onNext?.();
       else if (event.key === "Escape") onClose();
+      else if (event.key === "l" || event.key === "L") toggleLoopPlayback();
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
@@ -124,13 +141,14 @@ export default function Lightbox({
       )}
       <div className="lightbox-body">
         {kind === "video" ? (
-          // 视频:页内弹窗 + 浏览器原生播放器
+          // 视频:页内弹窗 + 浏览器原生播放器;循环开关在左下角
           <video
             id="lightbox-video"
             src={imageUrl}
             controls
             autoPlay
             playsInline
+            loop={loopPlayback}
             onClick={(e) => e.stopPropagation()}
           />
         ) : (
@@ -142,6 +160,24 @@ export default function Lightbox({
           />
         )}
       </div>
+      {kind === "video" && (
+        <button
+          id="lightbox-loop-btn"
+          type="button"
+          aria-pressed={loopPlayback}
+          aria-label={loopPlayback ? "循环播放(开)" : "循环播放(关)"}
+          title={
+            loopPlayback ? "关闭循环播放,改为单次播放 (L)" : "开启循环播放 (L)"
+          }
+          className={loopPlayback ? "active" : undefined}
+          onClick={(e) => {
+            e.stopPropagation();
+            toggleLoopPlayback();
+          }}
+        >
+          循环播放
+        </button>
+      )}
       <button
         id="lightbox-info-btn"
         type="button"
@@ -297,6 +333,9 @@ function InfoDrawer({ view, meta, imageUrl, fileInfo, kind = "image", captureFra
           )}
           {view.cfg != null && <DrawerRow label="CFG" value={String(view.cfg)} />}
           {view.shift != null && <DrawerRow label="Shift" value={String(view.shift)} />}
+          {view.latent_multiplier != null && (
+            <DrawerRow label="Latent multiplier" value={String(view.latent_multiplier)} />
+          )}
           {view.steps != null && <DrawerRow label="步数" value={String(view.steps)} />}
           {view.seed != null && <DrawerRow label="Seed" value={String(view.seed)} />}
           {view.video_model && (
