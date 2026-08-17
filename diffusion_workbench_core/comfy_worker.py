@@ -3,6 +3,7 @@
 import argparse
 import base64
 import gc
+import hashlib
 import importlib.util
 import json
 import logging
@@ -14,6 +15,7 @@ import sys
 import threading
 import time
 import traceback
+from collections import OrderedDict
 from fractions import Fraction
 from io import BytesIO
 from pathlib import Path
@@ -123,6 +125,93 @@ def resolve_upscale_settings(command: dict) -> dict:
     return resolved
 
 
+class _LruTensorCache:
+    """按 LRU 淘汰的有限容量缓存，用于输入图片解码结果与图片 conditioning。
+
+    键为任意可哈希元组；值附带估算字节数，超过单条目或总预算时直接不缓存。
+    """
+
+    def __init__(self, max_items: int, max_bytes: int):
+        self.max_items = int(max_items)
+        self.max_bytes = int(max_bytes)
+        self._entries: OrderedDict = OrderedDict()
+        self._total_bytes = 0
+
+    def get(self, key):
+        entry = self._entries.get(key)
+        if entry is None:
+            return None
+        self._entries.move_to_end(key)
+        return entry[0]
+
+    def put(self, key, value, size_bytes: int) -> bool:
+        size_bytes = int(size_bytes)
+        if size_bytes < 0 or size_bytes > self.max_bytes:
+            return False
+        existing = self._entries.pop(key, None)
+        if existing is not None:
+            self._total_bytes -= existing[1]
+        while self._entries and (
+            len(self._entries) >= self.max_items
+            or self._total_bytes + size_bytes > self.max_bytes
+        ):
+            _, (_, evicted_bytes) = self._entries.popitem(last=False)
+            self._total_bytes -= evicted_bytes
+        self._entries[key] = (value, size_bytes)
+        self._total_bytes += size_bytes
+        return True
+
+    def clear(self) -> None:
+        self._entries.clear()
+        self._total_bytes = 0
+
+
+def _is_tensor_like(value) -> bool:
+    return (
+        hasattr(value, "nelement")
+        and hasattr(value, "element_size")
+        and hasattr(value, "clone")
+    )
+
+
+def _clone_conditioning_structure(value):
+    """结构化深拷贝 conditioning：张量 clone，dict/list/tuple 递归复制，其余对象原样共享。"""
+
+    if _is_tensor_like(value):
+        return value.clone()
+    if isinstance(value, dict):
+        return {key: _clone_conditioning_structure(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_clone_conditioning_structure(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_clone_conditioning_structure(item) for item in value)
+    return value
+
+
+def _estimate_conditioning_bytes(value) -> int:
+    """估算 conditioning 中张量占用的字节数；无法识别的结构按 0 计。"""
+
+    if _is_tensor_like(value):
+        return int(value.nelement()) * int(value.element_size())
+    if isinstance(value, dict):
+        return sum(_estimate_conditioning_bytes(item) for item in value.values())
+    if isinstance(value, (list, tuple)):
+        return sum(_estimate_conditioning_bytes(item) for item in value)
+    return 0
+
+
+def _image_tensor_fingerprint(tensor) -> tuple:
+    """对归一化后的 CPU RGB tensor 计算内容指纹：形状 + SHA-256 摘要。
+
+    指纹基于 EXIF 纠正后的实际像素，因此同一文件内容或 EXIF 方向变化必然
+    产生不同指纹。
+    """
+
+    shape = tuple(int(dim) for dim in tensor.shape)
+    digest = hashlib.sha256(tensor.contiguous().numpy().tobytes()).hexdigest()
+    return (shape, digest)
+
+
 class ComfyWorker:
     def __init__(self, comfy_root: Path):
         comfy_root = comfy_root.resolve()
@@ -216,6 +305,13 @@ class ComfyWorker:
         self.clip_type: str | None = None
         # 仅缓存不含图像/视频条件的文本 conditioning，避免重复执行昂贵的文本编码。
         self._conditioning_cache: dict[tuple, tuple] = {}
+        # 输入图片解码缓存：键为 (绝对路径, 文件大小, mtime_ns)，值为归一化
+        # CPU RGB tensor 与内容指纹，避免相同文件重复读取/EXIF 转换/PIL 解码。
+        self._image_cache = _LruTensorCache(max_items=4, max_bytes=256 * 1024 * 1024)
+        # 图片 conditioning 缓存：只缓存完整 positive，latent 仍每个任务独立创建。
+        self._image_conditioning_cache = _LruTensorCache(
+            max_items=2, max_bytes=512 * 1024 * 1024
+        )
         self.vae = None
         self.vae_path: Path | None = None
         self.audio_vae = None
@@ -870,26 +966,31 @@ class ComfyWorker:
                 "total": stage_total,
             }
         )
-        first_frame = self._load_input_image(command.get("input_image_path"))
-        reference_image = self._load_input_image(command.get("reference_image_path"))
+        first_frame, first_frame_fingerprint = self._load_input_image_cached(
+            command.get("input_image_path")
+        )
+        reference_image, reference_fingerprint = self._load_input_image_cached(
+            command.get("reference_image_path")
+        )
+        width = int(command["width"])
+        height = int(command["height"])
+        length = int(command["length"])
         if reference_image is not None:
-            positive, latent = self.MiniMaxH3ReferenceToVideo.execute(
-                self.clip, self.vae, self.audio_vae, command["prompt"],
-                int(command["width"]), int(command["height"]), int(command["length"]),
-                ref_images={"ref_image_1": reference_image},
+            # 参考图存在时优先走 Ref2VA，不与 FL2VA 共用缓存条目。
+            positive = self._get_h3_ref2va_conditioning(
+                command, reference_image, reference_fingerprint
             )
+            # 采样 latent 必须每个任务独立创建，不复用缓存。
+            latent = self.EmptyMiniMaxH3LatentAV.execute(width, height, length)[0]
         elif first_frame is None:
             # 纯文生视频没有图像条件，可以复用文本 conditioning；latent 每次重新创建。
             positive = self._encode_h3_text_conditioning(command["prompt"])
-            latent = self.EmptyMiniMaxH3LatentAV.execute(
-                int(command["width"]), int(command["height"]), int(command["length"])
-            )[0]
+            latent = self.EmptyMiniMaxH3LatentAV.execute(width, height, length)[0]
         else:
-            positive, latent = self.MiniMaxH3ImageToVideo.execute(
-                self.clip, self.vae, command["prompt"],
-                int(command["width"]), int(command["height"]), int(command["length"]),
-                first_frame=first_frame,
+            positive = self._get_h3_fl2va_conditioning(
+                command, first_frame, first_frame_fingerprint
             )
+            latent = self.EmptyMiniMaxH3LatentAV.execute(width, height, length)[0]
         sampling_model = self.MiniMaxH3SigmaShift.execute(
             self.model,
             float(command.get("shift", 12.0)),
@@ -1010,6 +1111,148 @@ class ComfyWorker:
             cache.pop(next(iter(cache)))
         return conditioning
 
+    def _image_caches(self) -> tuple[_LruTensorCache, _LruTensorCache]:
+        """返回 (图片解码缓存, 图片条件缓存)；首次访问时惰性创建。"""
+
+        image_cache = getattr(self, "_image_cache", None)
+        if image_cache is None:
+            image_cache = self._image_cache = _LruTensorCache(
+                max_items=4, max_bytes=256 * 1024 * 1024
+            )
+        conditioning_cache = getattr(self, "_image_conditioning_cache", None)
+        if conditioning_cache is None:
+            conditioning_cache = self._image_conditioning_cache = _LruTensorCache(
+                max_items=2, max_bytes=512 * 1024 * 1024
+            )
+        return image_cache, conditioning_cache
+
+    def _clear_conditioning_caches(self) -> None:
+        """模型/VAE/text encoder 切换或资源释放时清空全部 conditioning 与图片缓存。"""
+
+        self._conditioning_cache.clear()
+        image_cache, conditioning_cache = self._image_caches()
+        image_cache.clear()
+        conditioning_cache.clear()
+
+    def _get_h3_fl2va_conditioning(
+        self, command: dict, first_frame, first_frame_fingerprint
+    ):
+        """H3 FL2VA 图片条件：命中缓存或调用原生 MiniMaxH3ImageToVideo；只缓存 positive。"""
+
+        key = (
+            "h3-fl2va",
+            str(self.model_path),
+            str(self.vae_path),
+            str(self.audio_vae_path),
+            str(self.clip_path),
+            self.clip_type,
+            command["prompt"],
+            int(command["width"]),
+            int(command["height"]),
+            int(command["length"]),
+            first_frame_fingerprint,
+        )
+        _, conditioning_cache = self._image_caches()
+        cached = self._lookup_image_conditioning(
+            conditioning_cache, key, kind="h3-fl2va"
+        )
+        if cached is not None:
+            return cached
+        # 原生节点返回的 latent 与 EmptyMiniMaxH3LatentAV 一致（均来自内部
+        # _empty_av_latent），因此这里丢弃 latent，由主流程每个任务重新创建。
+        positive, _latent = self.MiniMaxH3ImageToVideo.execute(
+            self.clip,
+            self.vae,
+            command["prompt"],
+            int(command["width"]),
+            int(command["height"]),
+            int(command["length"]),
+            first_frame=first_frame,
+        )
+        self._cache_image_conditioning(conditioning_cache, key, positive, kind="h3-fl2va")
+        return positive
+
+    def _get_h3_ref2va_conditioning(
+        self, command: dict, reference_image, reference_fingerprint
+    ):
+        """H3 Ref2VA 图片条件：命中缓存或调用原生 MiniMaxH3ReferenceToVideo；只缓存 positive。"""
+
+        # 当前未向客户端暴露，始终取原生默认值 "match"；未来暴露该参数时无需改键结构。
+        ref_image_size = command.get("ref_image_size", "match")
+        key = (
+            "h3-ref2va",
+            str(self.model_path),
+            str(self.vae_path),
+            str(self.audio_vae_path),
+            str(self.clip_path),
+            self.clip_type,
+            command["prompt"],
+            int(command["width"]),
+            int(command["height"]),
+            int(command["length"]),
+            ref_image_size,
+            # 引用顺序与 prompt 中 <Picture 1> 编号绑定，指纹必须按顺序进入键。
+            ((1, reference_fingerprint),),
+        )
+        _, conditioning_cache = self._image_caches()
+        cached = self._lookup_image_conditioning(
+            conditioning_cache, key, kind="h3-ref2va"
+        )
+        if cached is not None:
+            return cached
+        # latent 处理同 FL2VA：丢弃节点返回的 latent，由主流程每个任务重新创建。
+        positive, _latent = self.MiniMaxH3ReferenceToVideo.execute(
+            self.clip,
+            self.vae,
+            self.audio_vae,
+            command["prompt"],
+            int(command["width"]),
+            int(command["height"]),
+            int(command["length"]),
+            ref_image_size=ref_image_size,
+            ref_images={"ref_image_1": reference_image},
+        )
+        self._cache_image_conditioning(conditioning_cache, key, positive, kind="h3-ref2va")
+        return positive
+
+    def _lookup_image_conditioning(self, cache: _LruTensorCache, key, *, kind: str):
+        """读取图片条件缓存并返回深拷贝；异常时按未命中处理，不影响生成。"""
+
+        try:
+            cached = cache.get(key)
+            if cached is None:
+                return None
+            positive, size_bytes = cached
+            # 缓存对象永不直接交给采样器，避免下游原地修改污染后续任务。
+            positive = _clone_conditioning_structure(positive)
+        except Exception:
+            logging.warning(
+                "图片条件缓存读取失败，按未命中处理: kind=%s", kind, exc_info=True
+            )
+            return None
+        logging.info("图片条件缓存命中: kind=%s bytes=%d", kind, size_bytes)
+        return positive
+
+    def _cache_image_conditioning(
+        self, cache: _LruTensorCache, key, positive, *, kind: str
+    ) -> None:
+        """写入图片条件缓存（保存深拷贝）；异常或超预算仅记录日志，任务继续无缓存运行。"""
+
+        try:
+            stored = _clone_conditioning_structure(positive)
+            size_bytes = _estimate_conditioning_bytes(stored)
+            if not cache.put(key, (stored, size_bytes), size_bytes):
+                logging.info(
+                    "图片条件超出缓存预算，跳过缓存: kind=%s bytes=%d", kind, size_bytes
+                )
+                return
+        except Exception:
+            logging.warning(
+                "图片条件缓存写入失败，本次结果不进入缓存: kind=%s", kind, exc_info=True
+            )
+            return
+        logging.info("图片条件缓存写入: kind=%s bytes=%d", kind, size_bytes)
+
     def _video_metadata(self, command: dict, resource_metadata: dict, performance: dict) -> dict:
         return {
             "schema_version": 1,
@@ -1110,11 +1353,33 @@ class ComfyWorker:
         return output
 
     def _load_input_image(self, path: str | None):
+        # 保持原有外部行为：空路径返回 None，文件不存在抛中文 FileNotFoundError。
+        tensor, _fingerprint = self._load_input_image_cached(path)
+        return tensor
+
+    def _load_input_image_cached(self, path: str | None):
+        """读取输入图片并返回 (归一化 RGB tensor, 内容指纹)；重复文件命中解码缓存。"""
+
         if not path:
-            return None
+            return None, None
         image_path = Path(path).resolve()
         if not image_path.is_file():
             raise FileNotFoundError(f"找不到输入图片: {image_path}")
+        stat = image_path.stat()
+        key = (str(image_path), stat.st_size, stat.st_mtime_ns)
+        image_cache, _ = self._image_caches()
+        cached = image_cache.get(key)
+        if cached is not None:
+            tensor, fingerprint = cached
+            # 缓存副本只读，返回 clone 避免下游节点原地修改污染缓存。
+            return tensor.clone(), fingerprint
+        tensor = self._load_input_image_uncached(image_path)
+        fingerprint = _image_tensor_fingerprint(tensor)
+        size_bytes = int(tensor.nelement()) * int(tensor.element_size())
+        image_cache.put(key, (tensor, fingerprint), size_bytes)
+        return tensor.clone(), fingerprint
+
+    def _load_input_image_uncached(self, image_path: Path):
         with self.Image.open(image_path) as source:
             image = self.ImageOps.exif_transpose(source).convert("RGB")
         try:
@@ -1222,7 +1487,7 @@ class ComfyWorker:
         if self.model is not None and self.model_path == path:
             return False
         self._unload_gpu()
-        self._conditioning_cache.clear()
+        self._clear_conditioning_caches()
         self.model = None
         self.model_path = None
         gc.collect()
@@ -1241,7 +1506,7 @@ class ComfyWorker:
             self.model_path = high_path
             return False
         self._unload_gpu()
-        self._conditioning_cache.clear()
+        self._clear_conditioning_caches()
         self.model = self.model_high = self.model_low = None
         self.model_path = self.model_high_path = self.model_low_path = None
         gc.collect()
@@ -1301,7 +1566,7 @@ class ComfyWorker:
         ):
             return False
         self._unload_gpu()
-        self._conditioning_cache.clear()
+        self._clear_conditioning_caches()
         self.model = self.clip = self.vae = None
         self.model_path = self.clip_path = self.vae_path = None
         self.checkpoint_path = None
@@ -1331,7 +1596,7 @@ class ComfyWorker:
         self.clip = None
         self.clip_path = None
         self.clip_type = None
-        self._conditioning_cache.clear()
+        self._clear_conditioning_caches()
         gc.collect()
         name = self._register_exact("text_encoders", path)
         self.clip = self.nodes.CLIPLoader().load_clip(name, clip_type)[0]
@@ -1343,7 +1608,7 @@ class ComfyWorker:
         if self.vae is not None and self.vae_path == path:
             return False
         self._unload_gpu()
-        self._conditioning_cache.clear()
+        self._clear_conditioning_caches()
         self.vae = None
         self.upscale_model = None
         self.vae_path = None
@@ -1395,7 +1660,7 @@ class ComfyWorker:
         if self.audio_vae is not None and self.audio_vae_path == path:
             return False
         self._unload_gpu()
-        self._conditioning_cache.clear()
+        self._clear_conditioning_caches()
         self.audio_vae = None
         self.audio_vae_path = None
         gc.collect()
@@ -1440,7 +1705,7 @@ class ComfyWorker:
         self.checkpoint_path = None
         self.upscale_model_path = None
         self.clip_type = None
-        self._conditioning_cache.clear()
+        self._clear_conditioning_caches()
         self.mode = None
         gc.collect()
         self.model_management.cleanup_models_gc()

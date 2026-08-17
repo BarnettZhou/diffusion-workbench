@@ -24,9 +24,21 @@ FastAPI 服务共同复用的核心层，不包含 HTTP、WebSocket 或界面状
 - 单 GPU 串行队列和批量任务；
 - 模型跨任务复用、切模重载、跳过/停止/退出释放；
 - Worker 在同一文本编码器、模式和提示词不变时复用纯文本 conditioning，避免重复执行
-  tokenizer/文本编码；切换 diffusion 模型、VAE、text encoder、clip 类型或进入带图像条件的
-  视频路径时会失效。H3 首帧/参考图 conditioning 依赖图像内容，不与纯文生视频缓存混用；
-  latent 仍按任务重新创建。
+  tokenizer/文本编码；切换 diffusion 模型、VAE、text encoder、clip 类型时失效。
+- Worker 另有两层图片缓存（`_LruTensorCache`，LRU + 字节预算，命中更新顺序）：
+  - 图片解码缓存（`_image_cache`，最多 4 条 / 256 MiB）：键为 (绝对路径, 文件大小,
+    mtime_ns)，值为归一化 CPU RGB tensor 与内容指纹（形状 + 像素 SHA-256），避免相同
+    文件重复读取/EXIF 转换/PIL 解码；缓存副本只读，返回给节点的始终是 clone。
+  - 图片条件缓存（`_image_conditioning_cache`，最多 2 条 / 512 MiB）：只缓存 H3
+    FL2VA/Ref2VA 的完整 positive conditioning；键包含 diffusion 模型、VAE、audio VAE、
+    text encoder 路径与 clip_type、prompt、宽高、length、ref_image_size，以及按引用顺序
+    排列的图片内容指纹。写入与命中都使用结构化深拷贝（张量 clone），缓存对象不直接
+    交给采样器；latent 与噪声仍每个任务独立创建（原生节点返回的 latent 与
+    `EmptyMiniMaxH3LatentAV` 一致，均来自内部 `_empty_av_latent`，缓存路径丢弃节点
+    latent 由主流程重建）。FL2VA 与 Ref2VA 不共用条目，也不与纯文本缓存混用。
+  - 任一资源切换、`release()` 或任务异常后的资源重建会清空全部 conditioning 与图片
+    缓存；缓存读写异常只记录中文 warning 并降级为无缓存生成，不会使任务失败。
+    Wan I2V 暂不缓存图片 conditioning，仅受益于图片解码缓存。
 - SQLite 任务记录、资源别名和原子 PNG 输出；
 - 队列、执行阶段、采样速度/ETA、可选 latent 预览、错误和完成事件；
 - 带版本化生成参数 iTXt 元数据的 PNG 输出。

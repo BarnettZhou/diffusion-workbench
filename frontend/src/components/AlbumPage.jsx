@@ -259,7 +259,7 @@ export default function AlbumPage({ onSendToWorkbench, onSendToVideo, onSendVide
     dirs?.find((d) => d.id === activeDir)?.name ?? activeDir;
 
   return (
-    <main id="album-page" className={batchMode ? "batch-selecting" : undefined}>
+    <>
       <div id="album-tabs" role="tablist" aria-label="相册目录">
         {(dirs ?? [{ id: BUILTIN_DIR, name: "默认", builtin: true }]).map(
           (dir) => (
@@ -298,6 +298,7 @@ export default function AlbumPage({ onSendToWorkbench, onSendToVideo, onSendVide
         </button>
       </div>
 
+      <main id="album-page" className={batchMode ? "batch-selecting" : undefined}>
       {error && <div id="album-error" className="form-error">加载失败:{error}</div>}
       {images.length === 0 && !loading && !error && (
         <div className="empty-hint">{subDir ?? activeDirName} 目录中还没有图片</div>
@@ -612,7 +613,8 @@ export default function AlbumPage({ onSendToWorkbench, onSendToVideo, onSendVide
           }
         />
       )}
-    </main>
+      </main>
+    </>
   );
 }
 

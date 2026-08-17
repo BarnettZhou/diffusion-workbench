@@ -865,7 +865,7 @@ button.warn:disabled { opacity: 0.4; cursor: not-allowed; }
 .drawer-dropup button:hover:not(:disabled) { background: var(--panel); }
 .drawer-dropup button:disabled { color: var(--text-dim); cursor: not-allowed; }
 
-#album-page { padding: 16px 20px; }
+#album-page { padding: 0 20px 16px; }
 
 /* ---------- 设置页 ---------- */
 #settings-page {
@@ -1288,8 +1288,11 @@ button.warn:disabled { opacity: 0.4; cursor: not-allowed; }
   padding: 14px;
 }
 
-/* 相册目录 tabs */
+/* 相册目录 tabs:位于滚动容器(#album-page)之外,作为 #app-shell 的纵向弹性子项固定不滚动 */
 #album-tabs {
+  flex: none;
+  padding: 16px 20px 0;
+  /* 与下方图片网格的间距统一由 margin-bottom 提供 */
   display: flex;
   gap: 6px;
   align-items: center;
@@ -1437,7 +1440,8 @@ button.warn:disabled { opacity: 0.4; cursor: not-allowed; }
   }
 
   #app-main { padding: 12px 14px; gap: 12px; }
-  #album-page { padding: 12px 14px; }
+  #album-page { padding: 0 14px 12px; }
+  #album-tabs { padding: 12px 14px 0; }
 
   /* 多列字段改为纵向堆叠,避免挤压 */
   .row { flex-direction: column; gap: 12px; }

@@ -47,8 +47,11 @@ IPC 的开销。开关在任务开始时写入 Worker 命令；切换只影响�
 
 Worker 的 `prompt` 阶段包含文本 tokenizer/conditioning 构建。连续任务在文本编码器、模式
 和提示词均未变化时会复用纯文本 conditioning，避免重复执行完整文本编码；因此该阶段事件
-仍会发送，但阶段耗时可能接近于零。带首帧或参考图的视频 conditioning 依赖图像内容，
-必须重新构建，不与纯文生视频缓存混用。
+仍会发送，但阶段耗时可能接近于零。H3 带首帧（FL2VA）或参考图（Ref2VA）的视频任务在
+图片内容、prompt、宽高、length、ref_image_size 和全部模型/VAE/text encoder 资源均未变化时，
+会复用缓存的 positive conditioning（命中时记录 `图片条件缓存命中` 日志），输入图片
+本身也经 LRU 解码缓存避免重复读取；任一输入变化都会重新调用原生节点完整编码，
+采样 latent 与噪声仍每个任务独立创建。
 
 ## 3. 预览事件
 
