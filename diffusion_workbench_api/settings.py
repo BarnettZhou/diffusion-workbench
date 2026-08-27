@@ -8,7 +8,12 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
 
+from diffusion_workbench_core.caption import DEFAULT_CAPTION_SYSTEM_PROMPT
 from diffusion_workbench_core.domain import (
+    H3_REF2VA_MAX_AUDIOS,
+    H3_REF2VA_MAX_IMAGES,
+    H3_REF2VA_MAX_TOTAL,
+    H3_REF2VA_MAX_VIDEOS,
     MAX_STEPS,
     MIN_STEPS,
     SAMPLERS,
@@ -32,6 +37,8 @@ _DEFAULT_SETTINGS = {
     # wan 系列视频模型(16 的倍数)与 MiniMax 系列(32 的倍数)各自的尺寸标签
     "wan_video_size_presets": _DEFAULT_VIDEO_SIZE_PRESETS,
     "minimax_video_size_presets": [],
+    # Ref2VA 客户端表单输入上限(本地算力有限,由用户自主控制;硬上限见 core domain)
+    "ref2va_limits": {"max_images": 3, "max_videos": 1, "max_audios": 1},
     "prompt_presets": [],
     "sampling_defaults": {
         mode.value: {"steps": 8, "sampler": "euler", "scheduler": "simple", "cfg": 1}
@@ -58,6 +65,16 @@ _DEFAULT_SETTINGS = {
         "language_prompt": "正面提示词和负面提示词均使用 {language} 输出。",
         "think": False,
         "think_effort": "",
+    },
+    # API 反推(图片反推 tab 的「API 反推」):走外部视觉模型接口,不占用本地 GPU。
+    # prompt 默认值与本地反推的系统提示词一致
+    "caption_api": {
+        "interface": "ollama",
+        "base_url": "http://127.0.0.1:11434",
+        "api_key": "",
+        "model": "",
+        "prompt": DEFAULT_CAPTION_SYSTEM_PROMPT,
+        "think": False,
     },
 }
 
@@ -125,6 +142,28 @@ def _validate_llm(value) -> dict:
             raise ValueError(f"llm.{key} 必须是字符串")
     if not isinstance(merged["think"], bool):
         raise ValueError("llm.think 必须是布尔值")
+    return merged
+
+
+_CAPTION_API_STRING_KEYS = ("base_url", "api_key", "model", "prompt")
+
+
+def _validate_caption_api(value) -> dict:
+    """API 反推设置;允许只提交部分键,缺失键用默认值补齐。"""
+    if not isinstance(value, dict):
+        raise ValueError("caption_api 必须是对象")
+    for key in value:
+        if key != "interface" and key != "think" and key not in _CAPTION_API_STRING_KEYS:
+            raise ValueError(f"caption_api 包含未知键: {key}")
+    merged = dict(_DEFAULT_SETTINGS["caption_api"])
+    merged.update(value)
+    if merged["interface"] not in ("ollama", "openai"):
+        raise ValueError("caption_api.interface 只允许 ollama 或 openai")
+    for key in _CAPTION_API_STRING_KEYS:
+        if not isinstance(merged[key], str):
+            raise ValueError(f"caption_api.{key} 必须是字符串")
+    if not isinstance(merged["think"], bool):
+        raise ValueError("caption_api.think 必须是布尔值")
     return merged
 
 
@@ -197,12 +236,37 @@ def _validate_prompt_presets(value) -> list[dict]:
     return presets
 
 
+def _validate_ref2va_limits(value) -> dict:
+    """Ref2VA 表单输入上限;允许只提交部分键,缺失项用默认值补齐。"""
+    if not isinstance(value, dict):
+        raise ValueError("ref2va_limits 必须是对象")
+    for key in value:
+        if key not in ("max_images", "max_videos", "max_audios"):
+            raise ValueError(f"ref2va_limits 包含未知键: {key}")
+    merged = dict(_DEFAULT_SETTINGS["ref2va_limits"])
+    merged.update(value)
+    bounds = {
+        "max_images": H3_REF2VA_MAX_IMAGES,
+        "max_videos": H3_REF2VA_MAX_VIDEOS,
+        "max_audios": H3_REF2VA_MAX_AUDIOS,
+    }
+    for key, upper in bounds.items():
+        item = merged[key]
+        if not isinstance(item, int) or isinstance(item, bool) or not 0 <= item <= upper:
+            raise ValueError(f"ref2va_limits.{key} 必须是 0 到 {upper} 的整数")
+    if sum(merged[key] for key in bounds) > H3_REF2VA_MAX_TOTAL:
+        raise ValueError(f"ref2va_limits 三项之和不能超过 {H3_REF2VA_MAX_TOTAL}")
+    return merged
+
+
 _VALIDATORS = {
     "size_presets": _validate_size_presets,
+    "ref2va_limits": _validate_ref2va_limits,
     "wan_video_size_presets": _validate_size_presets,
     "minimax_video_size_presets": _validate_minimax_size_presets,
     "prompt_presets": _validate_prompt_presets,
     "llm": _validate_llm,
+    "caption_api": _validate_caption_api,
     "sampling_defaults": _validate_sampling_defaults,
 }
 

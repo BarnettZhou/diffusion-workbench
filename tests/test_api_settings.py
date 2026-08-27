@@ -128,6 +128,44 @@ class VideoSizePresetsTests(ApiTestCase):
         self.assertEqual(store.get()["wan_video_size_presets"], [[1280, 720]])
 
 
+class Ref2vaLimitsTests(ApiTestCase):
+    def test_returns_conservative_defaults(self):
+        response = self.client.get("/api/v1/settings")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json()["ref2va_limits"],
+            {"max_images": 3, "max_videos": 1, "max_audios": 1},
+        )
+
+    def test_partial_update_merges_defaults(self):
+        response = self.client.put(
+            "/api/v1/settings", json={"ref2va_limits": {"max_images": 9}}
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json()["ref2va_limits"],
+            {"max_images": 9, "max_videos": 1, "max_audios": 1},
+        )
+        persisted = self.client.get("/api/v1/settings").json()
+        self.assertEqual(persisted["ref2va_limits"]["max_images"], 9)
+
+    def test_rejects_out_of_range_and_total_overflow(self):
+        too_many = self.client.put(
+            "/api/v1/settings", json={"ref2va_limits": {"max_images": 10}}
+        )
+        self.assertEqual(too_many.status_code, 422)
+        overflow = self.client.put(
+            "/api/v1/settings",
+            json={"ref2va_limits": {"max_images": 9, "max_videos": 3, "max_audios": 3}},
+        )
+        # 9+3+3=15 超过总数 12 的硬上限
+        self.assertEqual(overflow.status_code, 422)
+        unknown = self.client.put(
+            "/api/v1/settings", json={"ref2va_limits": {"max_text": 1}}
+        )
+        self.assertEqual(unknown.status_code, 422)
+
+
 class LlmSettingsTests(ApiTestCase):
     def test_llm_defaults(self):
         response = self.client.get("/api/v1/settings")
@@ -200,6 +238,71 @@ class LlmSettingsTests(ApiTestCase):
         ):
             response = self.client.put("/api/v1/settings", json=payload)
             self.assertEqual(response.status_code, 422, f"{payload} 应被拒绝")
+
+
+class CaptionApiSettingsTests(ApiTestCase):
+    def test_caption_api_defaults(self):
+        response = self.client.get("/api/v1/settings")
+        self.assertEqual(response.status_code, 200)
+        caption_api = response.json()["caption_api"]
+        self.assertEqual(caption_api["interface"], "ollama")
+        self.assertEqual(caption_api["base_url"], "http://127.0.0.1:11434")
+        self.assertEqual(caption_api["api_key"], "")
+        self.assertEqual(caption_api["model"], "")
+        self.assertIs(caption_api["think"], False)
+        # 提示词默认值与本地反推的系统提示词一致(含双语输出要求)
+        self.assertIn("image prompt engineer", caption_api["prompt"])
+        self.assertIn("bilingual", caption_api["prompt"])
+
+    def test_caption_api_partial_update_merges_defaults(self):
+        response = self.client.put(
+            "/api/v1/settings",
+            json={"caption_api": {"interface": "openai", "model": "gpt-4o-mini"}},
+        )
+        self.assertEqual(response.status_code, 200)
+        caption_api = response.json()["caption_api"]
+        self.assertEqual(caption_api["interface"], "openai")
+        self.assertEqual(caption_api["model"], "gpt-4o-mini")
+        # 未提交的键回退默认值
+        self.assertEqual(caption_api["base_url"], "http://127.0.0.1:11434")
+        self.assertIn("image prompt engineer", caption_api["prompt"])
+
+    def test_caption_api_think_toggle(self):
+        response = self.client.put(
+            "/api/v1/settings", json={"caption_api": {"think": True}}
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertIs(response.json()["caption_api"]["think"], True)
+        response = self.client.put(
+            "/api/v1/settings", json={"caption_api": {"think": "yes"}}
+        )
+        self.assertEqual(response.status_code, 422)
+
+    def test_caption_api_rejects_invalid_interface(self):
+        response = self.client.put(
+            "/api/v1/settings", json={"caption_api": {"interface": "anthropic"}}
+        )
+        self.assertEqual(response.status_code, 422)
+
+    def test_caption_api_rejects_wrong_types_and_unknown_keys(self):
+        for payload in (
+            {"caption_api": "not-a-dict"},
+            {"caption_api": {"model": 123}},
+            {"caption_api": {"nope": "x"}},
+        ):
+            response = self.client.put("/api/v1/settings", json=payload)
+            self.assertEqual(response.status_code, 422, f"{payload} 应被拒绝")
+
+    def test_caption_api_round_trip_persistence(self):
+        response = self.client.put(
+            "/api/v1/settings",
+            json={"caption_api": {"model": "qwen3-vl:8b", "prompt": "CUSTOM"}},
+        )
+        self.assertEqual(response.status_code, 200)
+        settings_file = self.core.config.database.parent / "settings.json"
+        reloaded = SettingsStore(settings_file).get()["caption_api"]
+        self.assertEqual(reloaded["model"], "qwen3-vl:8b")
+        self.assertEqual(reloaded["prompt"], "CUSTOM")
 
 
 class SamplingDefaultsTests(ApiTestCase):

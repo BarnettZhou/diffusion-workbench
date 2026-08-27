@@ -47,10 +47,10 @@ IPC 的开销。开关在任务开始时写入 Worker 命令；切换只影响�
 
 Worker 的 `prompt` 阶段包含文本 tokenizer/conditioning 构建。连续任务在文本编码器、模式
 和提示词均未变化时会复用纯文本 conditioning，避免重复执行完整文本编码；因此该阶段事件
-仍会发送，但阶段耗时可能接近于零。H3 带首帧（FL2VA）或参考图（Ref2VA）的视频任务在
-图片内容、prompt、宽高、length、ref_image_size 和全部模型/VAE/text encoder 资源均未变化时，
-会复用缓存的 positive conditioning（命中时记录 `图片条件缓存命中` 日志），输入图片
-本身也经 LRU 解码缓存避免重复读取；任一输入变化都会重新调用原生节点完整编码，
+仍会发送，但阶段耗时可能接近于零。H3 带首/尾帧（FL2VA）或参考输入（Ref2VA 的图片/视频/
+音频）的视频任务在输入内容、prompt、宽高、length、ref_image_size 和全部模型/VAE/text encoder
+资源均未变化时，会复用缓存的 positive conditioning（命中时记录 `图片条件缓存命中` 日志），
+输入图片本身也经 LRU 解码缓存避免重复读取；任一输入变化都会重新调用原生节点完整编码，
 采样 latent 与噪声仍每个任务独立创建。
 
 ## 3. 预览事件
@@ -136,10 +136,23 @@ Worker 的 `prompt` 阶段包含文本 tokenizer/conditioning 构建。连续任
 `model_loader` 为 `checkpoint`，`vae`/`text_encoder` 为 `null`，checkpoint 的完整哈希
 记录在 `diffusion_model`。
 
-`negative_conditioning` 取值为 `encoded_negative_prompt`(mode 为 `zib`，或 CFG ≠ 1
-时 Core 实际编码了负面提示词）或 `positive_reused`（复用正面条件）。读取仍兼容
-schema v1-v3 的旧 PNG 仍可读取；v1 没有 `negative_prompt`/`negative_conditioning` 字段，消费方
-应按缺失处理（空字符串 / `null`)。
+`negative_conditioning` 取值：
+
+- `positive_reused`：CFG 1.0 且非 `zib` 模式时（包含 `edit-krea2` + 空
+  `negative_prompt`），采样器未使用 negative，Core 直接复用 positive；
+- `conditioning_zero_out`：`edit-krea2` 模式且 CFG ≠ 1.0 且空
+  `negative_prompt` 时，调用 `ConditioningZeroOut(positive)`；
+- `encoded_negative_prompt`：其余情形（包括 `zib` 模式，或编辑模式提供非空
+  `negative_prompt` 并由 `Krea2EditGroundedEncode` 实际编码）。
+
+读取仍兼容 schema v1-v3 的旧 PNG；v1 没有 `negative_prompt`/
+`negative_conditioning` 字段，消费方应按缺失处理（空字符串 / `null`)。
+
+`edit-krea2` 模式还会在 `parameters` 下附加 `grounding_px`（整数）与
+`ref_boost`（浮点），并在 `resources` 下附加 `edit_lora`（仅文件名 + 路径，无
+SHA-256）。`krea2-rebalance` 模式会在 `parameters` 下附加 `reference_images`
+（参考图文件名列表）与 `reference_image_tokens`（每张图的 token 档位列表）。
+其他模式不写入这些键。
 
 旧 PNG 不会自动补写元数据。图片编辑器、聊天软件或图床可能删除 PNG 文本块，SQLite
 仍是本机历史记录的最终事实来源。
@@ -150,7 +163,7 @@ schema v1-v3 的旧 PNG 仍可读取；v1 没有 `negative_prompt`/`negative_con
 `video_saved` 阶段事件，完成事件 `job_finished` 带 `artifact_type: "video"`，输出为
 H.264 MP4，路径格式为 `output/YYYY-MM-DD/<video_model>-NNNNN.mp4`。MP4 使用 ComfyUI
 Video API 写入 `diffusion_workbench` 容器 metadata，值为 JSON，包含模型、提示词、尺寸、
-时长、帧率、length、采样参数、latent multiplier、输入图片/参考图片路径、资源指纹、运行时和性能字段。输入图片和参考图片的
+时长、帧率、length、采样参数、latent multiplier、首帧/尾帧图片与三类参考输入路径、资源指纹、运行时和性能字段。输入图片与参考输入的
 服务端路径不能由 HTTP 客户端直接指定，应由受控资产引用解析。
 
 MiniMax H3 的 metadata 还包含 `generation_type`（`t2v`/`i2v`/`r2v`）和固定内部参数 `audio_shift`；输出在 H.264 视频流之外包含

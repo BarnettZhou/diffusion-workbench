@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, eventsUrl } from "./api/client";
 import AlbumPage from "./components/AlbumPage";
+import CaptionPanel from "./components/CaptionPanel";
+import EditParameterForm from "./components/EditParameterForm";
+import RebalanceParameterForm from "./components/RebalanceParameterForm";
 import ParameterForm from "./components/ParameterForm";
 import ProgressPanel from "./components/ProgressPanel";
 import ResultGallery from "./components/ResultGallery";
@@ -10,12 +13,15 @@ import VideoParameterForm from "./components/VideoParameterForm";
 import VideoResultGallery from "./components/VideoResultGallery";
 import Modal from "./components/Modal";
 
-const MODE_LABELS = { zit: "ZIT", zib: "ZIB", krea2: "Krea2", sdxl: "SDXL" };
+const MODE_LABELS = { zit: "ZIT", zib: "ZIB", krea2: "Krea2", sdxl: "SDXL", "edit-krea2": "Krea2 编辑", "krea2-rebalance": "Krea2 参考重排" };
 // 视频模型分类显示名(设置页「视频模型」tab 同款映射)
 const VIDEO_MODEL_LABELS = {
   "wan2.2-ti2v-5b": "Wan 2.2 TI2V-5B",
   "wan2.2-i2v-14b": "Wan 2.2 I2V-14B",
   "minimax-h3": "MiniMax H3",
+  "minimax-h3-fl2va": "MiniMax H3 FL2VA",
+  "minimax-h3-ref2va": "MiniMax H3 Ref2VA",
+  "minimax-h3-turbo": "MiniMax H3 FL2VA Turbo",
 };
 
 export default function App() {
@@ -25,6 +31,13 @@ export default function App() {
   const [jobs, setJobs] = useState({});
   // 视频任务与图片任务分开存放;事件按 job_id 命中哪张表就更新哪张
   const [videoJobs, setVideoJobs] = useState({});
+  // 图像编辑任务单独存放;与图片任务走同一条 /api/v1/jobs 通道,按 mode 字段分桶
+  const [editJobs, setEditJobs] = useState({});
+  // 编辑能力开关与默认值;null = 尚未加载完成
+  const [editInfo, setEditInfo] = useState(null);
+  const [editSubmitting, setEditSubmitting] = useState(false);
+  // 编辑页内的类型切换:图像编辑(edit-krea2) / 参考图重排(krea2-rebalance)
+  const [editMode, setEditMode] = useState("edit-krea2");
   // 视频模型分类列表与资源({video_model: {models, vaes}})
   const [videoModels, setVideoModels] = useState([]);
   const [videoModelInfo, setVideoModelInfo] = useState({});
@@ -46,6 +59,10 @@ export default function App() {
   const [prefill, setPrefill] = useState(null);
   // 相册"发送到视频生成"带过来的 I2V 输入图片预填
   const [videoPrefill, setVideoPrefill] = useState(null);
+  // 相册"发送到图片编辑"带过来的编辑输入图片预填
+  const [editPrefill, setEditPrefill] = useState(null);
+  // 相册"发送到图片反推"带过来的反推输入图片预填(与编辑共用受控上传通道)
+  const [captionPrefill, setCaptionPrefill] = useState(null);
   // 相册视频抽屉"发送到工作台"带过来的视频参数预填
   const [videoParamsPrefill, setVideoParamsPrefill] = useState(null);
   const message = useMessage();
@@ -53,17 +70,25 @@ export default function App() {
   jobsRef.current = jobs;
   const videoJobsRef = useRef(videoJobs);
   videoJobsRef.current = videoJobs;
+  const editJobsRef = useRef(editJobs);
+  editJobsRef.current = editJobs;
 
   const updateJob = useCallback((id, patch) => {
     if (!id) return;
     setJobs((prev) => (prev[id] ? { ...prev, [id]: { ...prev[id], ...patch } } : prev));
     setVideoJobs((prev) => (prev[id] ? { ...prev, [id]: { ...prev[id], ...patch } } : prev));
+    setEditJobs((prev) => (prev[id] ? { ...prev, [id]: { ...prev[id], ...patch } } : prev));
   }, []);
 
+  // 拉取单张图片/编辑任务;编辑与参考重排任务(mode 为 "edit-krea2"/"krea2-rebalance")写入 editJobs 分桶
   const fetchJob = useCallback(async (id) => {
     try {
       const job = await api.job(id);
-      setJobs((prev) => ({ ...prev, [id]: job }));
+      if (job.mode === "edit-krea2" || job.mode === "krea2-rebalance") {
+        setEditJobs((prev) => ({ ...prev, [id]: job }));
+      } else {
+        setJobs((prev) => ({ ...prev, [id]: job }));
+      }
     } catch {
       /* 任务可能已被清理 */
     }
@@ -82,7 +107,11 @@ export default function App() {
   const fetchAnyJob = useCallback(async (id) => {
     try {
       const job = await api.job(id);
-      setJobs((prev) => ({ ...prev, [id]: job }));
+      if (job.mode === "edit-krea2" || job.mode === "krea2-rebalance") {
+        setEditJobs((prev) => ({ ...prev, [id]: job }));
+      } else {
+        setJobs((prev) => ({ ...prev, [id]: job }));
+      }
     } catch {
       try {
         const job = await api.videoJob(id);
@@ -100,6 +129,7 @@ export default function App() {
       modes.flatMap((item) => [
         api.resources(item.mode, "diffusion"),
         api.resources(item.mode, "vae"),
+        api.resources(item.mode, "text_encoder"),
       ]),
     );
     // 按 mode 动态组装,避免 entries 位置与 mode 对应关系随请求数量变化而错位
@@ -108,8 +138,9 @@ export default function App() {
         modes.map((item, i) => [
           item.mode,
           {
-            models: entries[i * 2].resources,
-            vaes: entries[i * 2 + 1].resources,
+            models: entries[i * 3].resources,
+            vaes: entries[i * 3 + 1].resources,
+            textEncoders: entries[i * 3 + 2].resources,
             modelLoader: item.model_loader,
           },
         ]),
@@ -130,7 +161,7 @@ export default function App() {
         setSettings(loadedSettings);
         setQueueState({ queued: status.queue, running: status.running });
       } catch (err) {
-        setFatalError(`后端连接失败:${err.message}。请确认 API 服务已启动(端口 8188)。`);
+        setFatalError(`后端连接失败:${err.message}。请确认 API 服务已启动(当前访问端口 ${location.port})。`);
       }
     })();
   }, [refreshResources]);
@@ -148,13 +179,40 @@ export default function App() {
         const entries = await Promise.all(list.map((key) => api.videoResources(key)));
         setVideoResources(
           Object.fromEntries(
-            list.map((key, i) => [key, { models: entries[i].models, vaes: entries[i].vaes }]),
+            list.map((key, i) => [key, {
+              models: entries[i].models,
+              vaes: entries[i].vaes,
+              // 视频 text encoder 目录+index 选择(与图片模式一致)
+              textEncoders: entries[i].text_encoders ?? [],
+            }]),
           ),
         );
       } catch {
         /* 视频功能不可用时保持空列表 */
       }
     })();
+  }, []);
+
+  // 编辑能力开关与默认参数:端点不可用视为 disabled,允许 tab 仍可见但表单不可提交
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .editInfo()
+      .then((info) => {
+        if (cancelled) return;
+        setEditInfo({
+          enabled: Boolean(info?.enabled),
+          defaults: info?.defaults ?? null,
+          rebalance: info?.rebalance ?? null,
+        });
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setEditInfo({ enabled: false, defaults: null, rebalance: null });
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   // 资源加载后若当前模式不可用(配置变化),回退到第一个可用模式
@@ -176,7 +234,8 @@ export default function App() {
           if (
             event.running &&
             !jobsRef.current[event.running] &&
-            !videoJobsRef.current[event.running]
+            !videoJobsRef.current[event.running] &&
+            !editJobsRef.current[event.running]
           ) {
             fetchAnyJob(event.running);
           }
@@ -243,6 +302,9 @@ export default function App() {
   const runningJob = queueState.running ? (jobs[queueState.running] ?? null) : null;
   const videoRunningJob = queueState.running
     ? (videoJobs[queueState.running] ?? null)
+    : null;
+  const editRunningJob = queueState.running
+    ? (editJobs[queueState.running] ?? null)
     : null;
   const busy = queueState.running !== null || queueState.queued > 0;
 
@@ -311,6 +373,32 @@ export default function App() {
     }
   }
 
+  async function handleEditSubmit(payload) {
+    setEditSubmitting(true);
+    try {
+      const result = await api.submitEdit(payload);
+      setEditJobs((prev) => ({
+        ...prev,
+        ...Object.fromEntries(result.jobs.map((job) => [job.id, job])),
+      }));
+    } finally {
+      setEditSubmitting(false);
+    }
+  }
+
+  async function handleRebalanceSubmit(payload) {
+    setEditSubmitting(true);
+    try {
+      const result = await api.submitRebalance(payload);
+      setEditJobs((prev) => ({
+        ...prev,
+        ...Object.fromEntries(result.jobs.map((job) => [job.id, job])),
+      }));
+    } finally {
+      setEditSubmitting(false);
+    }
+  }
+
   const orderedJobs = useMemo(
     () =>
       Object.values(jobs).sort(
@@ -325,6 +413,14 @@ export default function App() {
         (a, b) => new Date(a.submitted_at) - new Date(b.submitted_at),
       ),
     [videoJobs],
+  );
+
+  const orderedEditJobs = useMemo(
+    () =>
+      Object.values(editJobs).sort(
+        (a, b) => new Date(a.submitted_at) - new Date(b.submitted_at),
+      ),
+    [editJobs],
   );
 
   // 相册抽屉"发送到工作台":切到工作台 tab,把图片的生成参数预填进表单
@@ -351,6 +447,43 @@ export default function App() {
     setVideoPrefill(inputImage);
     setTab("video");
   }, []);
+
+  // 相册"发送到图片编辑":切到图像编辑 tab,把导入好的输入图片预填进表单
+  const handleSendToEdit = useCallback((inputImage) => {
+    setEditPrefill(inputImage);
+    setTab("edit");
+  }, []);
+
+  // 相册"发送到图片反推":切到图片反推 tab,把导入好的输入图片预填进表单
+  const handleSendToCaption = useCallback((inputImage) => {
+    setCaptionPrefill(inputImage);
+    setTab("caption");
+  }, []);
+
+  // 工作台/编辑结果弹窗的"发送到 …":输出图在服务端按 job 导入为受控输入图,再切 tab 预填
+  const handleJobSendToVideo = useCallback(
+    async (job) => {
+      const saved = await api.importVideoInputFromJob(job.id);
+      handleSendToVideo({ id: saved.id, url: saved.url, name: job.output_name });
+    },
+    [handleSendToVideo],
+  );
+
+  const handleJobSendToEdit = useCallback(
+    async (job) => {
+      const saved = await api.importEditInputFromJob(job.id);
+      handleSendToEdit({ id: saved.id, url: saved.url, name: job.output_name });
+    },
+    [handleSendToEdit],
+  );
+
+  const handleJobSendToCaption = useCallback(
+    async (job) => {
+      const saved = await api.importEditInputFromJob(job.id);
+      handleSendToCaption({ id: saved.id, url: saved.url, name: job.output_name });
+    },
+    [handleSendToCaption],
+  );
 
   // 相册视频抽屉"发送到工作台":切到视频生成 tab,把视频的生成参数预填进表单
   const handleSendVideoMeta = useCallback((meta) => {
@@ -388,12 +521,28 @@ export default function App() {
             图片生成
           </button>
           <button
+            id="tab-edit"
+            type="button"
+            className={tab === "edit" ? "active" : ""}
+            onClick={() => setTab("edit")}
+          >
+            图像编辑
+          </button>
+          <button
             id="tab-video"
             type="button"
             className={tab === "video" ? "active" : ""}
             onClick={() => setTab("video")}
           >
             视频生成
+          </button>
+          <button
+            id="tab-caption"
+            type="button"
+            className={tab === "caption" ? "active" : ""}
+            onClick={() => setTab("caption")}
+          >
+            图片反推
           </button>
           <button
             id="tab-album"
@@ -456,6 +605,8 @@ export default function App() {
         <AlbumPage
           onSendToWorkbench={handleSendToWorkbench}
           onSendToVideo={handleSendToVideo}
+          onSendToEdit={handleSendToEdit}
+          onSendToCaption={handleSendToCaption}
           onSendVideoMeta={handleSendVideoMeta}
         />
       </div>
@@ -537,9 +688,119 @@ export default function App() {
             preview={runningJob ? previews[runningJob.id] : null}
             queuedCount={queueState.queued}
           />
-          <ResultGallery jobs={orderedJobs} />
+          <ResultGallery
+            jobs={orderedJobs}
+            onSendToVideo={handleJobSendToVideo}
+            onSendToEdit={handleJobSendToEdit}
+            onSendToCaption={handleJobSendToCaption}
+          />
         </section>
         </div>
+      </main>
+      {/* Krea2 图像编辑页:复用 krea2 模型/VAE,内含图像编辑与参考图重排两种类型 */}
+      <main id="edit-main" className={tab === "edit" ? undefined : "tab-hidden"}>
+        <div id="edit-mode-bar">
+          <div id="edit-mode-switch" className="mode-switch" role="tablist" aria-label="图像编辑">
+            {["edit-krea2", "krea2-rebalance"].map((key) => (
+              <button
+                key={key}
+                id={`edit-mode-${key}`}
+                type="button"
+                role="tab"
+                aria-selected={editMode === key}
+                className={editMode === key ? "active" : ""}
+                onClick={() => setEditMode(key)}
+              >
+                {MODE_LABELS[key]}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div id="edit-body">
+          <aside id="edit-controls-panel" className="controls">
+            {editMode === "krea2-rebalance" ? (
+              editInfo?.rebalance?.enabled === false ? (
+                <div id="rebalance-disabled" className="panel form-error">
+                  服务端未配置 krea2 资源（resources.krea2）
+                </div>
+              ) : (
+                <RebalanceParameterForm
+                  resources={resources?.krea2}
+                  defaults={editInfo?.rebalance?.defaults ?? null}
+                  sizePresets={settings?.size_presets ?? []}
+                  samplingDefaults={settings?.sampling_defaults}
+                  promptPresets={settings?.prompt_presets ?? []}
+                  onSubmit={handleRebalanceSubmit}
+                />
+              )
+            ) : editInfo?.enabled === false ? (
+              <div id="edit-disabled" className="panel form-error">
+                服务端未配置 krea2 图像编辑（resources.krea2.edit_lora）
+              </div>
+            ) : (
+              <EditParameterForm
+                resources={resources?.krea2}
+                defaults={editInfo?.defaults ?? null}
+                sizePresets={settings?.size_presets ?? []}
+                samplingDefaults={settings?.sampling_defaults}
+                promptPresets={settings?.prompt_presets ?? []}
+                inputImagePrefill={editPrefill}
+                onSubmit={handleEditSubmit}
+              />
+            )}
+          </aside>
+          <section id="edit-results-panel" className="results">
+            <div id="edit-action-bar">
+              <button
+                id="edit-submit-btn"
+                type="submit"
+                form={editMode === "krea2-rebalance" ? "rebalance-parameter-form" : "edit-parameter-form"}
+                className="primary"
+                disabled={
+                  editSubmitting ||
+                  (editMode === "krea2-rebalance"
+                    ? editInfo?.rebalance?.enabled === false
+                    : editInfo?.enabled === false)
+                }
+              >
+                {editSubmitting ? "提交中……" : "生成"}
+              </button>
+              <button
+                id="edit-skip-btn"
+                type="button"
+                className="warn"
+                onClick={() => api.skip()}
+                disabled={!busy}
+              >
+                跳过
+              </button>
+              <button
+                id="edit-stop-btn"
+                type="button"
+                className="danger"
+                onClick={() => api.stop()}
+                disabled={!busy}
+              >
+                停止
+              </button>
+            </div>
+            <ProgressPanel
+              job={editRunningJob}
+              preview={editRunningJob ? previews[editRunningJob.id] : null}
+              queuedCount={queueState.queued}
+            />
+            <ResultGallery
+              jobs={orderedEditJobs}
+              onSendToVideo={handleJobSendToVideo}
+              onSendToEdit={handleJobSendToEdit}
+              onSendToCaption={handleJobSendToCaption}
+            />
+          </section>
+        </div>
+      </main>
+      {/* 图片反推页:同步请求,无任务队列/进度事件;同样始终挂载,切 tab 仅隐藏 */}
+      <main id="caption-main" className={tab === "caption" ? undefined : "tab-hidden"}>
+        <CaptionPanel inputImagePrefill={captionPrefill} />
       </main>
       {/* 视频生成页同样始终挂载,切 tab 仅隐藏,保住表单与结果现场 */}
       <main id="video-main" className={tab === "video" ? undefined : "tab-hidden"}>
@@ -573,6 +834,7 @@ export default function App() {
               sizePresets={videoModel?.startsWith("minimax")
                 ? (settings?.minimax_video_size_presets ?? [])
                 : (settings?.wan_video_size_presets ?? [])}
+              ref2vaLimits={settings?.ref2va_limits}
               onSubmit={handleVideoSubmit}
             />
           )}

@@ -35,7 +35,8 @@ vite preview 的 `preview.proxy` 当前版本不会转发 `/api`，不要用它�
 - 无单任务取消：`POST /api/v1/control/stop` 是全局停止（清空整个队列并终止当前任务）。
 - 资源用 index 引用；目录内容变化后 index 会重新排序，不是永久 ID。
 - WebSocket 事件不持久化、不重放；断线后通过 `GET /api/v1/jobs/{id}` 恢复状态。
-- 客户端不能提交任何服务器路径；模型/VAE/text encoder 由服务端配置固定。
+- 客户端不能提交任何服务器路径；模型/VAE/text encoder 按 index 引用服务端配置的
+  资源列表（图片模式的 text encoder 为目录/文件列表，可挑选），clip type 由配置固定。
 
 ## API 概览
 
@@ -77,13 +78,28 @@ vite preview 的 `preview.proxy` 当前版本不会转发 `/api`，不要用它�
 | `POST` | `/api/v1/album/batch-delete` | 批量删除图片/视频（单个失败不影响其余） |
 | `GET` | `/api/v1/album/image/{path}/metadata` | 按相对路径读取 PNG 元数据（mp4 返回 404） |
 | `GET` | `/api/v1/video/models` | 已配置的视频模型及 T2V/I2V 能力 |
-| `GET` | `/api/v1/video/models/{video_model}/resources` | 视频模型的 diffusion/VAE 资源 |
+| `GET` | `/api/v1/video/models/{video_model}/resources` | 视频模型的 diffusion/VAE/text encoder 资源 |
 | `POST` | `/api/v1/video/input-images` | 受控上传 I2V 输入图片（201） |
 | `POST` | `/api/v1/video/input-images/from-album` | 从相册导入 I2V 输入图片（201） |
+| `POST` | `/api/v1/video/input-images/from-job` | 从生成/编辑任务输出图导入 I2V 输入图片（201） |
 | `GET` | `/api/v1/video/input-images/{image_id}` | 按 id 读取上传的输入图片 |
-| `POST` | `/api/v1/video/jobs` | 提交视频生成任务（202,T2V/I2V） |
+| `POST` | `/api/v1/video/input-videos` | 受控上传 Ref2VA 参考视频（201） |
+| `GET` | `/api/v1/video/input-videos/{video_id}` | 按 id 读取上传的参考视频 |
+| `POST` | `/api/v1/video/input-audios` | 受控上传 Ref2VA 参考音频（201） |
+| `GET` | `/api/v1/video/input-audios/{audio_id}` | 按 id 读取上传的参考音频 |
+| `POST` | `/api/v1/video/jobs` | 提交视频生成任务（202,T2V/I2V/R2V） |
 | `GET` | `/api/v1/video/jobs/{job_id}` | 读取单个视频任务状态 |
 | `GET` | `/api/v1/videos/{job_id}` | 下载视频任务的 mp4 |
+| `GET` | `/api/v1/edit/info` | Krea2 图像编辑可用性与默认参数 |
+| `POST` | `/api/v1/edit/input-images` | 受控上传编辑输入图片（201） |
+| `POST` | `/api/v1/edit/input-images/from-album` | 从相册导入编辑输入图片（201） |
+| `POST` | `/api/v1/edit/input-images/from-job` | 从生成/编辑任务输出图导入编辑输入图片（201；反推共用本通道） |
+| `GET` | `/api/v1/edit/input-images/{image_id}` | 按 id 读取上传的编辑输入图片 |
+| `POST` | `/api/v1/edit/jobs` | 提交 Krea2 图像编辑任务（202） |
+| `POST` | `/api/v1/caption` | 图片反推（同步；输入图复用 `/edit/input-images` 的受控 id） |
+| `POST` | `/api/v1/caption/remote` | API 反推（同步；走 `caption_api` 设置的外部视觉模型接口，不经 GPU Worker） |
+| `POST` | `/api/v1/caption/remote/test` | 反推 API 连通性测试 |
+| `GET` | `/api/v1/caption/remote/requests` | API 反推请求记录（分页，最多保留 200 条） |
 | `GET` | `/api/v1/video-models/{video_model}` | 视频模型卡片列表（量化/备注/封面） |
 | `GET`/`PUT` | `/api/v1/video-models/{video_model}/{name}/cover` | 视频模型封面读取/上传 |
 | `POST` | `/api/v1/video-models/{video_model}/{name}/quant` | 扫描视频模型量化方式 |

@@ -10,7 +10,7 @@ from fastapi import FastAPI
 
 from diffusion_workbench_core import WorkbenchCore
 
-from . import album, events, files, jobs, llm, models, settings, video
+from . import album, caption, edit, events, files, jobs, llm, models, settings, video
 from .album import AlbumDirStore, AlbumManager
 from .console_status import ConsoleStatusBar
 from .events import EventHub
@@ -65,6 +65,9 @@ def create_app(
         app.state.llm_record_store = LLMRecordStore(
             core.config.database.parent / "llm_requests.json"
         )
+        app.state.caption_record_store = LLMRecordStore(
+            core.config.database.parent / "caption_requests.json"
+        )
         app.state.prompt_session_store = PromptSessionStore()
         try:
             yield
@@ -82,6 +85,8 @@ def create_app(
     app.include_router(llm.router)
     app.include_router(events.router)
     app.include_router(video.router)
+    app.include_router(edit.router)
+    app.include_router(caption.router)
 
     # 静态托管前端构建产物(单端口同源,无需反向代理)。API 路由先注册,
     # 优先于根挂载;dist 不存在时(如未构建)跳过。

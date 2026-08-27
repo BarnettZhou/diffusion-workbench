@@ -13,6 +13,7 @@ from diffusion_workbench_core.domain import (
     LATENT_UPSCALE_INTERPOLATIONS,
     UpscaleMethod,
     UpscaleSettings,
+    MINIMAX_H3_MODELS,
     VideoGenerationSettings,
     VideoModel,
     validate_cfg,
@@ -245,7 +246,7 @@ class CommandSession:
                 raise ValueError("帧率必须在 1 到 120 之间")
             if (
                 action == "fps"
-                and self.video_model == VideoModel.MINIMAX_H3
+                and self.video_model in MINIMAX_H3_MODELS
                 and value != 24
             ):
                 raise ValueError("MiniMax H3 帧率固定为 24")
@@ -255,7 +256,7 @@ class CommandSession:
                 raise ValueError("seed 必须为 -1 或非负整数")
             if action == "cfg":
                 validate_cfg(value)
-                if self.video_model == VideoModel.MINIMAX_H3 and value != 1.0:
+                if self.video_model in MINIMAX_H3_MODELS and value != 1.0:
                     raise ValueError("MiniMax H3 CFG 固定为 1")
             if action == "shift" and not 0.0 <= value <= 100.0:
                 raise ValueError("shift 必须在 0 到 100 之间")
@@ -331,12 +332,24 @@ class CommandSession:
         width, height = (int(value) for value in args[0].split("*", 1))
         if width <= 0 or height <= 0 or width % 16 or height % 16:
             raise ValueError("视频宽高必须为正数且是 16 的倍数")
-        if self.video_model == VideoModel.MINIMAX_H3 and (width % 32 or height % 32):
+        if self.video_model in MINIMAX_H3_MODELS and (width % 32 or height % 32):
             raise ValueError("MiniMax H3 视频宽高必须是 32 的倍数")
         self.video_width, self.video_height = width, height
 
     def _apply_video_model_defaults(self, model: VideoModel) -> None:
-        if model == VideoModel.MINIMAX_H3:
+        if model == VideoModel.MINIMAX_H3_TURBO:
+            self.video_width = 608
+            self.video_height = 352
+            self.video_duration = 5
+            self.video_fps = 24
+            self.video_steps = 8
+            self.video_cfg = 1.0
+            # turbo 配方不走 sigma shift
+            self.video_shift = 0.0
+            self.video_sampler = "euler"
+            self.video_scheduler = "beta"
+            return
+        if model in MINIMAX_H3_MODELS:
             self.video_width = 608
             self.video_height = 352
             self.video_duration = 5
@@ -352,7 +365,7 @@ class CommandSession:
         )
 
     def _video_length(self) -> int:
-        if self.video_model == VideoModel.MINIMAX_H3:
+        if self.video_model in MINIMAX_H3_MODELS:
             length = max(5, round(self.video_duration * 24))
             while length % 17 != 5:
                 length += 1
@@ -369,16 +382,20 @@ class CommandSession:
         if vae is None:
             raise ValueError("请先使用 /video vae set <index> 选择 VAE")
         resources = self.core.config.video_resources[self.video_model]
+        # TUI 暂不逐个挑选编码器:默认取 text_encoder 目录/列表的第一项(与图片侧一致)
+        text_encoders = self.core.list_video_text_encoders(self.video_model)
+        if not text_encoders:
+            raise ValueError(f"{self.video_model.value} 配置的 text_encoder 目录为空")
         settings = VideoGenerationSettings(
             video_model=self.video_model,
             model=model,
             vae=vae,
-            text_encoder=resources.text_encoder,
+            text_encoder=text_encoders[0].path,
             prompt=self.video_prompt,
             audio_vae=resources.audio_vae,
             negative_prompt=self.video_negative_prompt,
             input_image=self.video_image,
-            reference_image=self.video_reference,
+            reference_images=(self.video_reference,) if self.video_reference else (),
             width=self.video_width,
             height=self.video_height,
             duration_seconds=self.video_duration,
@@ -535,11 +552,19 @@ class CommandSession:
             and self.selected_vae is None
         ):
             raise ValueError("请先使用 /vae set <index> 选择 VAE")
+        if resources.model_loader == ModelLoader.COMPONENTS:
+            # TUI 暂不逐个挑选编码器:默认取 text_encoder 目录/列表的第一项
+            text_encoders = self.core.list_resources(self.mode, ResourceKind.TEXT_ENCODER)
+            if not text_encoders:
+                raise ValueError(f"{self.mode.value} 配置的 text_encoder 目录为空")
+            text_encoder = text_encoders[0].path
+        else:
+            text_encoder = None
         settings = GenerationSettings(
             mode=self.mode,
             model=self.selected_model,
             vae=self.selected_vae,
-            text_encoder=resources.text_encoder,
+            text_encoder=text_encoder,
             clip_type=resources.clip_type,
             prompt=self.prompt,
             negative_prompt=self.negative_prompt,
@@ -740,11 +765,15 @@ class CommandSession:
             if resources.model_loader == ModelLoader.CHECKPOINT
             else self.selected_vae.display_name if self.selected_vae else "未选择"
         )
-        text_encoder = (
-            resources.text_encoder.name
-            if resources.text_encoder is not None
-            else "checkpoint 内嵌"
-        )
+        if resources.model_loader == ModelLoader.CHECKPOINT:
+            text_encoder = "checkpoint 内嵌"
+        else:
+            encoders = self.core.list_resources(self.mode, ResourceKind.TEXT_ENCODER)
+            text_encoder = (
+                f"{encoders[0].path.name}（共 {len(encoders)} 项）"
+                if encoders
+                else "目录为空"
+            )
         lines = (
             f"mode: {self.mode.value}",
             f"model: {model}",

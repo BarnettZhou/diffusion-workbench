@@ -66,6 +66,7 @@ export default function ParameterForm({ mode, onModeChange, resources, sizePrese
 
   const models = resources?.[mode]?.models ?? [];
   const vaes = resources?.[mode]?.vaes ?? [];
+  const textEncoders = resources?.[mode]?.textEncoders ?? [];
   // 模型封面选择器排序:先按别名,再按模型文件名;无别名的模型按文件名参与排序
   const pickerModels = useMemo(() => {
     const compare = (a, b) => {
@@ -86,6 +87,7 @@ export default function ParameterForm({ mode, onModeChange, resources, sizePrese
   const availableModes = Object.keys(resources ?? {});
   const modelIndex = selections[mode]?.modelIndex ?? null;
   const vaeIndex = selections[mode]?.vaeIndex ?? null;
+  const textEncoderIndex = selections[mode]?.textEncoderIndex ?? null;
   // 相册"发送到工作台"带过来的模型/VAE 文件名,等资源列表就位后匹配成 index
   const pendingNamesRef = useRef(null);
 
@@ -170,6 +172,9 @@ export default function ParameterForm({ mode, onModeChange, resources, sizePrese
   function setVaeIndex(index) {
     setSelections((prev) => ({ ...prev, [mode]: { ...prev[mode], vaeIndex: index } }));
   }
+  function setTextEncoderIndex(index) {
+    setSelections((prev) => ({ ...prev, [mode]: { ...prev[mode], textEncoderIndex: index } }));
+  }
 
   // 资源列表加载或模式切换后,该 mode 无有效选择时默认选中第一项;
   // 有相册预填的待匹配文件名时优先按文件名匹配
@@ -186,6 +191,7 @@ export default function ParameterForm({ mode, onModeChange, resources, sizePrese
             [mode]: {
               modelIndex: model?.index ?? (models[0]?.index ?? null),
               vaeIndex: vae?.index ?? (vaes[0]?.index ?? null),
+              textEncoderIndex: textEncoders[0]?.index ?? null,
             },
           };
         }
@@ -195,12 +201,14 @@ export default function ParameterForm({ mode, onModeChange, resources, sizePrese
       const current = prev[mode] ?? {};
       const modelValid = models.some((item) => item.index === current.modelIndex);
       const vaeValid = vaes.some((item) => item.index === current.vaeIndex);
-      if (modelValid && (usesCheckpointVae || vaeValid)) return prev;
+      const teValid = textEncoders.some((item) => item.index === current.textEncoderIndex);
+      if (modelValid && (usesCheckpointVae || (vaeValid && teValid))) return prev;
       return {
         ...prev,
         [mode]: {
           modelIndex: modelValid ? current.modelIndex : (models[0]?.index ?? null),
           vaeIndex: vaeValid ? current.vaeIndex : (vaes[0]?.index ?? null),
+          textEncoderIndex: teValid ? current.textEncoderIndex : (textEncoders[0]?.index ?? null),
         },
       };
     });
@@ -239,9 +247,11 @@ export default function ParameterForm({ mode, onModeChange, resources, sizePrese
 
   function validate() {
     const { multiple, min, max } = LIMITS.size;
-    if (!models.length || (!usesCheckpointVae && !vaes.length)) return "资源列表尚未加载";
-    if (modelIndex === null || (!usesCheckpointVae && vaeIndex === null)) {
-      return usesCheckpointVae ? "请选择模型" : "请选择模型和 VAE";
+    if (!models.length || (!usesCheckpointVae && (!vaes.length || !textEncoders.length))) {
+      return "资源列表尚未加载";
+    }
+    if (modelIndex === null || (!usesCheckpointVae && (vaeIndex === null || textEncoderIndex === null))) {
+      return usesCheckpointVae ? "请选择模型" : "请选择模型、VAE 和文本编码器";
     }
     if (!prompt.trim()) return "prompt 不能为空";
     for (const [label, raw] of [["宽度", width], ["高度", height]]) {
@@ -343,6 +353,7 @@ export default function ParameterForm({ mode, onModeChange, resources, sizePrese
         mode,
         model_index: modelIndex,
         vae_index: usesCheckpointVae ? undefined : vaeIndex,
+        text_encoder_index: usesCheckpointVae ? undefined : textEncoderIndex,
         prompt: prompt.trim(),
         negative_prompt: negativePrompt,
         width: Number(width),
@@ -550,6 +561,22 @@ export default function ParameterForm({ mode, onModeChange, resources, sizePrese
           onChange={(e) => setVaeIndex(Number(e.target.value))}
         >
           {vaes.map((item) => (
+            <option key={item.index} value={item.index}>
+              {item.display_name}
+            </option>
+          ))}
+        </select>
+      </div>}
+
+      {!usesCheckpointVae && <div className="field" id="field-text-encoder">
+        <label htmlFor="text-encoder-select">文本编码器 Text Encoder</label>
+        <select
+          id="text-encoder-select"
+          value={textEncoderIndex ?? ""}
+          disabled={!textEncoders.length}
+          onChange={(e) => setTextEncoderIndex(Number(e.target.value))}
+        >
+          {textEncoders.map((item) => (
             <option key={item.index} value={item.index}>
               {item.display_name}
             </option>

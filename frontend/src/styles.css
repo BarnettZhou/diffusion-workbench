@@ -612,6 +612,18 @@ button.warn:disabled { opacity: 0.4; cursor: not-allowed; }
   border-bottom-color: var(--accent);
 }
 
+/* 窄屏下 tabs 允许横向滚动,按钮保持自然宽度不被挤压 */
+@media (max-width: 900px) {
+  #app-tabs {
+    flex: 1;
+    min-width: 0;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  #app-tabs::-webkit-scrollbar { display: none; }
+  #app-tabs button { flex: none; white-space: nowrap; }
+}
+
 /* ---------- 批次画廊:主图 + 缩略图 ---------- */
 .batch-main {
   background: var(--panel-2);
@@ -1059,6 +1071,62 @@ button.warn:disabled { opacity: 0.4; cursor: not-allowed; }
   overflow-y: auto;
   margin: 0;
 }
+
+/* ---------- 设置页:反推 API 请求记录(镜像大模型记录样式) ---------- */
+#settings-caption-tab { min-width: 0; }
+#caption-subnav {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 14px;
+}
+#caption-subnav button {
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-dim);
+  font-size: 13px;
+  padding: 6px 12px;
+  cursor: pointer;
+  margin-bottom: -1px;
+}
+#caption-subnav button:hover { color: var(--text); }
+#caption-subnav button.active {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+}
+#settings-caption-records h2 {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+#caption-records-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  table-layout: fixed;
+}
+#caption-records-table th,
+#caption-records-table td {
+  border-bottom: 1px solid var(--border);
+  padding: 6px 8px;
+  text-align: left;
+  vertical-align: top;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#caption-records-table th { color: var(--text-dim); font-weight: 600; }
+#caption-records-table .llm-record-time { white-space: normal; width: 130px; }
+#caption-records-table .llm-record-num { text-align: right; width: 70px; }
+#caption-records-pager {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 12px;
+}
+#caption-records-page-info { color: var(--text-dim); font-size: 12px; }
+#caption-record-detail-modal { max-width: 720px; width: 90vw; }
 
 /* ---------- 模型设置:画廊 ---------- */
 #models-mode-tabs { max-width: 360px; margin-bottom: 14px; }
@@ -1575,6 +1643,11 @@ button.warn:disabled { opacity: 0.4; cursor: not-allowed; }
   gap: 10px;
   margin-top: 12px;
 }
+.settings-actions-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
 
 /* ---------- 设置页:提示词预设卡片 ---------- */
 .prompt-presets-head {
@@ -1781,6 +1854,7 @@ button.warn:disabled { opacity: 0.4; cursor: not-allowed; }
   background: var(--panel-2);
   cursor: pointer;
   overflow: hidden;
+  position: relative;
 }
 .video-input-image img {
   display: block;
@@ -1793,6 +1867,72 @@ button.warn:disabled { opacity: 0.4; cursor: not-allowed; }
   font-size: 12px;
   text-align: center;
   padding: 8px;
+}
+/* 上传(含裁剪后重新上传)期间的遮罩,覆盖已有预览图 */
+.video-input-image-loading {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  background: rgba(31, 41, 55, 0.75);
+  color: var(--text-dim);
+  font-size: 12px;
+}
+.video-input-image-loading::before {
+  content: "";
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: video-input-image-spin 0.8s linear infinite;
+}
+
+/* ---------- Krea2 参考图重排:参考图网格 ---------- */
+.reference-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+}
+.reference-item {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-2);
+  overflow: hidden;
+}
+.reference-item img {
+  display: block;
+  width: 100%;
+  max-height: 120px;
+  object-fit: contain;
+}
+.reference-item-bar {
+  display: flex;
+  gap: 6px;
+  padding: 6px;
+}
+.reference-item-bar select {
+  flex: 1;
+  min-width: 0;
+}
+.reference-add-card {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 96px;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  background: var(--panel-2);
+  color: var(--text-dim);
+  font-size: 20px;
+  cursor: pointer;
+}
+.reference-add-card:hover:not(:disabled) { border-color: var(--accent); color: var(--text); }
+.reference-add-card:disabled { opacity: 0.4; cursor: not-allowed; }
+@keyframes video-input-image-spin {
+  to { transform: rotate(360deg); }
 }
 
 /* ---------- 设置页:视频模型(镜像 #models-toolbar / #models-grid) ---------- */
@@ -2000,4 +2140,154 @@ button.warn:disabled { opacity: 0.4; cursor: not-allowed; }
   background: var(--accent);
   border: 2px solid #fff;
   cursor: nwse-resize;
+}
+
+/* ---------- 视频表单:Ref2VA 多参考输入 ---------- */
+.ref2va-section {
+  margin-top: 8px;
+}
+.ref2va-section-title {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.ref2va-item-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 6px;
+}
+.ref2va-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-2);
+}
+.ref2va-item img {
+  display: block;
+  max-height: 48px;
+  max-width: 96px;
+  object-fit: contain;
+  border-radius: 4px;
+}
+.ref2va-item-name {
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.video-card-ref-images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+/* ---------- 设置页:Ref2VA 输入上限 ---------- */
+.ref2va-limits-editor {
+  display: flex;
+  gap: 16px;
+}
+.ref2va-limit-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+.ref2va-limit-field input {
+  width: 72px;
+}
+
+/* ---------- Krea2 图像编辑页:布局镜像视频生成页(#video-main) ---------- */
+#edit-main {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 16px 20px;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* 编辑模式分类切换条(目前仅一项:Krea2 编辑) */
+#edit-mode-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+#edit-body {
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+}
+
+#edit-action-bar { display: flex; gap: 10px; }
+
+/* 窄屏下编辑页同样改为纵向堆叠(与 #video-body 一致) */
+@media (max-width: 900px) {
+  #edit-body {
+    flex-direction: column;
+  }
+}
+@media (max-width: 520px) {
+  #edit-main { padding: 12px 14px; gap: 12px; }
+}
+
+/* ---------- 图片反推页 ---------- */
+#caption-main { padding: 20px 28px; }
+#caption-body {
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+}
+#caption-controls { flex: 0 0 480px; }
+#caption-results { flex: 1; min-width: 0; }
+.caption-result-list {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.caption-result-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.caption-result-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.caption-result-thumb {
+  width: 56px;
+  height: 56px;
+  object-fit: cover;
+  border-radius: 6px;
+  flex: none;
+}
+.caption-result-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+.caption-result-name {
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.caption-result-timing { font-size: 12px; color: var(--text-dim); }
+/* 窄屏下反推页改为纵向堆叠(与编辑页一致) */
+@media (max-width: 900px) {
+  #caption-body { flex-direction: column; }
+  #caption-controls { flex: none; width: 100%; }
+  #caption-main { padding: 12px 14px; }
 }

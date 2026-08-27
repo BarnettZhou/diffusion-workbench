@@ -100,10 +100,10 @@ class PersistentRuntimeTests(unittest.TestCase):
                 database=root / "jobs.sqlite3",
                 worker_timeout_seconds=10,
                 video_resources={
-                    VideoModel.MINIMAX_H3: VideoResources(
+                    VideoModel.MINIMAX_H3_REF2VA: VideoResources(
                         (root,),
                         (root,),
-                        root / "qwen.safetensors",
+                        (root / "qwen.safetensors",),
                         "minimax",
                         root / "audio-vae.safetensors",
                     )
@@ -111,7 +111,7 @@ class PersistentRuntimeTests(unittest.TestCase):
             )
             runtime = PersistentComfyRuntime(config, worker_script=root / "unused.py")
             settings = VideoGenerationSettings(
-                video_model=VideoModel.MINIMAX_H3,
+                video_model=VideoModel.MINIMAX_H3_REF2VA,
                 model=ResourceItem(1, root / "h3.safetensors"),
                 vae=ResourceItem(1, root / "video-vae.safetensors"),
                 text_encoder=root / "wrong.safetensors",
@@ -132,7 +132,7 @@ class PersistentRuntimeTests(unittest.TestCase):
                 status="queued",
                 submitted_at=datetime.now(timezone.utc),
                 output_path=root / "h3.mp4",
-                video_model=VideoModel.MINIMAX_H3,
+                video_model=VideoModel.MINIMAX_H3_REF2VA,
                 prompt=settings.prompt,
                 model_path=settings.model.path,
                 vae_path=settings.vae.path,
@@ -149,13 +149,13 @@ class PersistentRuntimeTests(unittest.TestCase):
                 seed=settings.seed,
                 cfg=settings.cfg,
                 shift=settings.shift,
-                reference_image_path=root / "reference.png",
+                reference_image_paths=(root / "reference.png",),
             )
             command = runtime._video_command(job)
             runtime.close()
             self.assertEqual(command["clip_type"], "minimax")
             self.assertEqual(command["audio_vae_path"], str((root / "audio-vae.safetensors").resolve()))
-            self.assertEqual(command["reference_image_path"], str((root / "reference.png").resolve()))
+            self.assertEqual(command["reference_image_paths"], [str((root / "reference.png").resolve())])
 
     def test_release_resources_keeps_idle_worker_alive(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -167,7 +167,7 @@ class PersistentRuntimeTests(unittest.TestCase):
                 comfyui=ComfyConfig(root, Path(sys.executable)),
                 resources={
                     Mode.ZIT: ModeResources(
-                        (), (), root / "te.safetensors", "stable_diffusion"
+                        (), (), (root / "te.safetensors",), "stable_diffusion"
                     )
                 },
                 output_dir=root / "output",
@@ -201,7 +201,7 @@ class PersistentRuntimeTests(unittest.TestCase):
                 comfyui=ComfyConfig(root, Path(sys.executable)),
                 resources={
                     Mode.ZIT: ModeResources(
-                        (), (), root / "te.safetensors", "stable_diffusion"
+                        (), (), (root / "te.safetensors",), "stable_diffusion"
                     )
                 },
                 output_dir=root / "output",
@@ -256,7 +256,7 @@ class PersistentRuntimeTests(unittest.TestCase):
                 comfyui=ComfyConfig(root, Path(sys.executable)),
                 resources={
                     Mode.ZIT: ModeResources(
-                        (), (), root / "te.safetensors", "stable_diffusion"
+                        (), (), (root / "te.safetensors",), "stable_diffusion"
                     )
                 },
                 output_dir=root / "output",
@@ -293,7 +293,7 @@ class PersistentRuntimeTests(unittest.TestCase):
                 comfyui=ComfyConfig(root, Path(sys.executable)),
                 resources={
                     Mode.ZIT: ModeResources(
-                        (), (), root / "te.safetensors", "stable_diffusion"
+                        (), (), (root / "te.safetensors",), "stable_diffusion"
                     )
                 },
                 output_dir=root / "output",
@@ -334,7 +334,7 @@ class PersistentRuntimeTests(unittest.TestCase):
                 comfyui=ComfyConfig(root, Path(sys.executable)),
                 resources={
                     Mode.ZIT: ModeResources(
-                        (), (), root / "te.safetensors", "stable_diffusion"
+                        (), (), (root / "te.safetensors",), "stable_diffusion"
                     )
                 },
                 output_dir=root / "output",

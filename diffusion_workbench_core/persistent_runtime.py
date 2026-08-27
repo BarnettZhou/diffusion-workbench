@@ -10,9 +10,10 @@ from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
 import psutil
+from uuid import uuid4
 
 from .config import WorkbenchConfig
-from .domain import JobRecord, VideoJobRecord, resolve_video_diffusion_pair
+from .domain import JobRecord, Mode, VideoJobRecord, resolve_video_diffusion_pair
 from .logging_config import silent_logger, worker_output_level
 from .runtime import GenerationCancelled
 
@@ -173,7 +174,84 @@ class PersistentComfyRuntime:
             elif event_type == "process_eof":
                 self._raise_worker_exit(process)
 
+    def describe_image(
+        self,
+        *,
+        text_encoder_path: Path,
+        image_path: Path,
+        prompt: str,
+        max_length: int,
+        seed: int,
+    ) -> dict:
+        """同步图片反推：与 generate 共用 _generation_lock 串行排队，结果不落库、不发事件。
+
+        stop/skip 不作用于反推（不登记 _active_job_id）；与生成/释放的互斥
+        完全由 _generation_lock 保证。
+        """
+        with self._generation_lock:
+            if self._closed:
+                raise RuntimeError("GPU Worker 已关闭")
+            process = self._ensure_process()
+            job_id = uuid4().hex
+            command = {
+                "type": "describe_image",
+                "job_id": job_id,
+                "text_encoder_path": str(Path(text_encoder_path).resolve()),
+                "image_path": str(Path(image_path).resolve()),
+                "prompt": prompt,
+                "max_length": int(max_length),
+                "seed": int(seed),
+            }
+            self._write_command(process, command)
+            deadline = time.monotonic() + self.config.worker_timeout_seconds
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    self._logger.warning(
+                        "worker describe_image timed out; terminating process"
+                    )
+                    self._terminate_process()
+                    raise TimeoutError(
+                        f"反推超过 Worker 超时 {self.config.worker_timeout_seconds:.0f}s"
+                    )
+                try:
+                    event = self._events.get(timeout=min(remaining, 1.0))
+                except queue.Empty:
+                    if process.poll() is not None:
+                        self._raise_worker_exit(process)
+                    continue
+                event_type = event.get("type")
+                if event_type == "result" and event.get("job_id") == job_id:
+                    loaded = event.get("loaded_resources")
+                    if loaded:
+                        self._loaded_resources = loaded
+                    return event
+                if event_type == "error" and event.get("job_id") == job_id:
+                    error = event.get("error", "GPU Worker 反推失败")
+                    traceback_text = event.get("traceback")
+                    raise RuntimeError(
+                        error + (f"\n{traceback_text}" if traceback_text else "")
+                    )
+                if event_type == "process_eof":
+                    self._raise_worker_exit(process)
+
     def _image_command(self, job: JobRecord) -> dict:
+        # 编辑/参考图重排模式复用 krea2 的资源：clip_type 等仍按 krea2 配置读取，但 mode 字段
+        # 保持原值，让 Worker 走各自的节点分支。
+        clip_lookup_mode = (
+            Mode.KREA2
+            if job.mode in (Mode.KREA2_EDIT, Mode.KREA2_REBALANCE)
+            else job.mode
+        )
+        is_edit = job.mode == Mode.KREA2_EDIT
+        krea2_resources = (
+            self.config.resources.get(Mode.KREA2) if is_edit else None
+        )
+        edit_lora_path = (
+            str(krea2_resources.edit_lora.resolve())
+            if is_edit and krea2_resources and krea2_resources.edit_lora
+            else None
+        )
         return {
             "type": "generate",
             "job_id": job.id,
@@ -185,7 +263,7 @@ class PersistentComfyRuntime:
             "text_encoder_path": (
                 str(job.text_encoder_path.resolve()) if job.text_encoder_path else None
             ),
-            "clip_type": self.config.resources[job.mode].clip_type,
+            "clip_type": self.config.resources[clip_lookup_mode].clip_type,
             "prompt": job.prompt,
             "negative_prompt": job.negative_prompt,
             "width": job.width,
@@ -204,12 +282,31 @@ class PersistentComfyRuntime:
             "upscale": job.upscale.to_dict(),
             "preview_enabled": self._preview_enabled,
             "workbench_version": _workbench_version(),
+            # Krea2 编辑模式专用字段；其他任务一律 None。
+            "input_image_path": (
+                str(job.input_image_path.resolve())
+                if job.input_image_path is not None
+                else None
+            ),
+            "grounding_px": (
+                int(job.grounding_px) if job.grounding_px is not None else None
+            ),
+            "ref_boost": (
+                float(job.ref_boost) if job.ref_boost is not None else None
+            ),
+            "edit_lora_path": edit_lora_path,
+            # Krea2 参考图重排专用字段；其他任务一律空列表。
+            "reference_image_paths": [
+                str(path.resolve()) for path in job.reference_image_paths
+            ],
+            "reference_image_tokens": list(job.reference_image_tokens),
         }
 
     def _video_command(self, job: VideoJobRecord) -> dict:
         model_high, model_low = resolve_video_diffusion_pair(
             job.video_model, job.model_path
         )
+        video_resources = self.config.video_resources[job.video_model]
         return {
             "type": "generate_video",
             "job_id": job.id,
@@ -223,15 +320,32 @@ class PersistentComfyRuntime:
             "audio_vae_path": (
                 str(job.audio_vae_path.resolve()) if job.audio_vae_path else None
             ),
-            "clip_type": self.config.video_resources[job.video_model].clip_type,
+            # turbo 蒸馏 LoRA 为服务端固定配置，客户端不可指定；仅 minimax-h3-turbo 非空
+            "turbo_lora_path": (
+                str(video_resources.turbo_lora.resolve())
+                if video_resources.turbo_lora
+                else None
+            ),
+            "clip_type": video_resources.clip_type,
             "prompt": job.prompt,
             "negative_prompt": job.negative_prompt,
             "input_image_path": (
                 str(job.input_image_path.resolve()) if job.input_image_path else None
             ),
-            "reference_image_path": (
-                str(job.reference_image_path.resolve()) if job.reference_image_path else None
+            "last_frame_image_path": (
+                str(job.last_frame_image_path.resolve())
+                if job.last_frame_image_path
+                else None
             ),
+            "reference_image_paths": [
+                str(path.resolve()) for path in job.reference_image_paths
+            ],
+            "reference_video_paths": [
+                str(path.resolve()) for path in job.reference_video_paths
+            ],
+            "reference_audio_paths": [
+                str(path.resolve()) for path in job.reference_audio_paths
+            ],
             "width": job.width,
             "height": job.height,
             "duration_seconds": job.duration_seconds,

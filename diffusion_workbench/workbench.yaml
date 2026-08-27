@@ -8,21 +8,24 @@ resources:
       - E:\Documents\ComfyUI\models\diffusion_models\zit
     vae:
       - E:\Documents\ComfyUI\models\vae\zit
-    text_encoder: E:\Documents\ComfyUI\models\text_encoders\qwen_3_4b.safetensors
+    text_encoder:
+      - E:\Documents\ComfyUI\models\text_encoders
     clip_type: stable_diffusion
   krea2:
     diffusion:
       - E:\Documents\ComfyUI\models\diffusion_models\krea2
     vae:
       - E:\Documents\ComfyUI\models\vae\krea2
-    text_encoder: E:\Documents\ComfyUI\models\text_encoders\qwen3vl_4b_fp8_scaled.safetensors
+    text_encoder:
+      - E:\Documents\ComfyUI\models\text_encoders
     clip_type: krea2
   zib:
     diffusion:
       - E:\Documents\ComfyUI\models\diffusion_models\zib
     vae:
       - E:\Documents\ComfyUI\models\vae\zit
-    text_encoder: E:\Documents\ComfyUI\models\text_encoders\qwen_3_4b.safetensors
+    text_encoder:
+      - E:\Documents\ComfyUI\models\text_encoders
     clip_type: stable_diffusion
   sdxl:
     model_loader: checkpoint

@@ -5,8 +5,9 @@ import StatusChip from "./StatusChip";
 
 // 只展示最新一个 batch 的结果:新 batch 生成出图片后,整体替换掉上一批。
 // 每组:主图(默认最新一张)+ 按时间正序的缩略图;主图可点开全屏预览。
+// onSendToVideo/onSendToEdit/onSendToCaption 由 App 注入(接收 job,负责导入+切 tab)。
 // 历史相册见 AlbumPage。
-export default function ResultGallery({ jobs }) {
+export default function ResultGallery({ jobs, onSendToVideo = null, onSendToEdit = null, onSendToCaption = null }) {
   const latestGroup = useMemo(() => {
     const finished = jobs
       .filter((job) => ["completed", "failed", "cancelled"].includes(job.status))
@@ -30,12 +31,18 @@ export default function ResultGallery({ jobs }) {
 
   return (
     <div id="result-gallery">
-      <BatchGroup key={latestGroup.key} group={latestGroup} />
+      <BatchGroup
+        key={latestGroup.key}
+        group={latestGroup}
+        onSendToVideo={onSendToVideo}
+        onSendToEdit={onSendToEdit}
+        onSendToCaption={onSendToCaption}
+      />
     </div>
   );
 }
 
-function BatchGroup({ group }) {
+function BatchGroup({ group, onSendToVideo = null, onSendToEdit = null, onSendToCaption = null }) {
   const [selectedId, setSelectedId] = useState(null);
   const [lightbox, setLightbox] = useState(false);
 
@@ -92,6 +99,31 @@ function BatchGroup({ group }) {
           metadataUrl={`/api/v1/images/${selected.id}/metadata`}
           fallback={selected}
           onClose={() => setLightbox(false)}
+          onSendToVideo={
+            // 成功(父级已切 tab)后关闭弹窗;失败保持打开,由 Lightbox 提示错误
+            onSendToVideo
+              ? async () => {
+                  await onSendToVideo(selected);
+                  setLightbox(false);
+                }
+              : null
+          }
+          onSendToEdit={
+            onSendToEdit
+              ? async () => {
+                  await onSendToEdit(selected);
+                  setLightbox(false);
+                }
+              : null
+          }
+          onSendToCaption={
+            onSendToCaption
+              ? async () => {
+                  await onSendToCaption(selected);
+                  setLightbox(false);
+                }
+              : null
+          }
         />
       )}
     </section>

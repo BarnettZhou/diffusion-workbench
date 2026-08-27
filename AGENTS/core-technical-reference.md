@@ -14,9 +14,14 @@ FastAPI 服务共同复用的核心层，不包含 HTTP、WebSocket 或界面状
 
 核心目前支持：
 
-- ZIT、Krea2、ZIB 与 SDXL 四种模式；
-- ZIT/Krea2/ZIB 使用独立 diffusion、VAE 和固定 text encoder；SDXL 使用内嵌
-  MODEL、双 CLIP 与 VAE 的标准 checkpoint；
+- ZIT、Krea2、Krea2 图像编辑（edit-krea2）、Krea2 参考图重排（krea2-rebalance）、
+  ZIB 与 SDXL 六种模式；
+- ZIT/Krea2/ZIB 使用独立 diffusion、VAE 和 text encoder（`text_encoder` 配置为
+  目录/文件列表，客户端按 index 挑选）；Krea2 编辑模式复用
+  Krea2 的 diffusion/VAE/text encoder/clip_type，并要求额外配置 edit_lora；
+  Krea2 参考图重排同样复用 Krea2 资源，不需要 edit_lora，但要求 ComfyUI 安装
+  ComfyUI-Conditioning-Rebalance 节点包；SDXL
+  使用内嵌 MODEL、双 CLIP 与 VAE 的标准 checkpoint；
 - Euler sampler + simple scheduler，CFG 固定为 1；
 - 576x576 默认尺寸，宽高必须是 16 的倍数；
 - 8 到 20 步；
@@ -141,7 +146,7 @@ finally:
 | `submit(settings, count)` | `list[JobRecord]` | 只入队，不等待图片完成 |
 | `list_video_models(video_model)` | `list[ResourceItem]` | 扫描已配置视频类型的 diffusion 目录 |
 | `list_video_vaes(video_model)` | `list[ResourceItem]` | 扫描已配置视频类型的 VAE 目录 |
-| `submit_video(settings, count)` | `list[VideoJobRecord]` | 只入队；模型/VAE 受目录约束，text encoder 固定，shift 默认 8，latent multiplier 默认 1 |
+| `submit_video(settings, count)` | `list[VideoJobRecord]` | 只入队；模型/VAE/text encoder 受目录约束（按 index 选择），shift 默认 8，latent multiplier 默认 1 |
 | `runtime_status()` | `dict` | GPU 数据最多约 2 秒陈旧 |
 | `release_resources()` | 无 | 仅队列空闲时调用，主动卸载 Worker 模型并清空显存 |
 | `set_event_sink(callback)` | 无 | 只有一个 sink，后设置会覆盖前一个 |
@@ -171,21 +176,24 @@ resources:
       - D:\models\diffusion_models\zit
     vae:
       - D:\models\vae\zit
-    text_encoder: D:\models\text_encoders\qwen_3_4b.safetensors
+    text_encoder:
+      - D:\models\text_encoders
     clip_type: stable_diffusion
   krea2:
     diffusion:
       - D:\models\diffusion_models\krea2
     vae:
       - D:\models\vae\krea2
-    text_encoder: D:\models\text_encoders\qwen3vl_4b_fp8_scaled.safetensors
+    text_encoder:
+      - D:\models\text_encoders
     clip_type: krea2
   zib:
     diffusion:
       - D:\models\diffusion_models\zib
     vae:
       - D:\models\vae\zit
-    text_encoder: D:\models\text_encoders\qwen_3_4b.safetensors
+    text_encoder:
+      - D:\models\text_encoders
     clip_type: stable_diffusion
   sdxl:
     model_loader: checkpoint
@@ -197,17 +205,19 @@ database: .cache\diffusion_workbench.sqlite3
 worker_timeout_seconds: 3600
 ```
 
-`diffusion` 和 `vae` 接受多个目录；图片资源也可配置单个 `.safetensors`/`.sft` 文件以限制
-可选资源。`model_loader: checkpoint` 表示模型文件内嵌 CLIP 和 VAE，此时不配置
-`vae`、`text_encoder` 或 `clip_type`。相对路径通常相对于 YAML 所在目录；当 YAML 的
+`diffusion`、`vae` 和 `text_encoder` 接受多个目录；图片资源也可配置单个
+`.safetensors`/`.sft` 文件以限制可选资源。`text_encoder` 兼容旧的单文件标量写法，
+内部一律归一为列表。`model_loader: checkpoint` 表示模型文件内嵌 CLIP 和 VAE，此时
+不配置 `vae`、`text_encoder` 或 `clip_type`。相对路径通常相对于 YAML 所在目录；当 YAML 的
 父目录名恰好是 `configs` 时，基准目录会上移到项目根目录。服务部署建议对 ComfyUI、
 模型、output 和 database 使用明确的绝对路径，避免工作目录变化改变数据位置。
 
 `worker_timeout_seconds` 同时限定单任务等待时间；Worker 启动等待时间为该值与 60 秒
 中的较小值。
 
-视频资源使用独立的 `video_resources` 配置段：`diffusion` 与 `vae` 为目录或文件列表，
-`text_encoder` 为固定文件。Wan 的 `clip_type` 必须是 `wan`；MiniMax H3 必须是
+视频资源使用独立的 `video_resources` 配置段：`diffusion`、`vae` 与 `text_encoder`
+均为目录或文件列表，提交时按 index 选择（与图片侧语义一致；`text_encoder` 兼容旧的
+单文件标量写法）。Wan 的 `clip_type` 必须是 `wan`；MiniMax H3 必须是
 `minimax`，并额外配置固定的 `audio_vae`。视频任务使用 `video_worker_timeout_seconds`。
 
 视频 diffusion 目录还扫描 `.gguf`。GGUF 只对 Wan diffusion 模型生效，Worker 会按后缀
@@ -222,18 +232,24 @@ worker_timeout_seconds: 3600
 ### 5.1 `Mode` 与 `ResourceKind`
 
 ```python
-Mode.ZIT     # "zit"
-Mode.KREA2   # "krea2"
-Mode.ZIB     # "zib"
-Mode.SDXL    # "sdxl"
+Mode.ZIT         # "zit"
+Mode.KREA2       # "krea2"
+Mode.KREA2_EDIT  # "edit-krea2"
+Mode.KREA2_REBALANCE  # "krea2-rebalance"
+Mode.ZIB         # "zib"
+Mode.SDXL        # "sdxl"
 
 ResourceKind.DIFFUSION  # "diffusion"
 ResourceKind.VAE        # "vae"
 ```
 
 视频类型由 `VideoModel` 表示，当前支持 `VideoModel.WAN22_TI2V_5B`（值为
-`wan2.2-ti2v-5b`）、`VideoModel.WAN22_I2V_14B`（值为 `wan2.2-i2v-14b`）和
-`VideoModel.MINIMAX_H3`（值为 `minimax-h3`）。
+`wan2.2-ti2v-5b`）、`VideoModel.WAN22_I2V_14B`（值为 `wan2.2-i2v-14b`）、
+`VideoModel.MINIMAX_H3_FL2VA`（值为 `minimax-h3-fl2va`）、
+`VideoModel.MINIMAX_H3_REF2VA`（值为 `minimax-h3-ref2va`）和
+`VideoModel.MINIMAX_H3_TURBO`（值为 `minimax-h3-turbo`）；域常量 `MINIMAX_H3_MODELS`
+包含后三者。旧值 `minimax-h3`（`VideoModel.MINIMAX_H3`）仅用于读取 SQLite 历史任务，
+不再接受配置与提交。
 `VideoGenerationSettings` 与 `VideoJobRecord` 是独立于图片 DTO 的参数和持久化对象；
 5B 的 `input_image`/`input_image_path` 存在时为 I2V，否则为 T2V；14B 类型必须有输入图片，
 并自动配对 diffusion 目录中的 high-noise/low-noise 两个模型。
@@ -242,12 +258,30 @@ ResourceKind.VAE        # "vae"
 I2V-14B 双阶段采样必须与 ComfyUI `KSamplerAdvanced` 一致：第一阶段生成随机噪声并保留
 剩余噪声，第二阶段禁用新增噪声并传入全零 noise；HTTP/TUI/前端对 14B 默认选择 `euler`。
 
-MiniMax H3 支持 FL2VA 与 Ref2VA：FL2VA 无输入图为 T2V，单张输入图作为首帧时为 I2V；Ref2VA 第一阶段支持单张参考图 R2V，不支持多图、参考视频或参考音频。现有单图
-API 通过受控 `reference_image` 接口接收参考图，不能与首帧同时提供。H3 固定 24 FPS、CFG 1，宽高为 32 的倍数，单边为 32–1344，面积不超过 768×1344，帧数从请求秒数向上
+MiniMax H3 的两种任务权重是两个独立类型。FL2VA：`input_image`（首帧）与
+`last_frame_image`（尾帧）各最多一张、均可选（无图为 T2V），不接受参考输入，且必须
+选择文件名不含 `ref2va` 的模型。Ref2VA：`reference_images`（≤9）、`reference_videos`
+（≤3）、`reference_audios`（≤3）三类参考输入，总数 ≤12 且至少 1 个，不接受首/尾帧，
+必须选择文件名含 `ref2va` 的模型；catalog 按同一文件名规则把同一目录拆成两个类型的
+diffusion 列表。参考输入持久化在 jobs 表的 `reference_inputs` JSON 列（旧行回落读取
+单张 `reference_image` 列）。Worker 调原生 `MiniMaxH3ReferenceToVideo` 时参考视频按
+源帧率抽帧到 24fps（最长 15 秒），自带音轨作为该视频的配对 `ref_video_audio_N`；
+参考音频经 torchaudio 解码为 ComfyUI AUDIO 格式。H3 固定 24 FPS、CFG 1，宽高为 32 的倍数，单边为 32–1344，面积不超过 768×1344，帧数从请求秒数向上
 对齐到 `17n+5`（5 秒为 124 帧）；默认 sampler 为 `res_multistep`，视频/audio shift
 分别为 12/3。Worker 使用 ComfyUI 原生 H3 节点建立联合 AV latent，采样后分别用视频
 VAE 和音频 VAE 解码，并封装为 H.264 + 32 kHz 双声道 AAC MP4。负面提示词保留在任务
 审计记录中，但 distilled CFG 1 推理路径不单独编码它。
+
+`minimax-h3-turbo`（Turbo）是 FL2VA 权重的少步数采样变体：输入规则与 FL2VA 相同
+（首/尾帧可选、不接受参考输入、共用同一份 fl2va diffusion 列表），但必须额外配置
+服务端固定的 `turbo_lora`（lightx2v turbo 蒸馏 LoRA）。Worker 以 strength 0.5 常驻加载
+该 LoRA（只 patch 采样用的模型副本，不污染基础模型缓存），采样改走
+`SamplerCustomAdvanced` 等价路径：`euler` + `BetaSamplingScheduler`（alpha 0.79、
+beta 0.5，步数取任务的 `steps`，默认 8）生成 sigma 序列，再由 `ExtendIntermediateSigmas`
+在 [0, 0.8] 区间的每个间隔线性插入 3 个中间步；不使用 `MiniMaxH3SigmaShift`（任务记录
+中 shift 记为 0），CFG 仍为 1（BasicGuider，无负面条件）。LoRA 路径与强度、beta/extend
+参数均为服务端常量，客户端不可覆盖；元数据额外记录 `turbo_lora` 指纹、
+`turbo_lora_strength`、`beta_alpha`、`beta_beta`。
 
 ### 5.2 `ResourceItem`
 
@@ -266,7 +300,7 @@ settings = GenerationSettings(
     mode=Mode.KREA2,
     model=model_item,
     vae=vae_item,
-    text_encoder=core.config.resources[Mode.KREA2].text_encoder,
+    text_encoder=encoder_item.path,
     clip_type=core.config.resources[Mode.KREA2].clip_type,
     prompt="an adult studio portrait",
     width=576,
@@ -275,6 +309,10 @@ settings = GenerationSettings(
     seed=-1,
 )
 ```
+
+其中 `model_item`/`vae_item`/`encoder_item` 都必须从
+`list_resources(mode, kind)`（kind 分别为 `diffusion`/`vae`/`text_encoder`）返回的
+列表中按 index 选取。
 
 校验规则：
 
@@ -289,11 +327,96 @@ settings = GenerationSettings(
 `WorkbenchCore.submit()` 还会校验：
 
 - model 必须来自该 mode 配置的 diffusion 目录或文件；
-- `components` loader 的 text encoder、clip type 和 VAE 必须来自该 mode 的固定配置；
+- `components` loader 的 text encoder 和 VAE 必须来自该 mode 配置的目录/文件列表
+  （text encoder 按 `text_encoder` 资源列表校验成员资格），clip type 固定为配置值；
 - `checkpoint` loader 不接受外置 VAE、text encoder 或 clip type。
 
 调用端不得接受客户端传来的任意绝对路径后自行构造 `ResourceItem`。必须从
 `list_resources()` 返回值中选择，避免越权读取服务器文件。
+
+### 5.3.1 Krea2 图像编辑模式（`Mode.KREA2_EDIT`）
+
+`Mode.KREA2_EDIT` 是 Krea2 的图像编辑变体，复用 `Mode.KREA2` 的
+diffusion/VAE/text encoder/clip_type 与 catalog 列表，但走自定义节点
+`comfyui-krea2edit` 的 in-context source-preservation 路径：把 VAE 编码的源图作
+为 frame=1 的 token 块前置到扩散序列中，由 `krea2_edit` LoRA 训练的几何与
+qwen3vl 视觉条件共同决定编辑结果。
+
+`GenerationSettings` 额外字段：
+
+| 字段 | 类型 | 默认值 | 校验 |
+|---|---|---|---|
+| `input_image` | `Path \| None` | `None` | 编辑模式必填；其他模式必须为 None |
+| `grounding_px` | `int` | `768` | 0 到 4096 的整数；0 表示按原图尺寸 |
+| `ref_boost` | `float` | `1.0` | 0 到 1000 的有限数值 |
+
+`WorkbenchCore.submit()` 在编辑模式还会校验：
+
+- `resources.krea2.edit_lora` 必须配置，且文件存在；缺失或文件不存在分别抛
+  `ValueError` / `FileNotFoundError`；
+- `settings.input_image` 文件存在（参照视频提交 input_image 的写法）。
+
+`upscale.enabled` 在编辑模式被禁止（domain validate 即拒绝），因此 Worker
+永远走原始尺寸 VAE 解码 + PNG 保存。
+
+Worker 流程：
+
+1. 与 Krea2 共享 mode cache（`edit-krea2` 归一化为 `krea2`），不重新加载
+   diffusion / clip / vae；
+2. 用 `_load_input_image()` 归一化源图为 RGB tensor；
+3. `VAEEncode(source_image)` 得到 source_latent；`LoraLoaderModelOnly` 以
+   strength 1 注入 `edit_lora`；`Krea2EditModelPatch` 用 `fit_mode="fit"` +
+   `vae + source_image + target_latent` 走 pixel path，缓存层按目标分辨率
+   复用；
+4. `Krea2EditGroundedEncode(clip, prompt, image=source_image, grounding_px)`
+   编码正样本；`cfg == 1.0` 复用正样本为负样本；否则按 `negative_prompt` 是否
+   存在走 `Krea2EditGroundedEncode`（非空）或 `ConditioningZeroOut(positive)`
+   （空，对应原 workflow）；
+5. `_sample(model=patched_model)` 走原 sampler；后续 VAE 解码、PNG 保存与
+   其他模式完全一致。
+
+ComfyUI 端必须已安装 `custom_nodes/comfyui-krea2edit` 自定义节点；缺失时
+Worker 在 `_ensure_krea2edit_nodes()` 抛中文 `RuntimeError`。该节点只在
+edit-krea2 任务触发时懒加载。
+
+### 5.3.2 Krea2 参考图重排模式（`Mode.KREA2_REBALANCE`）
+
+`Mode.KREA2_REBALANCE` 是 Krea2 的参考图变体，复用 `Mode.KREA2` 的
+diffusion/VAE/text encoder/clip_type 与 catalog 列表，走
+ComfyUI-Conditioning-Rebalance 节点包的 `Krea2EncodeRebalance`：把提示词与
+1–4 张参考图一起经 Qwen3-VL 视觉端编码为 conditioning。不加载 LoRA、不修改
+模型 forward，属于"参考式"重生成而非像素级编辑。
+
+`GenerationSettings` 额外字段：
+
+| 字段 | 类型 | 默认值 | 校验 |
+|---|---|---|---|
+| `reference_images` | `tuple[Path, ...]` | `()` | 重排模式必填 1 到 4 张；其他模式必须为空 |
+| `reference_image_tokens` | `tuple[str, ...]` | `()` | 为空表示全部 `"normal"`；非空时数量必须与参考图一致，档位限 `low`/`normal`/`high`/`max`（域常量 `REBALANCE_TOKEN_TIERS`） |
+
+`WorkbenchCore.submit()` 在重排模式还会校验每张参考图文件存在，缺失抛
+`FileNotFoundError`。与编辑模式不同，重排模式不禁止 upscale。
+
+Worker 流程：
+
+1. 与 Krea2 共享 mode cache（`krea2-rebalance` 归一化为 `krea2`），不重新加载
+   diffusion / clip / vae；
+2. `_ensure_rebalance_nodes()` 按需加载节点包的 `conditioning_rebalance` 与
+   `krea2` 两个子模块（不执行包 `__init__`，避免引入无关重依赖），取出
+   `Krea2EncodeRebalance`；
+3. 每张参考图经 `_load_input_image()` 归一化为 RGB tensor，按槽位传入
+   `imageN`/`imageN_tokens`，与 prompt 一起编码为 positive；`cfg == 1.0` 复用
+   positive 为 negative，否则用 `CLIPTextEncode` 编码 `negative_prompt`；
+4. 采样、VAE 解码、PNG 保存与普通模式完全一致（无 model patch、无源图
+   VAEEncode）。
+
+参考图持久化复用 jobs 表的 `reference_inputs` JSON 列（`{"images": [...], "tokens": [...]}`），
+`JobRecord.reference_image_paths` / `reference_image_tokens` 在非重排任务为空 tuple。
+
+ComfyUI 端必须已安装 `custom_nodes/ComfyUI-Conditioning-Rebalance` 自定义节点
+（https://github.com/nova452/ComfyUI-Conditioning-Rebalance）；缺失时 Worker 在
+`_ensure_rebalance_nodes()` 抛中文 `RuntimeError`。该节点只在 krea2-rebalance
+任务触发时懒加载。
 
 ### 5.4 seed 语义
 
@@ -390,7 +513,12 @@ Worker 是长生命周期子进程：
 - 同路径 diffusion/text encoder/VAE 或 SDXL checkpoint 复用已加载 Python 对象；
 - 同 mode 切换 diffusion 时释放 GPU 已加载模型，再载入新 checkpoint；
 - 跨 mode 时调用完整 `release()`；
-- 成功任务结束后保留资源，以加速下一张；
+- 每个任务结束（无论成败）执行与 ComfyUI `execution.py` 对齐的全局收尾
+  （`reset_cast_buffers()` + `cleanup_prefetch_queues()` + vbar 水位重置）；
+  Worker 直接调用节点、不经过 `execution.py`，缺了这一步会让 cross-step 状态、
+  prefetch 队列等全局引用挂住已卸载模型的 mmap/host 缓冲，`release()` 也回收不掉
+  （实测 minimax 32B 文本编码器约 15GB 的 mmap 常驻）；
+- 成功任务结束后保留模型资源，以加速下一张；
 - 失败时 Worker 执行 `release()`，保留进程但清空模型；
 - `skip_current()` / `stop()` 直接终止进程；
 - `shutdown()` 请求优雅释放，10 秒内未退出则终止。
@@ -435,6 +563,16 @@ Runtime 通过 stdin 向 Worker 发送一行一个 JSON command。Worker stdout 
 内部 Worker 事件包括 `ready`、`startup_error`、`stage_progress`、`step_progress`、
 `preview_image`、`result`、`error` 和 `stopped`。Runtime 将与当前 job 匹配的事件
 转换为 Controller 行为。Worker error 包含完整 traceback，最终写入任务 `error` 字段。
+
+除任务类命令（`generate` / `generate_video` / `cancel` / `release` / `shutdown`）外，
+Worker 还接受同步命令 `describe_image`（图片反推）：字段为 `job_id`、
+`text_encoder_path`、`image_path`、`prompt`、`max_length`、`seed`，返回 `result`
+事件并附带 `caption` / `load_seconds` / `infer_seconds` / `loaded_resources`。
+它复用 krea2 的 Qwen3-VL clip（ComfyUI 核心 `TextGenerate` 路径），mode 记为
+`"krea2"` 并沿用 `_generate` 开头的切模检查——切入时先 `release()` 上一个功能的
+资源，切出到其他模式任务时同样由现有 mode 检查释放 Qwen3-VL。反推经
+`_generation_lock` 与生成/释放串行，不登记 `_active_job_id`，因此 `stop`/`skip`
+不影响它；结果不落库、不产生公共事件。
 
 单任务超过 `worker_timeout_seconds` 时，Runtime 终止 Worker，并将任务标记为失败。
 

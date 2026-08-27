@@ -63,8 +63,8 @@ RAM，`gpu_memory_*` 是显存容量，`gpu_utilization_percent` 是 GPU 核心�
 
 ### `GET /api/v1/resources/{mode}/{kind}`
 
-`mode` ∈ `zit|krea2|zib|sdxl`,`kind` ∈ `diffusion|vae`。SDXL 的 `diffusion`
-列表实际是完整 checkpoint，`vae` 列表为空。
+`mode` ∈ `zit|krea2|zib|sdxl`,`kind` ∈ `diffusion|vae|text_encoder`。SDXL 的 `diffusion`
+列表实际是完整 checkpoint，`vae` 与 `text_encoder` 列表为空（checkpoint 内嵌）。
 
 ```json
 {
@@ -94,8 +94,10 @@ RAM，`gpu_memory_*` 是显存容量，`gpu_utilization_percent` 是 GPU 核心�
 
 ### `POST /api/v1/jobs`
 
-提交一张或一批任务。text encoder 与 clip type 由服务器按 mode 固定，不接受客户端
-提交模型路径或覆盖；负面提示词、steps、CFG、sampler、scheduler 是任务级参数，
+提交一张或一批任务。model、VAE、text encoder 都按 index 引用服务端
+`workbench.yaml` 配置的目录/文件列表（`GET /api/v1/resources/{mode}/{kind}`，
+kind ∈ `diffusion|vae|text_encoder`），不接受客户端提交模型路径；clip type 由服务器
+按 mode 固定。负面提示词、steps、CFG、sampler、scheduler 是任务级参数，
 客户端可按任务提交，省略时取默认值。
 
 请求体：
@@ -105,6 +107,7 @@ RAM，`gpu_memory_*` 是显存容量，`gpu_utilization_percent` 是 GPU 核心�
   "mode": "krea2",
   "model_index": 1,
   "vae_index": 1,
+  "text_encoder_index": 1,
   "prompt": "an adult studio portrait",
   "negative_prompt": "blurry, watermark",
   "width": 576,
@@ -131,7 +134,8 @@ RAM，`gpu_memory_*` 是显存容量，`gpu_utilization_percent` 是 GPU 核心�
 ```
 
 约束:`mode` ∈ `zit|krea2|zib|sdxl`;`model_index` ≥ 1；ZIT/Krea2/ZIB 的
-`vae_index` 必填且 ≥ 1，SDXL 必须省略 `vae_index`；`prompt` 1–16000
+`vae_index` 与 `text_encoder_index` 必填且 ≥ 1，SDXL 必须省略
+`vae_index` 与 `text_encoder_index`；`prompt` 1–16000
 字符；`negative_prompt` 可为空、最长 16000 字符；宽高必须是 16 的倍数；
 `steps` 1–100（默认 8);`seed` ≥ -1(`-1` 表示随机）;`count` 1–32(HTTP
 admission limit);`cfg` 为大于 0 的有限浮点数（默认 1.0);`sampler`/`scheduler`
@@ -176,6 +180,7 @@ admission limit);`cfg` 为大于 0 的有限浮点数（默认 1.0);`sampler`/`s
       "cfg": 1.0,
       "model_name": "model.safetensors",
       "vae_name": "vae.safetensors",
+      "text_encoder_name": "qwen_3_4b.safetensors",
       "prompt": "an adult studio portrait",
       "negative_prompt": "blurry, watermark",
       "submitted_at": "2026-07-27T13:00:00+08:00",
@@ -213,6 +218,13 @@ admission limit);`cfg` 为大于 0 的有限浮点数（默认 1.0);`sampler`/`s
 - `image_url` 在原图文件实际存在时为 `/api/v1/images/{job_id}`(放大失败或取消时
   原图可能已保存，不以 `status == "completed"` 为条件）;`upscaled_image_url` 同理，
   指向 `/api/v1/images/{job_id}/upscaled`;`upscaled_output_name` 仅启用放大时存在。
+- `input_image_url` / `grounding_px` / `ref_boost` 仅 Krea2 编辑任务
+  (`mode == "edit-krea2"`) 有值；其他任务保持 `null`。`input_image_url` 在编辑任务
+  上指向 `/api/v1/edit/input-images/{input_image_path.name}`(受控上传目录)，便于前端
+  复用受控 URL 重新读取输入图。
+- `reference_image_urls` / `reference_image_tokens` 仅 Krea2 参考图重排任务
+  (`mode == "krea2-rebalance"`) 有值；其他任务保持空列表。`reference_image_urls`
+  同样指向 `/api/v1/edit/input-images/{name}` 受控目录。
 - `error` 只含首行摘要，完整 traceback 只保留在服务端 SQLite。
 
 错误:404 资源 index 不存在；422 参数校验失败。
@@ -554,6 +566,7 @@ mp4 没有内嵌元数据,改为按输出文件(日期目录名 + 文件名)反�
   "size_presets": [[576, 576], [768, 768], [1024, 1024], [960, 1280]],
   "wan_video_size_presets": [[704, 960], [960, 704], [1280, 720], [720, 1280]],
   "minimax_video_size_presets": [],
+  "ref2va_limits": {"max_images": 3, "max_videos": 1, "max_audios": 1},
   "prompt_presets": [
     {"id": "a1b2", "title": "通用质量词", "kind": "positive", "text": "masterpiece, best quality"}
   ],
@@ -574,6 +587,14 @@ mp4 没有内嵌元数据,改为按输出文件(日期目录名 + 文件名)反�
     "language_prompt": "输出语言要求,包含 {language} 占位符",
     "think": false,
     "think_effort": ""
+  },
+  "caption_api": {
+    "interface": "ollama",
+    "base_url": "http://127.0.0.1:11434",
+    "api_key": "",
+    "model": "",
+    "prompt": "API 反推的系统提示词,默认与本地反推一致",
+    "think": false
   }
 }
 ```
@@ -589,6 +610,8 @@ mp4 没有内嵌元数据,改为按输出文件(日期目录名 + 文件名)反�
 按系列区分：`size_presets` 与 `wan_video_size_presets`（wan 系列视频尺寸标签）要求 16 的倍数，
 `minimax_video_size_presets`（MiniMax 系列视频尺寸标签）要求 32 的倍数。
 旧版统一的 `video_size_presets` 在加载时自动迁移为 `wan_video_size_presets`。
+`ref2va_limits` 是 Ref2VA 表单的参考输入上限：`max_images` 0–9、`max_videos` 0–3、
+`max_audios` 0–3，三项之和不超过 12；允许只提交部分键，服务端用默认值补齐。
 未知设置项或非法值返回 422。
 
 `sampling_defaults` 是工作台表单「重置」按钮使用的各模式默认采样参数，键为模式名
@@ -598,6 +621,11 @@ mp4 没有内嵌元数据,改为按输出文件(日期目录名 + 文件名)反�
 
 `llm` 可以局部提交，服务端会用默认值补齐未提交字段。`interface` 只允许 `ollama`
 或 `openai`；`think` 必须是布尔值，其余大模型设置字段必须是字符串。
+
+`caption_api` 是图片反推 tab 的「API 反推」使用的外部视觉模型接口配置，合并语义
+与 `llm` 相同。`interface` 只允许 `ollama` 或 `openai`；`think` 必须是布尔值；
+`base_url` / `api_key` / `model` / `prompt` 必须是字符串，其中 `prompt` 是反推系统
+提示词，默认值与本地反推一致（要求双语输出：一段英文一段中文）。
 
 `prompt_presets` 是设置页「提示词」tab 管理的常用提示词预设，整表替换式提交。每项为
 `{"id", "title", "kind", "text"}`：`id` 是客户端生成的非空字符串，`title` 不能为空，
@@ -681,7 +709,8 @@ mp4 没有内嵌元数据,改为按输出文件(日期目录名 + 文件名)反�
 
 视频生成（Wan TI2V-5B/I2V-14B、MiniMax H3 FL2VA/Ref2VA）经独立端点暴露；任务仍走同一条串行队列，全局 stop/skip 对
 视频任务同样生效。不带输入图片为 T2V(文生视频),带 `input_image_id` 为 I2V
-(图生视频);text encoder 由服务端 `video_resources` 配置固定注入,客户端不能指定；H3
+(图生视频);text encoder 按 `text_encoder_index` 从服务端 `video_resources` 配置的
+目录/文件列表中选择(与图片模式一致);H3
 的音频 VAE 同样由服务端固定注入，不出现在资源选择响应中。
 
 ### `GET /api/v1/video/models`
@@ -704,17 +733,35 @@ mp4 没有内嵌元数据,改为按输出文件(日期目录名 + 文件名)反�
     "requires_input_image": true
   },
   {
-    "video_model": "minimax-h3",
-    "label": "MiniMax H3",
-    "generation_types": ["t2v", "i2v", "r2v"],
-    "requires_input_image": false
+    "video_model": "minimax-h3-fl2va",
+    "label": "MiniMax H3 FL2VA",
+    "generation_types": ["t2v", "i2v"],
+    "requires_input_image": false,
+    "supports_last_frame": true
+  },
+  {
+    "video_model": "minimax-h3-ref2va",
+    "label": "MiniMax H3 Ref2VA",
+    "generation_types": ["r2v"],
+    "requires_input_image": false,
+    "reference_limits": {"images": 9, "videos": 3, "audios": 3, "total": 12}
+  },
+  {
+    "video_model": "minimax-h3-turbo",
+    "label": "MiniMax H3 FL2VA Turbo",
+    "generation_types": ["t2v", "i2v"],
+    "requires_input_image": false,
+    "supports_last_frame": true
   }
 ] }
+
+`supports_last_frame` 与 `reference_limits` 为可选字段，仅对应模型出现；
+`reference_limits` 是 Ref2VA 的硬上限，表单实际上限由设置项 `ref2va_limits` 进一步收窄。
 ```
 
 ### `GET /api/v1/video/models/{video_model}/resources`
 
-指定视频模型可选的 diffusion/VAE 资源,字段与 `/resources/{mode}/{kind}` 一致
+指定视频模型可选的 diffusion/VAE/text encoder 资源,字段与 `/resources/{mode}/{kind}` 一致
 (index/name/display_name,视频资源没有 alias 机制,`alias` 固定为 `null`);
 `video_model` 未配置返回 404。
 
@@ -731,6 +778,9 @@ low-noise 选项；两者必须是文件名互换 `_high_noise_`/`_low_noise_` �
   ],
   "vaes": [
     { "index": 1, "name": "wan2.2_vae.safetensors", "display_name": "wan2.2_vae.safetensors", "alias": null }
+  ],
+  "text_encoders": [
+    { "index": 1, "name": "umt5_xxl_fp8_e4m3fn_scaled.safetensors", "display_name": "umt5_xxl_fp8_e4m3fn_scaled.safetensors", "alias": null }
   ]
 }
 ```
@@ -738,7 +788,7 @@ low-noise 选项；两者必须是文件名互换 `_high_noise_`/`_low_noise_` �
 ### `POST /api/v1/video/input-images`
 
 受控上传 I2V 输入图片:请求体为图片二进制,`Content-Type` 只接受
-`image/png`、`image/jpeg`、`image/webp`,大小 ≤ 10MB,服务端用 PIL 校验确实是
+`image/png`、`image/jpeg`、`image/webp`,大小 ≤ 32MB,服务端用 PIL 校验确实是
 有效图片。图片落盘到 cache 下的 `video_inputs/` 目录,文件名是服务端生成的
 `<uuid4 hex><扩展名>`,客户端只拿到这个 id,之后不能提交任何服务器路径。
 
@@ -750,6 +800,21 @@ low-noise 选项；两者必须是文件名互换 `_high_noise_`/`_low_noise_` �
 按 id 读取受控上传的输入图片。id 先过白名单正则再做路径解析,越界、非法
 id 或文件不存在一律 404。
 
+### `POST /api/v1/video/input-videos`
+
+受控上传 Ref2VA 参考视频:`Content-Type` 只接受 `video/mp4`、`video/webm`、
+`video/quicktime`,大小 ≤ 100MB;只校验类型与大小(API 进程不解码视频,无法解码的
+文件在生成阶段以任务失败呈现)。落盘目录、id 生成与引用规则和输入图片一致。
+
+响应 201:`{ "id": "....mp4", "url": "/api/v1/video/input-videos/....mp4" }`;
+`GET /api/v1/video/input-videos/{video_id}` 按 id 读取,非法 id 一律 404。
+
+### `POST /api/v1/video/input-audios`
+
+受控上传 Ref2VA 参考音频:`Content-Type` 只接受 `audio/wav`、`audio/x-wav`、
+`audio/mpeg`、`audio/flac`、`audio/ogg`、`audio/mp4`(m4a),大小 ≤ 20MB;校验规则
+与参考视频相同。响应与读取端点形式同上(`/api/v1/video/input-audios/{audio_id}`)。
+
 ### `POST /api/v1/video/input-images/from-album`
 
 把相册里已存在的图片直接导入为 I2V 输入图片(服务端本地复制,不经客户端
@@ -757,6 +822,12 @@ id 或文件不存在一律 404。
 相册端点一致,路径解析复用相册的受控逻辑;图片校验(类型/大小/PIL 可解码)
 与上传接口相同。响应 201 与上传接口一致(`{id, url}`);400 路径越界、404
 目录或文件不存在、422 不是支持的图片。
+
+### `POST /api/v1/video/input-images/from-job`
+
+把生成/编辑任务的输出图直接导入为 I2V 输入图片(服务端本地复制,不经客户端
+上传)。请求体 `{"job_id": "<任务 id>"}`;404 job 不存在或输出文件缺失、422
+不是支持的图片。响应 201 与上传接口一致(`{id, url}`)。
 
 ### `POST /api/v1/video/jobs`
 
@@ -769,6 +840,7 @@ id 或文件不存在一律 404。
   "high_model_index": null,
   "low_model_index": null,
   "vae_index": 1,
+  "text_encoder_index": 1,
   "prompt": "一只猫在雪地里奔跑",
   "negative_prompt": "",
   "width": 704,
@@ -783,7 +855,11 @@ id 或文件不存在一律 404。
   "latent_multiplier": 1.0,
   "sampler": "uni_pc",
   "scheduler": "simple",
-  "input_image_id": null
+  "input_image_id": null,
+  "last_frame_image_id": null,
+  "reference_image_ids": [],
+  "reference_video_ids": [],
+  "reference_audio_ids": []
 }
 ```
 
@@ -796,7 +872,8 @@ I2V,不设置为 T2V。I2V-14B 必须设置 `input_image_id`，否则 API 返回
 配对 high-noise 与 low-noise diffusion 模型并执行双阶段采样。
 
 约束:`video_model` 必填且必须是已配置的视频模型;`model_index`、`high_model_index`、
-`low_model_index`、`vae_index`（适用时）均 ≥ 1;
+`low_model_index`、`vae_index`（适用时）均 ≥ 1;`text_encoder_index` 必填且 ≥ 1
+（引用上述 `text_encoders` 列表，省略返回 422，未知 index 返回 404）;
 `prompt` 1–16000 字符;宽高必须是 16 的倍数(默认 704×960);`duration_seconds`
 为 ≥ 1 的整数秒(默认 5);`fps` 1–120(默认 24);总帧数
 length = duration_seconds × fps + 1 且必须满足 4n + 1;`steps` 1–100(默认 20);
@@ -808,12 +885,24 @@ domain 的 SAMPLERS/SCHEDULERS);`latent_multiplier` 为大于 0 的有限浮点�
 0.8 以缓解过饱和。请求未提供 `sampler` 时，I2V-14B 默认使用官方工作流的
 `euler`，其他视频模型默认使用 `uni_pc`。
 
-MiniMax H3 的 FL2VA 不带图片为 T2V，单张 `input_image_id` 为首帧 I2V；Ref2VA 模型使用
-单张 `reference_image_id` 生成 R2V。第一阶段不支持多图、参考视频或参考音频，且
-`input_image_id` 与 `reference_image_id` 不能同时提供。H3 宽高必须为 32 的倍数，单边为 32–1344，且总面积不超过 768×1344；FPS 固定 24，CFG 固定 1；`length` 从
+MiniMax H3 拆分为两个视频模型类型。`minimax-h3-fl2va`（FL2VA）：不带图片为 T2V，
+`input_image_id` 为首帧、`last_frame_image_id` 为尾帧（各最多一张、均可选），不接受
+任何参考输入。`minimax-h3-ref2va`（Ref2VA）：只接受参考输入——`reference_image_ids`
+（≤9）、`reference_video_ids`（≤3）、`reference_audio_ids`（≤3），总数 ≤12 且至少 1 个；
+不接受首帧/尾帧。两类模型的 diffusion 列表由服务端按文件名是否含 `ref2va` 自动拆分，
+index 互不通用。Ref2VA 的表单实际上限由设置项 `ref2va_limits`（`max_images`/`max_videos`/
+`max_audios`）控制，服务端在提交时同样强制，超过设置值返回 422。H3 宽高必须为 32 的倍数，
+单边为 32–1344，且总面积不超过 768×1344；FPS 固定 24，CFG 固定 1；`length` 从
 `duration_seconds * 24` 向上对齐到 `17n+5`（5 秒对应 124 帧），因此实际媒体时长可
 略长于请求秒数。H3 请求未提供 sampler 时默认 `res_multistep`，shift 默认 12；内部
 audio shift 固定为 3。输出 MP4 含 H.264 视频和 32 kHz 双声道 AAC 音频。
+历史任务记录中的旧枚举值 `minimax-h3` 仍可读取，但不再接受配置与提交。
+
+`minimax-h3-turbo`（Turbo）复用 FL2VA 的输入规则与 diffusion 列表，但要求服务端
+`video_resources` 额外配置固定的 `turbo_lora`（蒸馏加速 LoRA）；客户端不能指定 LoRA。
+未提供 `steps`/`sampler`/`scheduler` 时默认 8 步、`euler`、`beta`；采样不经过 sigma
+shift（记录中 `shift` 为 0），CFG 仍固定为 1。turbo LoRA 的强度与 beta/extend 调度
+参数为服务端内置常量，元数据中记录 `turbo_lora_strength`、`beta_alpha`、`beta_beta`。
 
 响应 202(已持久化并入队,不代表视频完成):
 
@@ -841,6 +930,7 @@ audio shift 固定为 3。输出 MP4 含 H.264 视频和 32 kHz 双声道 AAC �
       "latent_multiplier": 1.0,
       "model_name": "wan2.2-ti2v-5b.safetensors",
       "vae_name": "wan2.2_vae.safetensors",
+      "text_encoder_name": "umt5_xxl_fp8_e4m3fn_scaled.safetensors",
       "prompt": "一只猫在雪地里奔跑",
       "negative_prompt": "",
       "submitted_at": "2026-08-09T13:00:00+08:00",
@@ -850,16 +940,23 @@ audio shift 固定为 3。输出 MP4 含 H.264 视频和 32 kHz 双声道 AAC �
       "output_name": "wan2.2-ti2v-5b-00001.mp4",
       "video_url": null,
       "input_image_url": null,
+      "last_frame_image_url": null,
+      "reference_image_urls": [],
+      "reference_video_urls": [],
+      "reference_audio_urls": [],
       "error": null
     }
   ]
 }
 ```
 
-- `generation_type` 为 `t2v`、`i2v` 或 `r2v`(取决于输入图片/参考图片);
+- `generation_type` 为 `t2v`、`i2v` 或 `r2v`(取决于首/尾帧与参考输入);
   `duration_seconds` 是视频时长秒,`elapsed_seconds` 是实际耗时。
 - `video_url` 在 mp4 文件实际存在时为 `/api/v1/videos/{job_id}`,否则为 `null`。
-- `input_image_url` 仅 I2V 任务有值,为 `/api/v1/video/input-images/{id}`；`reference_image_url` 仅 R2V 任务有值，路径格式相同。
+- `input_image_url` / `last_frame_image_url` 为 `/api/v1/video/input-images/{id}`；
+  `reference_image_urls`、`reference_video_urls`、`reference_audio_urls` 为受控 URL 列表，
+  分别使用 `/api/v1/video/input-images|input-videos|input-audios/{id}` 前缀；
+  历史 `minimax-h3` R2V 任务的单张参考图会归入 `reference_image_urls`。
 - 错误:404 资源 index 或 input_image_id 不存在;422 参数校验失败(含未配置的
   video_model 以外的非法枚举值)。
 
@@ -886,6 +983,319 @@ video_model 值,`alias` 固定为 `null`)。备注/量化/封面复用同一个
 不会冲突。视频目录没有 alias 机制,info PUT 只支持 `note`,payload 带 `alias`
 返回 422;`video_model` 未配置返回 404。
 
+## Krea2 图像编辑
+
+Krea2 图像编辑(`mode == "edit-krea2"`)复用 Krea2 的 diffusion / VAE / text encoder /
+clip_type 资源，但需要单独配置 Krea2 的 `edit_lora`（`workbench.yaml` 的
+`resources.krea2.edit_lora`）。未配置时 `GET /api/v1/edit/info` 的 `enabled` 为 `false`，
+提交任务的 `POST /api/v1/edit/jobs` 统一返回 404，不暴露配置细节。
+
+输入图只能引用 `POST /api/v1/edit/input-images` 或 `/edit/input-images/from-album`
+落盘的受控 id（同视频 I2V 输入图的同一目录与白名单校验），客户端不允许提交任何服务器
+路径。输入图上传与读取端点的 201/404/422 行为与 `POST /api/v1/video/input-images`
+族一致，可在前端复用同一上传组件。
+
+### `GET /api/v1/edit/info`
+
+```json
+{
+  "enabled": true,
+  "defaults": { "grounding_px": 768, "ref_boost": 1.0 },
+  "rebalance": {
+    "enabled": true,
+    "defaults": {
+      "token_tier": "normal",
+      "token_tiers": ["low", "normal", "high", "max"],
+      "max_reference_images": 4
+    }
+  }
+}
+```
+
+`defaults.grounding_px` 为 0–4096 的整数（0 表示按原图尺寸）；`defaults.ref_boost`
+为 0–1000 的有限浮点数（1.0 表示不强化）。`rebalance.enabled` 只要求 krea2 资源已配置
+（不依赖 `edit_lora`），但运行时还需要 ComfyUI 安装
+ComfyUI-Conditioning-Rebalance 节点包，缺失时任务在 Worker 侧报错。
+
+### `POST /api/v1/edit/input-images`
+
+受控上传编辑输入图片：请求体为图片二进制，`Content-Type` 只接受
+`image/png`、`image/jpeg`、`image/webp`，大小 ≤ 32MB，服务端用 PIL 校验是有效图片。
+图片落盘到 cache 下的 `video_inputs/` 目录（与视频 I2V 输入图同一受控目录），
+文件名是服务端生成的 `<uuid4 hex><扩展名>`，客户端只拿到这个 id。
+
+响应 201：`{ "id": "....png", "url": "/api/v1/edit/input-images/....png" }`。
+422 表示类型不支持、内容为空、超限或不是有效图片。
+
+### `GET /api/v1/edit/input-images/{image_id}`
+
+按 id 读取受控上传的编辑输入图片。id 先过白名单正则再做路径解析，越界、非法 id
+或文件不存在一律 404。
+
+### `POST /api/v1/edit/input-images/from-album`
+
+把相册里已存在的图片直接导入为编辑输入图片（服务端本地复制，不经客户端上传）。
+请求体 `{"id": "<相册 relpath>", "dir": "output"}`，`id`/`dir` 语义与相册端点一致，
+路径解析复用相册的受控逻辑；图片校验（类型/大小/PIL 可解码）与上传接口相同。
+响应 201 与上传接口一致（`{id, url}`）；400 路径越界、404 目录或文件不存在、
+422 不是支持的图片。
+
+### `POST /api/v1/edit/input-images/from-job`
+
+把生成/编辑任务的输出图直接导入为编辑输入图片（服务端本地复制，不经客户端上传）。
+请求体 `{"job_id": "<任务 id>"}`；404 job 不存在或输出文件缺失、422 不是支持的图片。
+响应 201 与上传接口一致（`{id, url}`）。图片反推同样复用本通道的受控 id。
+
+### `POST /api/v1/edit/jobs`
+
+提交一个或一批 Krea2 编辑任务。请求体：
+
+```json
+{
+  "model_index": 1,
+  "vae_index": 1,
+  "text_encoder_index": 1,
+  "prompt": "把人物改成夜晚氛围",
+  "negative_prompt": "",
+  "input_image_id": "....png",
+  "width": 576,
+  "height": 576,
+  "steps": 8,
+  "seed": -1,
+  "count": 1,
+  "cfg": 1.0,
+  "sampler": "euler",
+  "scheduler": "simple",
+  "grounding_px": 768,
+  "ref_boost": 1.0
+}
+```
+
+约束：`model_index` / `vae_index` / `text_encoder_index` ≥ 1（引用 Krea2 资源列表，
+与 `mode=krea2` 共用同一份 index）；`prompt` 1–16000 字符；`negative_prompt` 最长 16000；`input_image_id`
+必填且最长 64 字符；宽高必须是 16 的倍数；`steps` 1–100（默认 8）；`seed` ≥ -1；
+`count` 1–32；`cfg` 为大于 0 的有限浮点数（默认 1.0）；`sampler` / `scheduler` 合法值
+与图片任务同源；`grounding_px` 0–4096 的整数（默认 768，0 表示按原图尺寸）；
+`ref_boost` 0–1000 的有限浮点数（默认 1.0，1.0 表示不强化）。编辑模式禁用 upscale，
+`GenerationSettings.validate()` 在 `mode == edit-krea2` 时会拒绝 `upscale.enabled=True`。
+
+text encoder 按 `text_encoder_index` 从 Krea2 配置的 text_encoder 目录/文件列表
+选择；clip type 由服务器按 Krea2 资源固定注入，客户端不能指定。
+`ModeResources.edit_lora` 未配置或磁盘文件不存在时，`POST /edit/jobs` 返回 404
+（与未配置 mode 风格一致），不是 422。
+
+响应 202（已持久化并入队，不代表图片完成）：
+
+```json
+{
+  "jobs": [
+    {
+      "id": "job-uuid",
+      "batch_id": null,
+      "status": "queued",
+      "mode": "edit-krea2",
+      "seed": -1,
+      "width": 576,
+      "height": 576,
+      "steps": 8,
+      "sampler": "euler",
+      "scheduler": "simple",
+      "cfg": 1.0,
+      "model_name": "krea.safetensors",
+      "vae_name": "krea-vae.safetensors",
+      "text_encoder_name": "qwen3vl_4b_fp8_scaled.safetensors",
+      "prompt": "把人物改成夜晚氛围",
+      "negative_prompt": "",
+      "submitted_at": "2026-08-19T13:00:00+08:00",
+      "started_at": null,
+      "completed_at": null,
+      "duration_seconds": null,
+      "output_name": "edit-krea2-00001.png",
+      "image_url": null,
+      "error": null,
+      "upscale": {
+        "enabled": false,
+        "method": "latent_hires",
+        "scale": 2.0,
+        "interpolation": "bislerp",
+        "model_name": null,
+        "tile": 512,
+        "overlap": 32,
+        "steps": 9,
+        "start_step": 4,
+        "cfg": null,
+        "sampler": null,
+        "scheduler": null,
+        "seed": null
+      },
+      "upscaled_output_name": null,
+      "upscaled_image_url": null,
+      "input_image_url": "/api/v1/edit/input-images/....png",
+      "grounding_px": 768,
+      "ref_boost": 1.0
+    }
+  ]
+}
+```
+
+- `mode` 固定为 `"edit-krea2"`，前端应以此路由到编辑标签页。
+- `input_image_url` 在编辑任务总是有值（`input_image_id` 必填），指向受控上传目录
+  的同名 id；普通任务该字段为 `null`。
+- 编辑任务的随机 seed 此刻仍是 `-1`，实际 seed 由 `job_started` 事件公布并写回
+  SQLite，之后从 `GET /api/v1/jobs/{job_id}` 读取。
+- `error` 只含首行摘要，完整 traceback 只保留在服务端 SQLite。
+- 错误：404 `input_image_id` 不存在、编辑未启用或资源 index 不存在；422 参数校验
+  失败（含 `grounding_px` / `ref_boost` 越界、`edit_lora` 文件缺失等）。
+
+`GET /api/v1/jobs/{job_id}` 对编辑任务返回的响应包含 `input_image_url` /
+`grounding_px` / `ref_boost`，字段定义同上；其他模式任务这三字段为 `null`。
+`GET /api/v1/jobs` 与 `/jobs/{job_id}` 不再为编辑任务单开端点。
+
+### `POST /api/v1/edit/rebalance-jobs`
+
+提交一个或一批 Krea2 参考图重排任务（`mode == "krea2-rebalance"`）。参考图复用
+`POST /api/v1/edit/input-images` 族受控上传接口的 id，客户端不允许提交任何服务器
+路径。请求体：
+
+```json
+{
+  "model_index": 1,
+  "vae_index": 1,
+  "text_encoder_index": 1,
+  "prompt": "参考这张图的构图画一只猫",
+  "negative_prompt": "",
+  "reference_image_ids": ["....png"],
+  "reference_image_tokens": ["normal"],
+  "width": 576,
+  "height": 576,
+  "steps": 8,
+  "seed": -1,
+  "count": 1,
+  "cfg": 1.0,
+  "sampler": "euler",
+  "scheduler": "simple"
+}
+```
+
+约束：`reference_image_ids` 必填，1–4 张（`max_reference_images`）；`reference_image_tokens`
+可选，合法值为 `low`/`normal`/`high`/`max`，缺省表示全部按 `normal` 处理，提供时数量必须
+与参考图一致；其余字段约束与 `POST /api/v1/edit/jobs` 相同。与编辑模式不同，重排模式
+**不**禁用 upscale。
+
+响应 202 的 job 对象与编辑任务同构，差异：`mode` 为 `"krea2-rebalance"`；
+`input_image_url` / `grounding_px` / `ref_boost` 为 `null`；
+`reference_image_urls` 按参考图顺序指向受控上传目录的同名 id，
+`reference_image_tokens` 回显实际档位（缺省时为空列表）。其他模式任务这两个字段为
+空列表。
+
+- 错误：404 参考图 id 不存在、krea2 资源未配置或资源 index 不存在；422 参数校验失败
+  （含参考图数量越界、token 档位非法或与参考图数量不一致、参考图文件缺失等）。
+
+`GET /api/v1/jobs/{job_id}` 对重排任务返回 `reference_image_urls` /
+`reference_image_tokens`，字段定义同上。
+
+### `POST /api/v1/caption`
+
+图片反推（image-to-prompt）：同步执行，复用 krea2 的 Qwen3-VL text encoder
+（ComfyUI 核心 `TextGenerate` 路径），把输入图片转成生成提示词（服务端固定系统
+提示词要求双语输出：一段英文一段中文）。**不进任务队列、
+不落库、不发 WebSocket 事件**；与生成任务共用同一个 GPU Worker，经 runtime 生成锁
+串行排队——正在跑生成任务时本请求会阻塞等待，`stop`/`skip` 不作用于反推。
+输入图片复用 `POST /api/v1/edit/input-images` 族受控上传接口的 id，客户端不允许
+提交任何服务器路径。请求体：
+
+```json
+{
+  "image_id": "....png",
+  "hint": "",
+  "max_length": 2048,
+  "seed": -1
+}
+```
+
+约束：`image_id` 必填（受控 id）；`hint` 可选（≤2000 字符，拼进服务端固定系统提示词）；
+`max_length` 64–2048，默认 2048；`seed` -1 表示随机。响应 200：
+
+```json
+{
+  "caption": "a young woman ...",
+  "load_seconds": 0.0,
+  "infer_seconds": 3.2
+}
+```
+
+- 错误：404 图片 id 不存在；422 参数校验失败、krea2 资源未配置或 text encoder /
+  图片文件缺失；500 GPU Worker 反推执行失败（detail 含 worker 错误信息）。
+
+### `POST /api/v1/caption/remote`
+
+API 反推：把图片（base64）发给 `settings.caption_api` 配置的外部视觉模型接口
+（Ollama 或 OpenAI 兼容），同样是同步请求但**不经过 GPU Worker、不排队**；
+结果不落库、不发 WebSocket 事件。请求体与 `POST /api/v1/caption` 相同
+（`image_id` / `hint` / `max_length` / `seed`）。
+
+- 提示词取 `caption_api.prompt`（为空回退本地反推默认提示词），`hint` 以
+  `Additional user instructions:` 追加在末尾。
+- Ollama：请求 `POST {base_url}/api/chat`，图片走 message 的 `images` base64 列表，
+  `max_length` / `seed` 映射为 `options.num_predict` / `options.seed`，
+  `think` 直接下发布尔值。
+- OpenAI 兼容：请求 `POST {base_url}/chat/completions`，图片走 `image_url` 的
+  data URL，`max_length` / `seed` 映射为 `max_tokens` / `seed`，`think` 关闭时
+  下发 `chat_template_kwargs.enable_thinking=false`；`api_key` 非空时带
+  `Authorization: Bearer` 头。
+
+响应 200 与本地反推同构（`load_seconds` 恒为 0.0，`infer_seconds` 为整次 API
+调用耗时）：
+
+```json
+{
+  "caption": "a young woman ...",
+  "load_seconds": 0.0,
+  "infer_seconds": 5.1
+}
+```
+
+- 错误：400 未配置 `caption_api` 的 `base_url` / `model`；404 图片 id 不存在；
+  422 参数校验失败或图片文件缺失；502 远端服务连接失败/超时/返回错误
+  （detail 为中文错误描述）。
+
+每次 API 反推调用（含失败）都会落一条请求记录到 cache 目录的
+`caption_requests.json`（按时间倒序，最多保留 200 条，与大模型请求记录同构；
+记录不含 base64 图片本体，只记图片字节数）。
+
+### `GET /api/v1/caption/remote/requests`
+
+API 反推请求记录分页查询：`page` 从 1 开始，`page_size` 1–100（默认 10）。
+响应与 `GET /api/v1/llm/requests` 同构（`total` / `page` / `page_size` / `items`），
+记录字段为 `id` / `timestamp` / `base_url` / `model` / `request` / `response` /
+`error` / `input_tokens` / `output_tokens` / `cached_tokens`（反推无会话，不含
+`session_id`）。
+
+### `POST /api/v1/caption/remote/test`
+
+反推 API 连通性测试：拉取远端模型列表（Ollama `GET /api/tags`，OpenAI 兼容
+`GET /models`）并确认目标模型存在。请求体字段均可选，留空回退到已保存的
+`caption_api` 设置，前端可直接用表单当前值测试：
+
+```json
+{
+  "interface": "ollama",
+  "base_url": "http://127.0.0.1:11434",
+  "api_key": "",
+  "model": "qwen3-vl:8b"
+}
+```
+
+`interface` 只允许 `ollama` 或 `openai`。Ollama 的 `model` 允许省略 `:latest`
+后缀，OpenAI 兼容接口要求精确匹配。响应 200：
+
+```json
+{"ok": true, "detail": "连接成功,模型 qwen3-vl:8b 可用"}
+```
+
+- 错误：400 Base URL / 模型 ID 为空，或连接成功但模型不存在（detail 附可用模型
+  列表前 10 项）；502 连接失败/超时/HTTP 错误。
+
 ## 错误码汇总
 
 | 场景 | HTTP |
@@ -897,4 +1307,5 @@ video_model 值,`alias` 固定为 `null`)。备注/量化/封面复用同一个
 | 图片任务未完成 / 未启用放大 | 404 |
 | 图片或放大文件丢失 | 410 |
 | 存储路径越界 | 500 |
+| 反推 API / 大模型等外部服务调用失败 | 502 |
 | Worker 运行时失败 | POST 已返回 202；经 job 状态和 `job_error` 事件报告 |

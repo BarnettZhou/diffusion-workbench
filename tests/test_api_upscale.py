@@ -46,6 +46,7 @@ class UpscaleSubmitTests(ApiTestCase):
             "mode": "krea2",
             "model_index": 1,
             "vae_index": 1,
+            "text_encoder_index": 1,
             "prompt": "an adult studio portrait",
         }
         if upscale is not None:

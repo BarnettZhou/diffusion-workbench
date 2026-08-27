@@ -24,15 +24,23 @@ try:
     from .domain import (
         SAMPLERS,
         SCHEDULERS,
+        MINIMAX_H3_MODELS,
         Mode,
         ModelLoader,
         UpscaleMethod,
         UpscaleSettings,
         VideoModel,
+        is_h3_ref2va_model_name,
         validate_sampling,
         H3_MAX_PIXELS,
         H3_MAX_SIZE,
         H3_MIN_SIZE,
+        H3_REF2VA_MAX_AUDIOS,
+        H3_REF2VA_MAX_IMAGES,
+        H3_REF2VA_MAX_TOTAL,
+        H3_REF2VA_MAX_VIDEOS,
+        REBALANCE_MAX_REFERENCE_IMAGES,
+        REBALANCE_TOKEN_TIERS,
     )
     from .png_metadata import (
         ResourceFingerprintCache,
@@ -43,15 +51,23 @@ except ImportError:  # The Comfy worker runs this module as a standalone script.
     from domain import (
         SAMPLERS,
         SCHEDULERS,
+        MINIMAX_H3_MODELS,
         Mode,
         ModelLoader,
         UpscaleMethod,
         UpscaleSettings,
         VideoModel,
+        is_h3_ref2va_model_name,
         validate_sampling,
         H3_MAX_PIXELS,
         H3_MAX_SIZE,
         H3_MIN_SIZE,
+        H3_REF2VA_MAX_AUDIOS,
+        H3_REF2VA_MAX_IMAGES,
+        H3_REF2VA_MAX_TOTAL,
+        H3_REF2VA_MAX_VIDEOS,
+        REBALANCE_MAX_REFERENCE_IMAGES,
+        REBALANCE_TOKEN_TIERS,
     )
     from png_metadata import (
         ResourceFingerprintCache,
@@ -61,6 +77,17 @@ except ImportError:  # The Comfy worker runs this module as a standalone script.
 
 
 EVENT_PREFIX = "DWB_EVENT="
+
+# MiniMax H3 Turbo 采样配方（参考社区 lightx2v turbo 工作流）：
+# 蒸馏 LoRA 常驻 strength=0.5；euler + BetaSamplingScheduler(alpha, beta)
+# 生成 sigma 序列，再用 ExtendIntermediateSigmas 在低 sigma 区间[0, 0.8]
+# 的每个间隔内按线性插入 3 个中间步。该配方替代裸模型的 MiniMaxH3SigmaShift。
+H3_TURBO_LORA_STRENGTH = 0.5
+H3_TURBO_BETA_ALPHA = 0.79
+H3_TURBO_BETA_BETA = 0.5
+H3_TURBO_EXTEND_STEPS = 3
+H3_TURBO_EXTEND_START_SIGMA = 0.8
+H3_TURBO_EXTEND_END_SIGMA = 0.0
 
 
 def emit(payload: dict) -> None:
@@ -237,6 +264,7 @@ class ComfyWorker:
 
         logging.getLogger("xformers").setLevel(logging.ERROR)
         import comfy.model_management
+        import comfy.model_prefetch
         import comfy.sample
         import comfy.samplers
         import comfy.utils
@@ -245,9 +273,20 @@ class ComfyWorker:
         import nodes
         import torch
         import numpy
+        try:
+            from comfy_aimdo import model_vbar
+        except ImportError:  # 非 aimdo 加速构建的 ComfyUI 没有 vbar 水位管理
+            model_vbar = None
         from comfy_api.latest import InputImpl, Types
         from comfy_extras.nodes_model_advanced import ModelSamplingSD3
         from comfy_extras.nodes_audio import VAEDecodeAudio
+        from comfy_extras.nodes_custom_sampler import (
+            BasicGuider,
+            BetaSamplingScheduler,
+            ExtendIntermediateSigmas,
+            KSamplerSelect,
+            RandomNoise,
+        )
         from comfy_extras.nodes_minimax_h3 import (
             EmptyMiniMaxH3LatentAV,
             MiniMaxH3ImageToVideo,
@@ -267,6 +306,8 @@ class ComfyWorker:
 
         self.folder_paths = folder_paths
         self.model_management = comfy.model_management
+        self.model_prefetch = comfy.model_prefetch
+        self.model_vbar = model_vbar
         self.comfy_sample = comfy.sample
         self.comfy_utils = comfy.utils
         self.latent_preview = latent_preview
@@ -279,6 +320,11 @@ class ComfyWorker:
         self.Types = Types
         self.ModelSamplingSD3 = ModelSamplingSD3
         self.VAEDecodeAudio = VAEDecodeAudio
+        self.BasicGuider = BasicGuider
+        self.BetaSamplingScheduler = BetaSamplingScheduler
+        self.ExtendIntermediateSigmas = ExtendIntermediateSigmas
+        self.KSamplerSelect = KSamplerSelect
+        self.RandomNoise = RandomNoise
         self.MiniMaxH3ImageToVideo = MiniMaxH3ImageToVideo
         self.MiniMaxH3ReferenceToVideo = MiniMaxH3ReferenceToVideo
         self.EmptyMiniMaxH3LatentAV = EmptyMiniMaxH3LatentAV
@@ -294,6 +340,10 @@ class ComfyWorker:
         }
         self.resource_fingerprints = ResourceFingerprintCache()
         self.gguf_unet_loader_class = None
+        # Krea2Edit 自定义节点包懒加载缓存（仅 edit-krea2 任务触发）。
+        self.krea2edit_module = None
+        # Conditioning-Rebalance 自定义节点包懒加载缓存（仅 krea2-rebalance 任务触发）。
+        self.rebalance_module = None
         self.model = None
         self.model_path: Path | None = None
         self.model_high = None
@@ -321,6 +371,19 @@ class ComfyWorker:
         self.upscale_model = None
         self.upscale_model_path: Path | None = None
 
+    def _comfy_execution_cleanup(self) -> None:
+        """对齐 ComfyUI execution.py 每个 prompt 结束后的全局收尾。
+
+        headless Worker 直接调用节点、不经过 execution.py，这些清理从未执行；
+        缺失时 CROSS_STEP_STATE / PREFETCH_QUEUES 等全局状态会挂住已卸载模型的
+        mmap 与 host 缓冲（实测 minimax 32B 文本编码器约 15GB 的 mmap 无法关闭），
+        即使 release() 丢弃了全部模型引用也回收不了对应 RAM。
+        """
+        self.model_management.reset_cast_buffers()
+        self.model_prefetch.cleanup_prefetch_queues()
+        if self.model_vbar is not None:
+            self.model_vbar.vbars_reset_watermark_limits()
+
     def generate(self, command: dict) -> dict:
         if command.get("type") == "generate_video":
             self._validate_video(command)
@@ -328,18 +391,78 @@ class ComfyWorker:
             self._validate(command)
         self._validate_runtime_sampling(command)
         with self.torch.inference_mode():
-            if command.get("type") == "generate_video":
-                return self._generate_video(command)
-            return self._generate(command)
+            try:
+                if command.get("type") == "generate_video":
+                    return self._generate_video(command)
+                return self._generate(command)
+            finally:
+                self._comfy_execution_cleanup()
+
+    def describe_image(self, command: dict) -> dict:
+        """图片反推：复用 krea2 的 Qwen3-VL clip，把图片与系统提示词转成英文描述文本。
+
+        同步命令，不产图片也不落盘；走 ComfyUI 核心 TextGenerate 同款路径
+        （clip.tokenize(image=...) → clip.generate → clip.decode）。
+        """
+        job_id = command["job_id"]
+        text_encoder_path = Path(command["text_encoder_path"]).resolve()
+        prompt = str(command["prompt"])
+        max_length = max(1, int(command.get("max_length", 2048)))
+        seed = int(command.get("seed", 0))
+        with self.torch.inference_mode():
+            try:
+                # 与 _generate 开头的 mode 检查一致：从其他功能切来时先整体释放旧资源；
+                # mode 记为 krea2，保证之后切去别的模式时 Qwen3-VL 会被 release 掉。
+                cache_mode = "krea2"
+                if self.mode is not None and self.mode != cache_mode:
+                    self.release()
+                self.mode = cache_mode
+                load_started = time.perf_counter()
+                self._ensure_clip(text_encoder_path, "krea2")
+                load_seconds = time.perf_counter() - load_started
+                image = self._load_input_image(command.get("image_path"))
+                self.torch.cuda.reset_peak_memory_stats()
+                infer_started = time.perf_counter()
+                tokens = self.clip.tokenize(prompt, image=image, min_length=1)
+                generated_ids = self.clip.generate(
+                    tokens,
+                    do_sample=True,
+                    max_length=max_length,
+                    temperature=0.7,
+                    top_k=64,
+                    top_p=0.95,
+                    min_p=0.05,
+                    repetition_penalty=1.05,
+                    seed=seed,
+                )
+                caption = self.clip.decode(generated_ids)
+                infer_seconds = time.perf_counter() - infer_started
+            finally:
+                self._comfy_execution_cleanup()
+        return {
+            "type": "result",
+            "job_id": job_id,
+            "caption": caption,
+            "loaded_resources": self.resource_status(),
+            "load_seconds": round(load_seconds, 3),
+            "infer_seconds": round(infer_seconds, 3),
+            "cuda_peak_allocated_gib": round(
+                self.torch.cuda.max_memory_allocated() / 1024**3, 3
+            ),
+        }
 
     def _generate(self, command: dict) -> dict:
         command = dict(command)
         command["upscale"] = resolve_upscale_settings(command)
         job_id = command["job_id"]
         requested_mode = command["mode"]
-        if self.mode is not None and self.mode != requested_mode:
+        is_edit = requested_mode == "edit-krea2"
+        is_rebalance = requested_mode == "krea2-rebalance"
+        # edit-krea2 与 krea2-rebalance 都复用 krea2 的 diffusion/clip/vae 缓存，避免来回切换重载。
+        cache_mode = "krea2" if is_edit or is_rebalance else requested_mode
+        if self.mode is not None and self.mode != cache_mode:
             self.release()
-        self.mode = requested_mode
+        self.mode = cache_mode
         model_path = Path(command["model_path"]).resolve()
         model_loader = ModelLoader(command.get("model_loader", ModelLoader.COMPONENTS))
         vae_path = Path(command["vae_path"]).resolve() if command.get("vae_path") else None
@@ -385,13 +508,67 @@ class ComfyWorker:
                 "total": stage_total,
             }
         )
-        positive, negative = self._encode_text_conditioning(
-            command["prompt"],
-            command.get("negative_prompt", ""),
-            cfg=float(command["cfg"]),
-            cache_scope=f"image:{command['mode']}",
-            reuse_negative_at_cfg_one=command["mode"] != "zib",
-        )
+        cfg_value = float(command["cfg"])
+        if is_edit:
+            # 编辑模式不走纯文本编码：用 Krea2EditGroundedEncode 把指令与源图一起
+            # 经 Qwen3-VL 编码，得到 image-grounded 的 conditioning。
+            source_image = self._load_input_image(command.get("input_image_path"))
+            edit_module = self._ensure_krea2edit_nodes()
+            grounded = edit_module.NODE_CLASS_MAPPINGS["Krea2EditGroundedEncode"]()
+            positive = grounded.encode(
+                self.clip,
+                command["prompt"],
+                image=source_image,
+                grounding_px=int(command.get("grounding_px", 768)),
+                system_prompt="",
+            )[0]
+            negative_prompt = command.get("negative_prompt", "")
+            if cfg_value == 1.0:
+                # CFG 1 复用 positive，与普通图任务的 reuse_negative_at_cfg_one 一致
+                negative = positive
+            elif not negative_prompt:
+                # 对应原 workflow：negative 端用 ConditioningZeroOut(conditioning=positive)
+                negative = self.nodes.ConditioningZeroOut().zero_out(positive)[0]
+            else:
+                negative = grounded.encode(
+                    self.clip,
+                    negative_prompt,
+                    image=source_image,
+                    grounding_px=int(command.get("grounding_px", 768)),
+                    system_prompt="",
+                )[0]
+        elif is_rebalance:
+            # 参考图重排不走 Krea2Edit 节点：用 Krea2EncodeRebalance 把提示词与
+            # 1-4 张参考图一起经 Qwen3-VL 编码为 conditioning，模型与采样流程不变。
+            rebalance_module = self._ensure_rebalance_nodes()
+            encoder = rebalance_module.NODE_CLASS_MAPPINGS["Krea2EncodeRebalance"]()
+            reference_paths = command.get("reference_image_paths") or []
+            reference_tokens = list(command.get("reference_image_tokens") or ())
+            if not reference_tokens:
+                reference_tokens = ["normal"] * len(reference_paths)
+            encode_kwargs = {}
+            for slot, (path, tier) in enumerate(
+                zip(reference_paths, reference_tokens), start=1
+            ):
+                encode_kwargs[f"image{slot}"] = self._load_input_image(path)
+                encode_kwargs[f"image{slot}_tokens"] = tier
+            positive = encoder.main(command["prompt"], self.clip, **encode_kwargs)[0]
+            negative_prompt = command.get("negative_prompt", "")
+            if cfg_value == 1.0:
+                # CFG 1 复用 positive，与普通图任务的 reuse_negative_at_cfg_one 一致
+                negative = positive
+            else:
+                negative = self.nodes.CLIPTextEncode().encode(
+                    self.clip, negative_prompt
+                )[0]
+        else:
+            positive, negative = self._encode_text_conditioning(
+                command["prompt"],
+                command.get("negative_prompt", ""),
+                cfg=cfg_value,
+                cache_scope=f"image:{command['mode']}",
+                reuse_negative_at_cfg_one=command["mode"] != "zib",
+            )
         load_seconds = time.perf_counter() - load_started
 
         emit(
@@ -415,6 +592,37 @@ class ComfyWorker:
             "downscale_ratio_spacial": downscale_ratio,
         }
         self.torch.cuda.reset_peak_memory_stats()
+
+        sampling_model = self.model
+        if is_edit:
+            # 按参考 workflow：先对源图做 VAEEncode 拿到 source_latent，再走
+            # Krea2EditModelPatch 注入 krea2_edit in-context forward。
+            # 注意：fit_mode="fit" 且接了 vae+source_image+target_latent 时，patch 节点
+            # 内部会按目标网格从 source_image 重新编码（pixel path），这里产出的
+            # source_latent 实际不会被采样使用。因此先把源图缩放到输出尺寸再编码，
+            # 避免对几千像素的大图做一次结果被丢弃的全分辨率 VAEEncode。
+            edit_module = self._ensure_krea2edit_nodes()
+            encode_image = self._downscale_image_to_target(source_image, width, height)
+            source_latent = self.nodes.VAEEncode().encode(self.vae, encode_image)[0]
+            edit_lora_path = Path(command["edit_lora_path"]).resolve()
+            lora_name = self._register_exact("loras", edit_lora_path)
+            lora_model = self.nodes.LoraLoaderModelOnly().load_lora_model_only(
+                self.model, lora_name, 1.0
+            )[0]
+            resource_metadata["edit_lora"] = self.resource_fingerprints.describe(
+                edit_lora_path
+            )
+            patcher = edit_module.NODE_CLASS_MAPPINGS["Krea2EditModelPatch"]()
+            sampling_model = patcher.patch(
+                lora_model,
+                source_latent,
+                ref_boost=float(command.get("ref_boost", 1.0)),
+                ref_boost_a=1.0,
+                fit_mode="fit",
+                vae=self.vae,
+                source_image=source_image,
+                target_latent=latent,
+            )[0]
 
         def make_sampling_callback(stage: str, started_at: float):
             previous_step_at = started_at
@@ -463,7 +671,14 @@ class ComfyWorker:
                 "total": int(command["steps"]),
             }
         )
-        samples = self._sample(command, latent, positive, negative, sampling_callback)
+        samples = self._sample(
+            command,
+            latent,
+            positive,
+            negative,
+            sampling_callback,
+            model=sampling_model,
+        )
         sampling_seconds = time.perf_counter() - sampling_started
         emit(
             {
@@ -663,7 +878,7 @@ class ComfyWorker:
 
     def _generate_video(self, command: dict) -> dict:
         command = dict(command)
-        if VideoModel(command["video_model"]) == VideoModel.MINIMAX_H3:
+        if VideoModel(command["video_model"]) in MINIMAX_H3_MODELS:
             return self._generate_minimax_h3(command)
         job_id = command["job_id"]
         requested_mode = command["video_model"]
@@ -969,33 +1184,69 @@ class ComfyWorker:
         first_frame, first_frame_fingerprint = self._load_input_image_cached(
             command.get("input_image_path")
         )
-        reference_image, reference_fingerprint = self._load_input_image_cached(
-            command.get("reference_image_path")
+        last_frame, last_frame_fingerprint = self._load_input_image_cached(
+            command.get("last_frame_image_path")
         )
         width = int(command["width"])
         height = int(command["height"])
         length = int(command["length"])
-        if reference_image is not None:
-            # 参考图存在时优先走 Ref2VA，不与 FL2VA 共用缓存条目。
-            positive = self._get_h3_ref2va_conditioning(
-                command, reference_image, reference_fingerprint
-            )
+        if VideoModel(command["video_model"]) == VideoModel.MINIMAX_H3_REF2VA:
+            # Ref2VA 多参考输入（图片/视频/音频），不与 FL2VA 共用缓存条目。
+            positive = self._get_h3_ref2va_conditioning(command)
             # 采样 latent 必须每个任务独立创建，不复用缓存。
             latent = self.EmptyMiniMaxH3LatentAV.execute(width, height, length)[0]
-        elif first_frame is None:
+        elif first_frame is None and last_frame is None:
             # 纯文生视频没有图像条件，可以复用文本 conditioning；latent 每次重新创建。
             positive = self._encode_h3_text_conditioning(command["prompt"])
             latent = self.EmptyMiniMaxH3LatentAV.execute(width, height, length)[0]
         else:
             positive = self._get_h3_fl2va_conditioning(
-                command, first_frame, first_frame_fingerprint
+                command,
+                first_frame,
+                first_frame_fingerprint,
+                last_frame,
+                last_frame_fingerprint,
             )
             latent = self.EmptyMiniMaxH3LatentAV.execute(width, height, length)[0]
-        sampling_model = self.MiniMaxH3SigmaShift.execute(
-            self.model,
-            float(command.get("shift", 12.0)),
-            float(command.get("audio_shift", 3.0)),
-        )[0]
+        is_turbo = VideoModel(command["video_model"]) == VideoModel.MINIMAX_H3_TURBO
+        turbo_sampler = None
+        turbo_sigmas = None
+        if is_turbo:
+            turbo_lora_path = command.get("turbo_lora_path")
+            if not turbo_lora_path:
+                raise ValueError("minimax-h3-turbo 缺少 turbo_lora 配置")
+            turbo_lora_path = Path(turbo_lora_path).resolve()
+            lora_name = self._register_exact("loras", turbo_lora_path)
+            # LoRA 只 patch 本次采样使用的模型副本，不污染缓存的基础模型
+            sampling_model = self.nodes.LoraLoaderModelOnly().load_lora_model_only(
+                self.model, lora_name, H3_TURBO_LORA_STRENGTH
+            )[0]
+            resource_metadata["turbo_lora"] = self.resource_fingerprints.describe(
+                turbo_lora_path
+            )
+            turbo_sampler = self.KSamplerSelect.get_sampler("euler")[0]
+            turbo_sigmas = self.BetaSamplingScheduler.get_sigmas(
+                sampling_model,
+                int(command["steps"]),
+                H3_TURBO_BETA_ALPHA,
+                H3_TURBO_BETA_BETA,
+            )[0]
+            turbo_sigmas = self.ExtendIntermediateSigmas.extend(
+                turbo_sigmas,
+                H3_TURBO_EXTEND_STEPS,
+                H3_TURBO_EXTEND_START_SIGMA,
+                H3_TURBO_EXTEND_END_SIGMA,
+                "linear",
+            )[0]
+            # 扩展后的实际采样步数与进度条 total 保持一致
+            sampling_total = int(turbo_sigmas.shape[-1]) - 1
+        else:
+            sampling_model = self.MiniMaxH3SigmaShift.execute(
+                self.model,
+                float(command.get("shift", 12.0)),
+                float(command.get("audio_shift", 3.0)),
+            )[0]
+            sampling_total = stage_total
         load_seconds = time.perf_counter() - load_started
         self.torch.cuda.reset_peak_memory_stats()
         emit(
@@ -1003,7 +1254,7 @@ class ComfyWorker:
                 "type": "stage_progress",
                 "job_id": job_id,
                 "stage": "sampling",
-                "total": stage_total,
+                "total": sampling_total,
             }
         )
         sampling_started = time.perf_counter()
@@ -1025,14 +1276,25 @@ class ComfyWorker:
                 }
             )
 
-        samples = self._sample(
-            command,
-            latent,
-            positive,
-            positive,
-            sampling_callback,
-            model=sampling_model,
-        )
+        if is_turbo:
+            samples = self._sample_h3_turbo(
+                command,
+                latent,
+                positive,
+                sampling_callback,
+                model=sampling_model,
+                sampler=turbo_sampler,
+                sigmas=turbo_sigmas,
+            )
+        else:
+            samples = self._sample(
+                command,
+                latent,
+                positive,
+                positive,
+                sampling_callback,
+                model=sampling_model,
+            )
         sampling_seconds = time.perf_counter() - sampling_started
         emit(
             {
@@ -1135,9 +1397,14 @@ class ComfyWorker:
         conditioning_cache.clear()
 
     def _get_h3_fl2va_conditioning(
-        self, command: dict, first_frame, first_frame_fingerprint
+        self,
+        command: dict,
+        first_frame,
+        first_frame_fingerprint,
+        last_frame=None,
+        last_frame_fingerprint=None,
     ):
-        """H3 FL2VA 图片条件：命中缓存或调用原生 MiniMaxH3ImageToVideo；只缓存 positive。"""
+        """H3 FL2VA 首尾帧条件：命中缓存或调用原生 MiniMaxH3ImageToVideo；只缓存 positive。"""
 
         key = (
             "h3-fl2va",
@@ -1151,6 +1418,7 @@ class ComfyWorker:
             int(command["height"]),
             int(command["length"]),
             first_frame_fingerprint,
+            last_frame_fingerprint,
         )
         _, conditioning_cache = self._image_caches()
         cached = self._lookup_image_conditioning(
@@ -1168,17 +1436,19 @@ class ComfyWorker:
             int(command["height"]),
             int(command["length"]),
             first_frame=first_frame,
+            last_frame=last_frame,
         )
         self._cache_image_conditioning(conditioning_cache, key, positive, kind="h3-fl2va")
         return positive
 
-    def _get_h3_ref2va_conditioning(
-        self, command: dict, reference_image, reference_fingerprint
-    ):
-        """H3 Ref2VA 图片条件：命中缓存或调用原生 MiniMaxH3ReferenceToVideo；只缓存 positive。"""
+    def _get_h3_ref2va_conditioning(self, command: dict):
+        """H3 Ref2VA 多参考输入条件：命中缓存或调用原生 MiniMaxH3ReferenceToVideo；只缓存 positive。"""
 
         # 当前未向客户端暴露，始终取原生默认值 "match"；未来暴露该参数时无需改键结构。
         ref_image_size = command.get("ref_image_size", "match")
+        image_paths = list(command.get("reference_image_paths") or ())
+        video_paths = list(command.get("reference_video_paths") or ())
+        audio_paths = list(command.get("reference_audio_paths") or ())
         key = (
             "h3-ref2va",
             str(self.model_path),
@@ -1191,8 +1461,10 @@ class ComfyWorker:
             int(command["height"]),
             int(command["length"]),
             ref_image_size,
-            # 引用顺序与 prompt 中 <Picture 1> 编号绑定，指纹必须按顺序进入键。
-            ((1, reference_fingerprint),),
+            # 引用顺序与 prompt 中 <Picture N> 编号绑定，指纹必须按顺序进入键。
+            tuple(self._media_fingerprint(path) for path in image_paths),
+            tuple(self._media_fingerprint(path) for path in video_paths),
+            tuple(self._media_fingerprint(path) for path in audio_paths),
         )
         _, conditioning_cache = self._image_caches()
         cached = self._lookup_image_conditioning(
@@ -1200,6 +1472,22 @@ class ComfyWorker:
         )
         if cached is not None:
             return cached
+        # 缓存未命中才真正解码参考输入，避免命中时白付视频/音频解码开销。
+        ref_images = {}
+        for index, path in enumerate(image_paths, start=1):
+            image, _fingerprint = self._load_input_image_cached(path)
+            ref_images[f"ref_image_{index}"] = image
+        ref_videos = {}
+        ref_video_audios = {}
+        for index, path in enumerate(video_paths, start=1):
+            frames, soundtrack = self._load_ref_video(path)
+            ref_videos[f"ref_video_{index}"] = frames
+            if soundtrack is not None:
+                # 与原生节点约定一致：ref_video_audio_N 是 ref_video_N 的配对音轨
+                ref_video_audios[f"ref_video_audio_{index}"] = soundtrack
+        ref_audios = {}
+        for index, path in enumerate(audio_paths, start=1):
+            ref_audios[f"ref_audio_{index}"] = self._load_ref_audio(path)
         # latent 处理同 FL2VA：丢弃节点返回的 latent，由主流程每个任务重新创建。
         positive, _latent = self.MiniMaxH3ReferenceToVideo.execute(
             self.clip,
@@ -1210,10 +1498,45 @@ class ComfyWorker:
             int(command["height"]),
             int(command["length"]),
             ref_image_size=ref_image_size,
-            ref_images={"ref_image_1": reference_image},
+            ref_images=ref_images,
+            ref_videos=ref_videos,
+            ref_video_audios=ref_video_audios,
+            ref_audios=ref_audios,
         )
         self._cache_image_conditioning(conditioning_cache, key, positive, kind="h3-ref2va")
         return positive
+
+    @staticmethod
+    def _media_fingerprint(path: str):
+        """参考输入的廉价指纹（路径+大小+mtime），不做全文 hash。"""
+        resolved = Path(path).resolve()
+        stat = resolved.stat()
+        return (str(resolved), stat.st_size, stat.st_mtime_ns)
+
+    # 原生节点要求参考视频为 24fps、2-15 秒
+    _H3_REF_VIDEO_FPS = 24
+    _H3_REF_VIDEO_MAX_FRAMES = 15 * 24
+
+    def _load_ref_video(self, path: str):
+        """加载参考视频：帧抽成 24fps、最长 15 秒；自带音轨一并返回（无音轨为 None）。"""
+        from comfy_api.latest import InputImpl
+
+        components = InputImpl.VideoFromFile(str(path)).get_components()
+        frames = components.images
+        frame_rate = float(components.frame_rate or 0)
+        if frame_rate > 0 and abs(frame_rate - self._H3_REF_VIDEO_FPS) > 1e-6:
+            step = frame_rate / self._H3_REF_VIDEO_FPS
+            total = frames.shape[0]
+            indices = [min(round(i * step), total - 1) for i in range(int(total / step))]
+            frames = frames[indices]
+        return frames[: self._H3_REF_VIDEO_MAX_FRAMES], components.audio
+
+    def _load_ref_audio(self, path: str):
+        """加载参考音频为 ComfyUI AUDIO 格式（与 nodes_audio.LoadAudio 一致）。"""
+        import torchaudio
+
+        waveform, sample_rate = torchaudio.load(str(path))
+        return {"waveform": waveform.unsqueeze(0), "sample_rate": sample_rate}
 
     def _lookup_image_conditioning(self, cache: _LruTensorCache, key, *, kind: str):
         """读取图片条件缓存并返回深拷贝；异常时按未命中处理，不影响生成。"""
@@ -1253,35 +1576,56 @@ class ComfyWorker:
             return
         logging.info("图片条件缓存写入: kind=%s bytes=%d", kind, size_bytes)
 
+    @staticmethod
+    def _video_generation_type(command: dict) -> str:
+        if (
+            command.get("reference_image_paths")
+            or command.get("reference_video_paths")
+            or command.get("reference_audio_paths")
+        ):
+            return "r2v"
+        if command.get("input_image_path") or command.get("last_frame_image_path"):
+            return "i2v"
+        return "t2v"
+
     def _video_metadata(self, command: dict, resource_metadata: dict, performance: dict) -> dict:
+        parameters = {
+            "mode": command["video_model"],
+            "generation_type": self._video_generation_type(command),
+            "prompt": command["prompt"],
+            "negative_prompt": command.get("negative_prompt", ""),
+            "width": int(command["width"]),
+            "height": int(command["height"]),
+            "duration_seconds": int(command["duration_seconds"]),
+            "fps": int(command["fps"]),
+            "length": int(command["length"]),
+            "steps": int(command["steps"]),
+            "seed": int(command["seed"]),
+            "cfg": float(command["cfg"]),
+            "sampler": command["sampler"],
+            "scheduler": command["scheduler"],
+            "denoise": float(command.get("denoise", 1.0)),
+            "shift": float(command.get("shift", 8.0)),
+            "audio_shift": float(command.get("audio_shift", 3.0)),
+            "latent_multiplier": float(command.get("latent_multiplier", 1.0)),
+            "input_image": command.get("input_image_path"),
+            "last_frame_image": command.get("last_frame_image_path"),
+            "reference_images": list(command.get("reference_image_paths") or ()),
+            "reference_videos": list(command.get("reference_video_paths") or ()),
+            "reference_audios": list(command.get("reference_audio_paths") or ()),
+        }
+        if command.get("turbo_lora_path"):
+            # turbo 配方不走 sigma shift，记录实际生效的调度参数
+            parameters["turbo_lora_strength"] = H3_TURBO_LORA_STRENGTH
+            parameters["beta_alpha"] = H3_TURBO_BETA_ALPHA
+            parameters["beta_beta"] = H3_TURBO_BETA_BETA
         return {
             "schema_version": 1,
             "generator": {
                 "name": "diffusion-workbench",
                 "version": command.get("workbench_version"),
             },
-            "parameters": {
-                "mode": command["video_model"],
-                "generation_type": "r2v" if command.get("reference_image_path") else "i2v" if command.get("input_image_path") else "t2v",
-                "prompt": command["prompt"],
-                "negative_prompt": command.get("negative_prompt", ""),
-                "width": int(command["width"]),
-                "height": int(command["height"]),
-                "duration_seconds": int(command["duration_seconds"]),
-                "fps": int(command["fps"]),
-                "length": int(command["length"]),
-                "steps": int(command["steps"]),
-                "seed": int(command["seed"]),
-                "cfg": float(command["cfg"]),
-                "sampler": command["sampler"],
-                "scheduler": command["scheduler"],
-                "denoise": float(command.get("denoise", 1.0)),
-                "shift": float(command.get("shift", 8.0)),
-                "audio_shift": float(command.get("audio_shift", 3.0)),
-                "latent_multiplier": float(command.get("latent_multiplier", 1.0)),
-                "input_image": command.get("input_image_path"),
-                "reference_image": command.get("reference_image_path"),
-            },
+            "parameters": parameters,
             "resources": {
                 **resource_metadata,
                 "clip_type": command["clip_type"],
@@ -1351,6 +1695,66 @@ class ComfyWorker:
         output.pop("downscale_ratio_temporal", None)
         output["samples"] = sampled
         return output
+
+    def _sample_h3_turbo(
+        self,
+        command,
+        latent,
+        positive,
+        callback,
+        *,
+        model,
+        sampler,
+        sigmas,
+    ):
+        """H3 Turbo 配方采样：RandomNoise + BasicGuider(CFG=1) + euler + 外部 sigma 序列。
+
+        等价于社区工作流的 SamplerCustomAdvanced 组合，这里直接驱动 guider.sample
+        以便接入我们自己的步进回调；BasicGuider 即 CFG=1，无负面条件。
+        """
+        seed = int(command["seed"])
+        guider = self.BasicGuider.get_guider(model, positive)[0]
+        noise = self.RandomNoise.get_noise(seed)[0]
+        latent = latent.copy()
+        latent_image = self.comfy_sample.fix_empty_latent_channels(
+            guider.model_patcher,
+            latent["samples"],
+            latent.get("downscale_ratio_spacial"),
+            latent.get("downscale_ratio_temporal"),
+        )
+        samples = guider.sample(
+            noise.generate_noise(latent),
+            latent_image,
+            sampler,
+            sigmas,
+            denoise_mask=latent.get("noise_mask"),
+            callback=callback,
+            disable_pbar=True,
+            seed=seed,
+        )
+        samples = samples.to(self.model_management.intermediate_device())
+        output = latent.copy()
+        output.pop("downscale_ratio_spacial", None)
+        output.pop("downscale_ratio_temporal", None)
+        output["samples"] = samples
+        return output
+
+    def _downscale_image_to_target(self, image, width: int, height: int):
+        """把 (B,H,W,C) 图像缩放到目标像素网格；仅在源图超出目标尺寸时缩放。
+
+        仅用于 edit-krea2 中结果会被丢弃的那次 VAEEncode（pixel path 会从原图按
+        目标网格重新编码），因此直接缩放到精确的 (height, width)，不保持宽高比。
+        """
+        _b, h, w, _c = image.shape
+        if h <= height and w <= width:
+            return image
+        resized = self.torch.nn.functional.interpolate(
+            image.permute(0, 3, 1, 2).float(),
+            size=(height, width),
+            mode="bicubic",
+            antialias=True,
+        )
+        return resized.permute(0, 2, 3, 1).clamp(0.0, 1.0)
 
     def _load_input_image(self, path: str | None):
         # 保持原有外部行为：空路径返回 None，文件不存在抛中文 FileNotFoundError。
@@ -1557,6 +1961,102 @@ class ComfyWorker:
         self.gguf_unet_loader_class = loader_class
         return loader_class
 
+    def _ensure_krea2edit_nodes(self):
+        """加载 comfyui-krea2edit 自定义节点包并返回模块；缺文件/缺节点抛中文 RuntimeError。"""
+        if self.krea2edit_module is not None:
+            return self.krea2edit_module
+        node_root = self.comfy_root / "custom_nodes" / "comfyui-krea2edit"
+        entrypoint = node_root / "__init__.py"
+        if not entrypoint.is_file():
+            raise RuntimeError(
+                f"krea2 编辑模式需要安装 comfyui-krea2edit 自定义节点: {node_root}"
+            )
+        module_name = "diffusion_workbench_comfyui_krea2edit"
+        module = sys.modules.get(module_name)
+        if module is None:
+            spec = importlib.util.spec_from_file_location(
+                module_name,
+                entrypoint,
+                submodule_search_locations=[str(node_root)],
+            )
+            if spec is None or spec.loader is None:
+                raise RuntimeError(f"无法加载 comfyui-krea2edit 节点: {entrypoint}")
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[module_name] = module
+            try:
+                spec.loader.exec_module(module)
+            except Exception:
+                sys.modules.pop(module_name, None)
+                raise
+        try:
+            mappings = getattr(module, "NODE_CLASS_MAPPINGS", {})
+            mappings["Krea2EditModelPatch"]
+            mappings["Krea2EditGroundedEncode"]
+        except (AttributeError, KeyError) as exc:
+            raise RuntimeError(
+                "comfyui-krea2edit 未提供 Krea2EditModelPatch/Krea2EditGroundedEncode 节点"
+            ) from exc
+        self.krea2edit_module = module
+        return module
+
+    def _ensure_rebalance_nodes(self):
+        """加载 ComfyUI-Conditioning-Rebalance 的 krea2 子模块并返回；缺文件/缺节点抛中文 RuntimeError。
+
+        只按需加载 conditioning_rebalance 与 krea2 两个子模块，不执行包 __init__
+        （避免引入 OmniNode 等无关子模块的额外依赖）。
+        """
+        if self.rebalance_module is not None:
+            return self.rebalance_module
+        node_root = self.comfy_root / "custom_nodes" / "ComfyUI-Conditioning-Rebalance"
+        if not (node_root / "krea2.py").is_file():
+            raise RuntimeError(
+                "krea2-rebalance 模式需要安装 ComfyUI-Conditioning-Rebalance 自定义节点: "
+                f"{node_root}"
+                "（https://github.com/nova452/ComfyUI-Conditioning-Rebalance）"
+            )
+        package_name = "diffusion_workbench_conditioning_rebalance"
+        krea2_module = sys.modules.get(f"{package_name}.krea2")
+        if krea2_module is None:
+            package_spec = importlib.util.spec_from_file_location(
+                package_name,
+                node_root / "__init__.py",
+                submodule_search_locations=[str(node_root)],
+            )
+            if package_spec is None:
+                raise RuntimeError(
+                    f"无法加载 ComfyUI-Conditioning-Rebalance 节点包: {node_root}"
+                )
+            package = importlib.util.module_from_spec(package_spec)
+            sys.modules[package_name] = package
+            try:
+                for submodule in ("conditioning_rebalance", "krea2"):
+                    spec = importlib.util.spec_from_file_location(
+                        f"{package_name}.{submodule}",
+                        node_root / f"{submodule}.py",
+                    )
+                    if spec is None or spec.loader is None:
+                        raise RuntimeError(
+                            f"无法加载 ComfyUI-Conditioning-Rebalance 子模块: {submodule}"
+                        )
+                    module = importlib.util.module_from_spec(spec)
+                    sys.modules[f"{package_name}.{submodule}"] = module
+                    setattr(package, submodule, module)
+                    spec.loader.exec_module(module)
+            except Exception:
+                for submodule in ("conditioning_rebalance", "krea2"):
+                    sys.modules.pop(f"{package_name}.{submodule}", None)
+                sys.modules.pop(package_name, None)
+                raise
+            krea2_module = package.krea2
+        try:
+            krea2_module.NODE_CLASS_MAPPINGS["Krea2EncodeRebalance"]
+        except (AttributeError, KeyError) as exc:
+            raise RuntimeError(
+                "ComfyUI-Conditioning-Rebalance 未提供 Krea2EncodeRebalance 节点"
+            ) from exc
+        self.rebalance_module = krea2_module
+        return krea2_module
+
     def _ensure_checkpoint(self, path: Path) -> bool:
         if (
             self.checkpoint_path == path
@@ -1707,6 +2207,9 @@ class ComfyWorker:
         self.clip_type = None
         self._clear_conditioning_caches()
         self.mode = None
+        # 先清掉 ComfyUI 全局收尾状态（cross-step/prefetch/cast buffer），否则它们
+        # 挂住的引用会让下面的 gc 无法回收刚丢弃的模型。
+        self._comfy_execution_cleanup()
         gc.collect()
         self.model_management.cleanup_models_gc()
         self.model_management.cleanup_models()
@@ -1747,6 +2250,48 @@ class ComfyWorker:
         upscale.validate()
         if upscale.enabled and not command.get("upscaled_output_path"):
             raise ValueError("启用放大时必须提供 upscaled_output_path")
+        if command.get("mode") == "edit-krea2":
+            if not command.get("input_image_path"):
+                raise ValueError("edit-krea2 模式必须提供 input_image_path")
+            if not command.get("edit_lora_path"):
+                raise ValueError("edit-krea2 模式必须提供 edit_lora_path")
+            grounding_px = command.get("grounding_px")
+            if (
+                not isinstance(grounding_px, int)
+                or isinstance(grounding_px, bool)
+                or not 0 <= grounding_px <= 4096
+            ):
+                raise ValueError("edit-krea2 grounding_px 必须是 0 到 4096 的整数")
+            ref_boost = command.get("ref_boost")
+            if not isinstance(ref_boost, (int, float)) or isinstance(ref_boost, bool):
+                raise ValueError("edit-krea2 ref_boost 必须是数值")
+            import math as _math
+            if not _math.isfinite(float(ref_boost)) or not 0 <= float(ref_boost) <= 1000:
+                raise ValueError("edit-krea2 ref_boost 必须是 0 到 1000 的有限数值")
+            if upscale.enabled:
+                raise ValueError("edit-krea2 模式暂不支持图片放大")
+        elif command.get("input_image_path") is not None:
+            raise ValueError("仅 edit-krea2 模式支持输入图片编辑")
+        if command.get("mode") == "krea2-rebalance":
+            reference_paths = command.get("reference_image_paths") or []
+            if not 1 <= len(reference_paths) <= REBALANCE_MAX_REFERENCE_IMAGES:
+                raise ValueError(
+                    "krea2-rebalance 模式必须提供 1 到 "
+                    f"{REBALANCE_MAX_REFERENCE_IMAGES} 张参考图"
+                )
+            tokens = command.get("reference_image_tokens") or []
+            if tokens and len(tokens) != len(reference_paths):
+                raise ValueError(
+                    "krea2-rebalance reference_image_tokens 数量必须与参考图数量一致"
+                )
+            for tier in tokens:
+                if tier not in REBALANCE_TOKEN_TIERS:
+                    raise ValueError(
+                        "krea2-rebalance 参考图 token 档位必须是 "
+                        f"{'/'.join(REBALANCE_TOKEN_TIERS)}: {tier}"
+                    )
+        elif command.get("reference_image_paths"):
+            raise ValueError("仅 krea2-rebalance 模式支持参考图")
 
     def _validate_runtime_sampling(self, command: dict) -> None:
         sampler = command["sampler"]
@@ -1772,7 +2317,7 @@ class ComfyWorker:
         except ValueError:
             raise ValueError(f"不支持视频模型: {command.get('video_model')}") from None
         expected_clip_type = (
-            "minimax" if video_model == VideoModel.MINIMAX_H3 else "wan"
+            "minimax" if video_model in MINIMAX_H3_MODELS else "wan"
         )
         if command.get("clip_type") != expected_clip_type:
             raise ValueError(
@@ -1786,7 +2331,7 @@ class ComfyWorker:
         length = int(command["length"])
         if duration <= 0 or fps <= 0 or fps > 120:
             raise ValueError("视频时长必须为正数，帧率必须在 1 到 120 之间")
-        if video_model == VideoModel.MINIMAX_H3:
+        if video_model in MINIMAX_H3_MODELS:
             if width < H3_MIN_SIZE or height < H3_MIN_SIZE or width % 32 or height % 32:
                 raise ValueError("MiniMax H3 视频宽高必须是 32 的倍数")
             if width > H3_MAX_SIZE or height > H3_MAX_SIZE or width * height > H3_MAX_PIXELS:
@@ -1802,13 +2347,42 @@ class ComfyWorker:
                 raise ValueError("MiniMax H3 CFG 固定为 1")
             if not command.get("audio_vae_path"):
                 raise ValueError("MiniMax H3 必须提供音频 VAE")
-            has_reference = bool(command.get("reference_image_path"))
+            reference_images = list(command.get("reference_image_paths") or ())
+            reference_videos = list(command.get("reference_video_paths") or ())
+            reference_audios = list(command.get("reference_audio_paths") or ())
+            has_reference = bool(reference_images or reference_videos or reference_audios)
             model_path = command.get("model_path", "")
-            model_is_ref2va = "ref2va" in Path(model_path).name.casefold()
-            if model_is_ref2va != has_reference:
-                raise ValueError("MiniMax H3 Ref2VA 必须使用 ref2va 模型和参考图")
-            if has_reference and command.get("input_image_path"):
-                raise ValueError("MiniMax H3 首帧输入与参考图不能同时提供")
+            model_is_ref2va = is_h3_ref2va_model_name(Path(model_path).name)
+            if video_model in (
+                VideoModel.MINIMAX_H3_FL2VA,
+                VideoModel.MINIMAX_H3_TURBO,
+            ):
+                if model_is_ref2va:
+                    raise ValueError(f"{video_model.value} 必须选择 fl2va 模型")
+                if has_reference:
+                    raise ValueError(f"{video_model.value} 不接受参考输入")
+                if video_model == VideoModel.MINIMAX_H3_TURBO and not command.get(
+                    "turbo_lora_path"
+                ):
+                    raise ValueError("MiniMax H3 Turbo 必须提供 turbo LoRA")
+            else:
+                if not model_is_ref2va:
+                    raise ValueError("MiniMax H3 Ref2VA 必须选择 ref2va 模型")
+                if command.get("input_image_path") or command.get("last_frame_image_path"):
+                    raise ValueError("MiniMax H3 Ref2VA 不接受首帧/尾帧输入")
+                if not has_reference:
+                    raise ValueError("MiniMax H3 Ref2VA 至少需要一个参考输入")
+                if len(reference_images) > H3_REF2VA_MAX_IMAGES:
+                    raise ValueError("MiniMax H3 Ref2VA 参考图不能超过 9 张")
+                if len(reference_videos) > H3_REF2VA_MAX_VIDEOS:
+                    raise ValueError("MiniMax H3 Ref2VA 参考视频不能超过 3 段")
+                if len(reference_audios) > H3_REF2VA_MAX_AUDIOS:
+                    raise ValueError("MiniMax H3 Ref2VA 参考音频不能超过 3 段")
+                if (
+                    len(reference_images) + len(reference_videos) + len(reference_audios)
+                    > H3_REF2VA_MAX_TOTAL
+                ):
+                    raise ValueError("MiniMax H3 Ref2VA 参考输入总数不能超过 12 个")
         else:
             if width % 16 or height % 16:
                 raise ValueError("视频宽高必须是 16 的倍数")
@@ -1899,6 +2473,29 @@ def main() -> None:
                 emit({"type": "released"})
             except Exception as exc:
                 emit({"type": "error", "job_id": None, "error": f"{type(exc).__name__}: {exc}"})
+            continue
+        if command_type == "describe_image":
+            # 图片反推：同步命令,失败时同样释放资源,避免残留半初始化的 clip。
+            with active_lock:
+                active_job_id = command.get("job_id")
+            try:
+                payload = worker.describe_image(command)
+            except Exception as exc:
+                traceback_text = traceback.format_exc()
+                try:
+                    worker.release()
+                except Exception:
+                    logging.exception("反推失败后的资源清理也失败")
+                payload = {
+                    "type": "error",
+                    "job_id": command.get("job_id"),
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "traceback": traceback_text,
+                }
+            finally:
+                with active_lock:
+                    active_job_id = None
+            emit(payload)
             continue
         if command_type not in {"generate", "generate_video"}:
             emit(

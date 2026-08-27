@@ -59,7 +59,10 @@ CREATE TABLE IF NOT EXISTS jobs (
     upscale_json TEXT NOT NULL DEFAULT '{}',
     job_kind TEXT NOT NULL DEFAULT 'image',
     input_image TEXT,
+    grounding_px INTEGER,
+    ref_boost REAL,
     reference_image TEXT,
+    reference_inputs TEXT,
     video_duration_seconds INTEGER,
     fps INTEGER,
     frame_count INTEGER,
@@ -103,6 +106,7 @@ class JobStore:
                 "job_kind": "TEXT NOT NULL DEFAULT 'image'",
                 "input_image": "TEXT",
                 "reference_image": "TEXT",
+                "reference_inputs": "TEXT",
                 "video_duration_seconds": "INTEGER",
                 "fps": "INTEGER",
                 "frame_count": "INTEGER",
@@ -110,6 +114,9 @@ class JobStore:
                 "shift": "REAL NOT NULL DEFAULT 8.0",
                 "latent_multiplier": "REAL NOT NULL DEFAULT 1.0",
                 "audio_vae": "TEXT",
+                # Krea2 图像编辑专用列；旧库通过 ALTER TABLE 增量添加。
+                "grounding_px": "INTEGER",
+                "ref_boost": "REAL",
             }
             for name, declaration in migrations.items():
                 if name not in columns:
@@ -229,6 +236,21 @@ class JobStore:
                     if settings.upscale.enabled
                     else None
                 )
+                is_edit = settings.mode == Mode.KREA2_EDIT
+                input_image_value = (
+                    str(settings.input_image.resolve())
+                    if settings.input_image is not None
+                    else None
+                )
+                # 仅编辑模式写入实际值；其他 mode 落 NULL，避免误传 768/1.0 默认值。
+                grounding_px_value = int(settings.grounding_px) if is_edit else None
+                ref_boost_value = float(settings.ref_boost) if is_edit else None
+                # 仅 krea2-rebalance 模式写入参考图 JSON；其他 mode 落 NULL。
+                reference_inputs_value = (
+                    _rebalance_reference_json(settings)
+                    if settings.mode == Mode.KREA2_REBALANCE
+                    else None
+                )
                 values = (
                     job_id,
                     batch_id,
@@ -258,6 +280,10 @@ class JobStore:
                         separators=(",", ":"),
                     ),
                     "image",
+                    input_image_value,
+                    grounding_px_value,
+                    ref_boost_value,
+                    reference_inputs_value,
                 )
                 connection.execute(
                     """
@@ -265,8 +291,8 @@ class JobStore:
                         id, batch_id, status, submitted_at, output_path, upscaled_output_path, output_date,
                         daily_index, mode, prompt, negative_prompt, model, vae, text_encoder, sampler,
                         scheduler, width, height, steps, seed, cfg, model_loader, upscale_json,
-                        job_kind
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        job_kind, input_image, grounding_px, ref_boost, reference_inputs
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     values,
                 )
@@ -337,11 +363,7 @@ class JobStore:
                         if settings.input_image is not None
                         else None
                     ),
-                    (
-                        str(settings.reference_image.resolve())
-                        if settings.reference_image is not None
-                        else None
-                    ),
+                    _reference_inputs_json(settings),
                     settings.duration_seconds,
                     settings.fps,
                     settings.length,
@@ -355,7 +377,7 @@ class JobStore:
                         id, batch_id, status, submitted_at, output_path, output_date,
                         daily_index, mode, prompt, negative_prompt, model, vae,
                         text_encoder, audio_vae, sampler, scheduler, width, height, steps, seed,
-                        cfg, model_loader, upscale_json, job_kind, input_image, reference_image,
+                        cfg, model_loader, upscale_json, job_kind, input_image, reference_inputs,
                         video_duration_seconds, fps, frame_count, denoise, shift,
                         latent_multiplier
                     ) VALUES (
@@ -566,6 +588,16 @@ class JobStore:
             error=row["error"],
             upscale=UpscaleSettings.from_dict(json.loads(row["upscale_json"])),
             model_loader=ModelLoader(row["model_loader"]),
+            input_image_path=(
+                Path(row["input_image"]) if row["input_image"] else None
+            ),
+            grounding_px=(
+                int(row["grounding_px"]) if row["grounding_px"] is not None else None
+            ),
+            ref_boost=(
+                float(row["ref_boost"]) if row["ref_boost"] is not None else None
+            ),
+            **_parse_image_reference_inputs(row),
         )
 
     @staticmethod
@@ -586,9 +618,7 @@ class JobStore:
             input_image_path=(
                 Path(row["input_image"]) if row["input_image"] else None
             ),
-            reference_image_path=(
-                Path(row["reference_image"]) if row["reference_image"] else None
-            ),
+            **_parse_video_reference_inputs(row),
             model_path=Path(row["model"]),
             vae_path=Path(row["vae"]),
             text_encoder_path=Path(row["text_encoder"]),
@@ -608,3 +638,88 @@ class JobStore:
             latent_multiplier=row["latent_multiplier"],
             error=row["error"],
         )
+
+
+
+def _rebalance_reference_json(settings: GenerationSettings) -> str | None:
+    """把 krea2-rebalance 的参考图与 token 档位序列化为 JSON；无参考图时写 NULL。"""
+    if not settings.reference_images:
+        return None
+    payload = {
+        "images": [str(path.resolve()) for path in settings.reference_images],
+        "tokens": list(settings.reference_image_tokens),
+    }
+    return json.dumps(payload)
+
+
+def _parse_image_reference_inputs(row: sqlite3.Row) -> dict:
+    """从 reference_inputs JSON 还原图片任务 JobRecord 的参考图字段。
+
+    非 krea2-rebalance 任务该列为 NULL 或视频格式 JSON，解析失败一律回退为空 tuple。
+    """
+    raw = row["reference_inputs"]
+    data = None
+    if raw:
+        try:
+            data = json.loads(raw)
+        except (TypeError, ValueError):
+            data = None
+    if not isinstance(data, dict):
+        data = {}
+    return {
+        "reference_image_paths": tuple(
+            Path(value) for value in data.get("images") or ()
+        ),
+        "reference_image_tokens": tuple(
+            str(value) for value in data.get("tokens") or ()
+        ),
+    }
+
+
+def _reference_inputs_json(settings: VideoGenerationSettings) -> str | None:
+    """把尾帧与三类参考输入序列化为 JSON；全部为空时写 NULL。"""
+    payload = {
+        "last_frame_image": (
+            str(settings.last_frame_image.resolve())
+            if settings.last_frame_image is not None
+            else None
+        ),
+        "images": [str(path.resolve()) for path in settings.reference_images],
+        "videos": [str(path.resolve()) for path in settings.reference_videos],
+        "audios": [str(path.resolve()) for path in settings.reference_audios],
+    }
+    if not payload["last_frame_image"] and not any(
+        payload[key] for key in ("images", "videos", "audios")
+    ):
+        return None
+    return json.dumps(payload)
+
+
+def _parse_video_reference_inputs(row: sqlite3.Row) -> dict:
+    """从 reference_inputs JSON 还原 VideoJobRecord 的参考输入字段。
+
+    旧行没有 JSON 内容时回落到单张 reference_image 列，保证历史 r2v 任务可读。
+    """
+    raw = row["reference_inputs"]
+    data = None
+    if raw:
+        try:
+            data = json.loads(raw)
+        except (TypeError, ValueError):
+            data = None
+    if not isinstance(data, dict):
+        data = {}
+    images = tuple(data.get("images") or ())
+    if not images and row["reference_image"]:
+        images = (row["reference_image"],)
+    last_frame = data.get("last_frame_image")
+    return {
+        "last_frame_image_path": Path(last_frame) if last_frame else None,
+        "reference_image_paths": tuple(Path(value) for value in images),
+        "reference_video_paths": tuple(
+            Path(value) for value in data.get("videos") or ()
+        ),
+        "reference_audio_paths": tuple(
+            Path(value) for value in data.get("audios") or ()
+        ),
+    }

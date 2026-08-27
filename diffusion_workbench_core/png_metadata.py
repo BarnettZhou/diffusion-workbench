@@ -82,11 +82,7 @@ def build_generation_metadata(
             "sampler": command["sampler"],
             "scheduler": command["scheduler"],
             "denoise": 1.0,
-            "negative_conditioning": (
-                "encoded_negative_prompt"
-                if command["mode"] == "zib" or float(command["cfg"]) != 1.0
-                else "positive_reused"
-            ),
+            "negative_conditioning": _negative_conditioning_label(command),
             "upscale": dict(command.get("upscale") or {"enabled": False}),
         },
         "resources": {
@@ -108,6 +104,26 @@ def build_generation_metadata(
         metadata["performance"] = dict(performance)
     if resources is not None and "upscale_model" in resources:
         metadata["resources"]["upscale_model"] = dict(resources["upscale_model"])
+    # Krea2 编辑模式附加参数与 LoRA 资源字段；其他模式不写入以保持 schema 干净。
+    if command.get("mode") == "edit-krea2":
+        if command.get("grounding_px") is not None:
+            metadata["parameters"]["grounding_px"] = int(command["grounding_px"])
+        if command.get("ref_boost") is not None:
+            metadata["parameters"]["ref_boost"] = float(command["ref_boost"])
+        edit_lora_path = command.get("edit_lora_path")
+        if edit_lora_path:
+            metadata["resources"]["edit_lora"] = _optional_resource_or_default(
+                resources, "edit_lora", edit_lora_path
+            )
+    # Krea2 参考图重排模式附加参考图字段；其他模式不写入以保持 schema 干净。
+    if command.get("mode") == "krea2-rebalance":
+        reference_paths = command.get("reference_image_paths") or []
+        metadata["parameters"]["reference_images"] = [
+            Path(value).name for value in reference_paths
+        ]
+        metadata["parameters"]["reference_image_tokens"] = [
+            str(tier) for tier in (command.get("reference_image_tokens") or [])
+        ]
     return metadata
 
 
@@ -142,6 +158,19 @@ def read_generation_metadata(path: str | Path) -> dict[str, Any] | None:
             f"{schema_version!r}"
         )
     return metadata
+
+
+def _negative_conditioning_label(command: Mapping[str, Any]) -> str:
+    """决定 negative_conditioning 字段标签：positive_reused / encoded_negative_prompt / conditioning_zero_out。"""
+    if command["mode"] == "edit-krea2" and not command.get("negative_prompt"):
+        # 编辑模式 + cfg != 1 且无 negative_prompt 时直接 zero_out positive
+        if float(command["cfg"]) != 1.0:
+            return "conditioning_zero_out"
+        # CFG 1 直接复用 positive
+        return "positive_reused"
+    if command["mode"] == "zib" or float(command["cfg"]) != 1.0:
+        return "encoded_negative_prompt"
+    return "positive_reused"
 
 
 def _resource(value: str | Path) -> dict[str, str]:

@@ -11,7 +11,12 @@ async function request(path, options = {}) {
     let detail = `HTTP ${response.status}`;
     try {
       const body = await response.json();
-      if (body.detail) detail = String(body.detail);
+      if (Array.isArray(body.detail)) {
+        // pydantic 校验错误的 detail 是对象数组,提取 msg 拼成可读文本
+        detail = body.detail.map((item) => item?.msg ?? String(item)).join("; ");
+      } else if (body.detail) {
+        detail = String(body.detail);
+      }
     } catch {
       /* 保留默认错误信息 */
     }
@@ -108,7 +113,7 @@ export const api = {
   // ---------- 视频生成 ----------
   // 视频模型分类与能力:{video_model,label,generation_types,requires_input_image}
   videoModels: () => request("/api/v1/video/models"),
-  // 指定视频模型的资源:{"models": [{index,name,display_name,alias}], "vaes": [...]}
+  // 指定视频模型的资源:{"models": [...], "vaes": [...], "text_encoders": [...]}
   videoResources: (videoModel) =>
     request(`/api/v1/video/models/${encodeURIComponent(videoModel)}/resources`),
   submitVideo: (payload) =>
@@ -132,12 +137,103 @@ export const api = {
       }
       return response.json();
     }),
+  // 受控上传 Ref2VA 参考视频(二进制 body),返回 {id, url}
+  uploadVideoInputVideo: (file) =>
+    fetch(`${API_BASE}/api/v1/video/input-videos`, {
+      method: "POST",
+      headers: { "Content-Type": file.type },
+      body: file,
+    }).then(async (response) => {
+      if (!response.ok) {
+        let detail = `参考视频上传失败(HTTP ${response.status})`;
+        try {
+          const body = await response.json();
+          if (body.detail) detail = String(body.detail);
+        } catch { /* 保留默认错误信息 */ }
+        throw new Error(detail);
+      }
+      return response.json();
+    }),
+  // 受控上传 Ref2VA 参考音频(二进制 body),返回 {id, url}
+  uploadVideoInputAudio: (file) =>
+    fetch(`${API_BASE}/api/v1/video/input-audios`, {
+      method: "POST",
+      headers: { "Content-Type": file.type },
+      body: file,
+    }).then(async (response) => {
+      if (!response.ok) {
+        let detail = `参考音频上传失败(HTTP ${response.status})`;
+        try {
+          const body = await response.json();
+          if (body.detail) detail = String(body.detail);
+        } catch { /* 保留默认错误信息 */ }
+        throw new Error(detail);
+      }
+      return response.json();
+    }),
   // 把相册图片直接导入为 I2V 输入图片(服务端本地复制),返回 {id, url}
   importVideoInputFromAlbum: (id, dir = "output") =>
     request("/api/v1/video/input-images/from-album", {
       method: "POST",
       body: JSON.stringify({ id, dir }),
     }),
+  // 把生成/编辑任务的输出图直接导入为 I2V 输入图片(服务端本地复制),返回 {id, url}
+  importVideoInputFromJob: (jobId) =>
+    request("/api/v1/video/input-images/from-job", {
+      method: "POST",
+      body: JSON.stringify({ job_id: jobId }),
+    }),
+  // ---------- Krea2 图像编辑 ----------
+  // 编辑能力开关与默认值:{"enabled": bool, "defaults": {"grounding_px", "ref_boost"}}
+  editInfo: () => request("/api/v1/edit/info"),
+  // 受控上传编辑输入图片(二进制 body),返回 {id, url};与视频上传同构
+  uploadEditInputImage: (file) =>
+    fetch(`${API_BASE}/api/v1/edit/input-images`, {
+      method: "POST",
+      headers: { "Content-Type": file.type },
+      body: file,
+    }).then(async (response) => {
+      if (!response.ok) {
+        let detail = `输入图片上传失败(HTTP ${response.status})`;
+        try {
+          const body = await response.json();
+          if (body.detail) detail = String(body.detail);
+        } catch { /* 保留默认错误信息 */ }
+        throw new Error(detail);
+      }
+      return response.json();
+    }),
+  // 把相册图片直接导入为编辑输入图片(服务端本地复制),返回 {id, url}
+  importEditInputFromAlbum: (id, dir = "output") =>
+    request("/api/v1/edit/input-images/from-album", {
+      method: "POST",
+      body: JSON.stringify({ id, dir }),
+    }),
+  // 把生成/编辑任务的输出图直接导入为编辑输入图片(服务端本地复制),返回 {id, url}
+  importEditInputFromJob: (jobId) =>
+    request("/api/v1/edit/input-images/from-job", {
+      method: "POST",
+      body: JSON.stringify({ job_id: jobId }),
+    }),
+  // 提交编辑任务;服务端按 krea2 资源列表 + 加载 edit_lora 生成 edit-krea2 任务
+  submitEdit: (payload) =>
+    request("/api/v1/edit/jobs", { method: "POST", body: JSON.stringify(payload) }),
+  // 提交参考图重排任务;复用 krea2 资源,参考图为受控上传 id(1-4 张)
+  submitRebalance: (payload) =>
+    request("/api/v1/edit/rebalance-jobs", { method: "POST", body: JSON.stringify(payload) }),
+  // ---------- 图片反推 ----------
+  // 同步反推(复用 krea2 Qwen3-VL);输入图片走 uploadEditInputImage 的受控 id
+  caption: (payload) =>
+    request("/api/v1/caption", { method: "POST", body: JSON.stringify(payload) }),
+  // API 反推:走设置页配置的外部视觉模型接口(Ollama / OpenAI 兼容),不占用本地 GPU
+  captionRemote: (payload) =>
+    request("/api/v1/caption/remote", { method: "POST", body: JSON.stringify(payload) }),
+  // 反推 API 连通性测试;payload 为表单当前值 {interface, base_url, api_key, model}
+  captionRemoteTest: (payload) =>
+    request("/api/v1/caption/remote/test", { method: "POST", body: JSON.stringify(payload) }),
+  // API 反推请求记录(分页)
+  captionRemoteRequests: (page, pageSize = 10) =>
+    request(`/api/v1/caption/remote/requests?page=${page}&page_size=${pageSize}`),
   // ---------- 设置页:视频模型卡片(镜像图片 models 端点,不支持 alias) ----------
   videoModelCards: (videoModel) =>
     request(`/api/v1/video-models/${encodeURIComponent(videoModel)}`),

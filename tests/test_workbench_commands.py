@@ -24,22 +24,29 @@ class FakeCore:
             path=root / "workbench.yaml",
             comfyui=ComfyConfig(root, root / "python.exe"),
             resources={
-                Mode.ZIT: ModeResources((), (), root / "zit-te.safetensors", "stable_diffusion"),
-                Mode.KREA2: ModeResources((), (), root / "krea-te.safetensors", "krea2"),
-                Mode.ZIB: ModeResources((), (), root / "zib-te.safetensors", "stable_diffusion"),
-                Mode.SDXL: ModeResources((), (), None, None, ModelLoader.CHECKPOINT),
+                Mode.ZIT: ModeResources((), (), (root / "zit-te.safetensors",), "stable_diffusion"),
+                Mode.KREA2: ModeResources((), (), (root / "krea-te.safetensors",), "krea2"),
+                Mode.ZIB: ModeResources((), (), (root / "zib-te.safetensors",), "stable_diffusion"),
+                Mode.SDXL: ModeResources((), (), (), None, ModelLoader.CHECKPOINT),
             },
             output_dir=root / "output",
             database=root / "jobs.sqlite3",
             worker_timeout_seconds=300,
             video_resources={
                 VideoModel.WAN22_TI2V_5B: VideoResources(
-                    (root,), (root,), root / "umt5.safetensors"
+                    (root,), (root,), (root / "umt5.safetensors",)
                 ),
-                VideoModel.MINIMAX_H3: VideoResources(
+                VideoModel.MINIMAX_H3_FL2VA: VideoResources(
                     (root,),
                     (root,),
-                    root / "qwen3vl.safetensors",
+                    (root / "qwen3vl.safetensors",),
+                    "minimax",
+                    root / "h3-audio-vae.safetensors",
+                ),
+                VideoModel.MINIMAX_H3_REF2VA: VideoResources(
+                    (root,),
+                    (root,),
+                    (root / "qwen3vl.safetensors",),
                     "minimax",
                     root / "h3-audio-vae.safetensors",
                 ),
@@ -48,12 +55,16 @@ class FakeCore:
         self.items = {
             (Mode.ZIT, ResourceKind.DIFFUSION): [ResourceItem(1, root / "zit.safetensors")],
             (Mode.ZIT, ResourceKind.VAE): [ResourceItem(1, root / "zit-vae.safetensors")],
+            (Mode.ZIT, ResourceKind.TEXT_ENCODER): [ResourceItem(1, root / "zit-te.safetensors")],
             (Mode.KREA2, ResourceKind.DIFFUSION): [ResourceItem(1, root / "krea.safetensors")],
             (Mode.KREA2, ResourceKind.VAE): [ResourceItem(1, root / "krea-vae.safetensors")],
+            (Mode.KREA2, ResourceKind.TEXT_ENCODER): [ResourceItem(1, root / "krea-te.safetensors")],
             (Mode.ZIB, ResourceKind.DIFFUSION): [ResourceItem(1, root / "zib.safetensors")],
             (Mode.ZIB, ResourceKind.VAE): [ResourceItem(1, root / "zib-vae.safetensors")],
+            (Mode.ZIB, ResourceKind.TEXT_ENCODER): [ResourceItem(1, root / "zib-te.safetensors")],
             (Mode.SDXL, ResourceKind.DIFFUSION): [ResourceItem(1, root / "sdxl.safetensors")],
             (Mode.SDXL, ResourceKind.VAE): [],
+            (Mode.SDXL, ResourceKind.TEXT_ENCODER): [],
         }
         self.submitted = []
         self.submitted_videos = []
@@ -62,6 +73,8 @@ class FakeCore:
             ResourceItem(2, root / "minimax_h3_ref2va_int4.safetensors"),
         ]
         self.video_vae_items = [ResourceItem(1, root / "wan-vae.safetensors")]
+        # 视频 text encoder 改为目录+index 选择;TUI 默认取列表第一项
+        self.video_text_encoder_items = [ResourceItem(1, root / "umt5.safetensors")]
         self.upscale_models = [ResourceItem(1, root / "4x-UltraSharp.pth")]
         self.stopped = False
         self.skipped_job_id = None
@@ -80,6 +93,9 @@ class FakeCore:
 
     def list_video_vaes(self, _video_model):
         return self.video_vae_items
+
+    def list_video_text_encoders(self, _video_model):
+        return self.video_text_encoder_items
 
     def set_alias(self, mode, kind, path, alias):
         items = self.items[(mode, kind)]
@@ -147,7 +163,7 @@ class CommandSessionTests(unittest.TestCase):
             core = FakeCore(root)
             session = CommandSession(core)
 
-            session.handle("/video type set minimax-h3")
+            session.handle("/video type set minimax-h3-fl2va")
             session.handle("/video model set 1")
             session.handle("/video vae set 1")
             session.handle("/video prompt a quiet room")
@@ -175,7 +191,7 @@ class CommandSessionTests(unittest.TestCase):
             core = FakeCore(root)
             session = CommandSession(core)
 
-            session.handle("/video type set minimax-h3")
+            session.handle("/video type set minimax-h3-ref2va")
             session.handle("/video model set 2")
             session.handle("/video vae set 1")
             session.handle("/video prompt <Picture 1> walks through a studio")
@@ -184,7 +200,7 @@ class CommandSessionTests(unittest.TestCase):
 
             settings, _ = core.submitted_videos[0]
             self.assertEqual(settings.generation_type, "r2v")
-            self.assertEqual(settings.reference_image, reference)
+            self.assertEqual(settings.reference_images, (reference,))
             self.assertIn("视频队列", "\n".join(response.lines))
 
     def test_resource_release_command_calls_core(self):

@@ -39,5 +39,10 @@ def get_llm_record_store(request: Request) -> LLMRecordStore:
     return request.app.state.llm_record_store
 
 
+def get_caption_record_store(request: Request) -> LLMRecordStore:
+    """API 反推请求记录;与 llm 共用 LLMRecordStore 实现,独立 JSON 文件。"""
+    return request.app.state.caption_record_store
+
+
 def get_prompt_session_store(request: Request) -> PromptSessionStore:
     return request.app.state.prompt_session_store

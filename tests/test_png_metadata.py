@@ -129,6 +129,160 @@ class PngMetadataTests(unittest.TestCase):
             self.assertNotEqual(first["sha256"], replaced["sha256"])
             self.assertEqual(replaced["size_bytes"], len(b"replacement"))
 
+    def test_edit_krea2_metadata_records_edit_fields_and_lora(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            command = {
+                "job_id": "edit-job",
+                "batch_id": None,
+                "workbench_version": "0.1.0",
+                "mode": "edit-krea2",
+                "prompt": "turn the cat into a tiger",
+                "negative_prompt": "",
+                "width": 576,
+                "height": 576,
+                "steps": 8,
+                "seed": 7,
+                "cfg": 1.0,
+                "sampler": "euler",
+                "scheduler": "simple",
+                "model_path": root / "krea2.safetensors",
+                "vae_path": root / "vae.safetensors",
+                "text_encoder_path": root / "te.safetensors",
+                "clip_type": "krea2",
+                "input_image_path": str((root / "source.png").resolve()),
+                "grounding_px": 512,
+                "ref_boost": 2.0,
+                "edit_lora_path": str((root / "edit_lora.safetensors").resolve()),
+            }
+            for filename in ("krea2.safetensors", "vae.safetensors", "te.safetensors", "edit_lora.safetensors"):
+                (root / filename).write_bytes(filename.encode("ascii"))
+            (root / "source.png").write_bytes(b"source")
+
+            metadata = build_generation_metadata(command, {})
+
+            self.assertEqual(metadata["parameters"]["mode"], "edit-krea2")
+            self.assertEqual(metadata["parameters"]["grounding_px"], 512)
+            self.assertEqual(metadata["parameters"]["ref_boost"], 2.0)
+            # CFG 1 + 编辑模式 + 空 negative → positive_reused
+            self.assertEqual(
+                metadata["parameters"]["negative_conditioning"], "positive_reused"
+            )
+            self.assertEqual(
+                metadata["resources"]["edit_lora"]["filename"], "edit_lora.safetensors"
+            )
+
+    def test_edit_krea2_metadata_marks_conditioning_zero_out_when_cfg_not_one(self):
+        command = {
+            "job_id": "edit-job",
+            "mode": "edit-krea2",
+            "prompt": "p",
+            "negative_prompt": "",
+            "width": 576,
+            "height": 576,
+            "steps": 8,
+            "seed": 1,
+            "cfg": 2.0,
+            "sampler": "euler",
+            "scheduler": "simple",
+            "model_path": "m",
+            "clip_type": "krea2",
+        }
+
+        metadata = build_generation_metadata(command, {})
+
+        self.assertEqual(
+            metadata["parameters"]["negative_conditioning"], "conditioning_zero_out"
+        )
+
+    def test_non_edit_metadata_omits_edit_fields(self):
+        command = {
+            "job_id": "krea2-job",
+            "mode": "krea2",
+            "prompt": "p",
+            "negative_prompt": "",
+            "width": 576,
+            "height": 576,
+            "steps": 8,
+            "seed": 1,
+            "cfg": 1.0,
+            "sampler": "euler",
+            "scheduler": "simple",
+            "model_path": "m",
+            "clip_type": "krea2",
+            # 即使错误地携带 edit 字段也应被忽略
+            "input_image_path": "/tmp/source.png",
+            "grounding_px": 512,
+            "ref_boost": 2.0,
+            "edit_lora_path": "/tmp/edit_lora.safetensors",
+        }
+
+        metadata = build_generation_metadata(command, {})
+
+        self.assertNotIn("grounding_px", metadata["parameters"])
+        self.assertNotIn("ref_boost", metadata["parameters"])
+        self.assertNotIn("edit_lora", metadata["resources"])
+
+    def test_rebalance_metadata_records_reference_fields(self):
+        command = {
+            "job_id": "rebalance-job",
+            "batch_id": None,
+            "workbench_version": "0.1.0",
+            "mode": "krea2-rebalance",
+            "prompt": "参考构图画一只猫",
+            "negative_prompt": "",
+            "width": 576,
+            "height": 576,
+            "steps": 8,
+            "seed": 7,
+            "cfg": 1.0,
+            "sampler": "euler",
+            "scheduler": "simple",
+            "model_path": "m",
+            "clip_type": "krea2",
+            "reference_image_paths": ["/tmp/ref-a.png", "/tmp/ref-b.png"],
+            "reference_image_tokens": ["low", "max"],
+        }
+
+        metadata = build_generation_metadata(command, {})
+
+        self.assertEqual(metadata["parameters"]["mode"], "krea2-rebalance")
+        self.assertEqual(
+            metadata["parameters"]["reference_images"], ["ref-a.png", "ref-b.png"]
+        )
+        self.assertEqual(
+            metadata["parameters"]["reference_image_tokens"], ["low", "max"]
+        )
+        # CFG 1 时与普通模式一致:negative 复用 positive
+        self.assertEqual(
+            metadata["parameters"]["negative_conditioning"], "positive_reused"
+        )
+
+    def test_non_rebalance_metadata_omits_reference_fields(self):
+        command = {
+            "job_id": "krea2-job",
+            "mode": "krea2",
+            "prompt": "p",
+            "negative_prompt": "",
+            "width": 576,
+            "height": 576,
+            "steps": 8,
+            "seed": 1,
+            "cfg": 1.0,
+            "sampler": "euler",
+            "scheduler": "simple",
+            "model_path": "m",
+            "clip_type": "krea2",
+            # 即使错误地携带 reference 字段也应被忽略
+            "reference_image_paths": ["/tmp/ref.png"],
+            "reference_image_tokens": ["normal"],
+        }
+
+        metadata = build_generation_metadata(command, {})
+
+        self.assertNotIn("reference_images", metadata["parameters"])
+        self.assertNotIn("reference_image_tokens", metadata["parameters"])
+
 
 if __name__ == "__main__":
     unittest.main()

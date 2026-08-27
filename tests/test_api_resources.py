@@ -24,6 +24,19 @@ class ResourcesTests(ApiTestCase):
         self.assertEqual(vaes.status_code, 200)
         self.assertEqual(vaes.json()["resources"], [])
 
+    def test_text_encoder_kind_is_listed(self):
+        response = self.client.get("/api/v1/resources/zit/text_encoder")
+
+        self.assertEqual(response.status_code, 200)
+        resources = response.json()["resources"]
+        self.assertEqual(len(resources), 1)
+        self.assertEqual(resources[0]["name"], "zit-te.safetensors")
+        self.assertNotIn("path", resources[0])
+
+        sdxl = self.client.get("/api/v1/resources/sdxl/text_encoder")
+        self.assertEqual(sdxl.status_code, 200)
+        self.assertEqual(sdxl.json()["resources"], [])
+
     def test_list_resources_hides_server_paths(self):
         response = self.client.get("/api/v1/resources/zit/diffusion")
 

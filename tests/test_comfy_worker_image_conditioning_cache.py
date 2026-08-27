@@ -65,7 +65,8 @@ class _FakeH3ReferenceToVideo:
     @classmethod
     def execute(
         cls, clip, vae, audio_vae, prompt, width, height, length,
-        ref_image_size="match", ref_images=None,
+        ref_image_size="match", ref_images=None, ref_videos=None,
+        ref_video_audios=None, ref_audios=None,
     ):
         cls.calls += 1
         conditioning = [
@@ -154,7 +155,7 @@ def _command(**overrides) -> dict:
 def _h3_command(output_dir: Path, **overrides) -> dict:
     command = {
         "job_id": "job-1",
-        "video_model": "minimax_h3",
+        "video_model": "minimax-h3-fl2va",
         "model_path": "model.safetensors",
         "vae_path": "vae.safetensors",
         "audio_vae_path": "audio_vae.safetensors",
@@ -177,7 +178,10 @@ def _h3_command(output_dir: Path, **overrides) -> dict:
         "audio_shift": 3.0,
         "latent_multiplier": 1.0,
         "input_image_path": "frame.png",
-        "reference_image_path": None,
+        "last_frame_image_path": None,
+        "reference_image_paths": [],
+        "reference_video_paths": [],
+        "reference_audio_paths": [],
         "output_path": str(output_dir / "out.mp4"),
         "workbench_version": "0.1.0",
     }
@@ -256,9 +260,29 @@ class H3ImageConditioningCacheTests(unittest.TestCase):
         _FakeH3ImageToVideo.calls = 0
         _FakeH3ReferenceToVideo.calls = 0
         _FakeEmptyLatent.calls = 0
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp_path = Path(self._tmp.name)
+        self.ref_path = self.tmp_path / "ref.png"
+        self.ref_path.write_bytes(b"ref-content")
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _ref_command(self, **overrides) -> dict:
+        # ref2va 指纹是 stat 结果,需要真实存在的文件
+        overrides.setdefault("reference_image_paths", [str(self.ref_path)])
+        return _command(**overrides)
+
+    def _worker(self) -> ComfyWorker:
+        # ref2va 会经 _load_input_image_cached 解码参考图,这里替换成假加载器
+        worker = _make_worker()
+        worker._load_input_image_cached = (
+            lambda path: (_FakeTensor(), ("fp", str(path))) if path else (None, None)
+        )
+        return worker
 
     def test_same_fl2va_input_hits_cache_and_returns_clones(self):
-        worker = _make_worker()
+        worker = self._worker()
         command = _command()
         fingerprint = ((1, 2, 2, 3), "digest")
 
@@ -271,17 +295,16 @@ class H3ImageConditioningCacheTests(unittest.TestCase):
         self.assertIsNot(first[0][0], second[0][0])
 
     def test_same_ref2va_input_hits_cache(self):
-        worker = _make_worker()
-        command = _command()
-        fingerprint = ((1, 2, 2, 3), "digest")
+        worker = self._worker()
+        command = self._ref_command()
 
-        worker._get_h3_ref2va_conditioning(command, _FakeTensor(), fingerprint)
-        worker._get_h3_ref2va_conditioning(command, _FakeTensor(), fingerprint)
+        worker._get_h3_ref2va_conditioning(command)
+        worker._get_h3_ref2va_conditioning(command)
 
         self.assertEqual(_FakeH3ReferenceToVideo.calls, 1)
 
     def test_prompt_change_misses(self):
-        worker = _make_worker()
+        worker = self._worker()
         fingerprint = ((1, 2, 2, 3), "digest")
 
         worker._get_h3_fl2va_conditioning(_command(prompt="a"), _FakeTensor(), fingerprint)
@@ -290,7 +313,7 @@ class H3ImageConditioningCacheTests(unittest.TestCase):
         self.assertEqual(_FakeH3ImageToVideo.calls, 2)
 
     def test_image_content_change_misses(self):
-        worker = _make_worker()
+        worker = self._worker()
         command = _command()
 
         worker._get_h3_fl2va_conditioning(command, _FakeTensor(), ((1, 2, 2, 3), "digest-a"))
@@ -299,19 +322,19 @@ class H3ImageConditioningCacheTests(unittest.TestCase):
         self.assertEqual(_FakeH3ImageToVideo.calls, 2)
 
     def test_size_change_misses(self):
-        worker = _make_worker()
+        worker = self._worker()
         fingerprint = ((1, 2, 2, 3), "digest")
 
         worker._get_h3_fl2va_conditioning(_command(width=1344), _FakeTensor(), fingerprint)
         worker._get_h3_fl2va_conditioning(_command(width=1024), _FakeTensor(), fingerprint)
-        worker._get_h3_ref2va_conditioning(_command(height=768), _FakeTensor(), fingerprint)
-        worker._get_h3_ref2va_conditioning(_command(height=512), _FakeTensor(), fingerprint)
+        worker._get_h3_ref2va_conditioning(self._ref_command(height=768))
+        worker._get_h3_ref2va_conditioning(self._ref_command(height=512))
 
         self.assertEqual(_FakeH3ImageToVideo.calls, 2)
         self.assertEqual(_FakeH3ReferenceToVideo.calls, 2)
 
     def test_length_change_misses(self):
-        worker = _make_worker()
+        worker = self._worker()
         fingerprint = ((1, 2, 2, 3), "digest")
 
         worker._get_h3_fl2va_conditioning(_command(length=124), _FakeTensor(), fingerprint)
@@ -320,47 +343,45 @@ class H3ImageConditioningCacheTests(unittest.TestCase):
         self.assertEqual(_FakeH3ImageToVideo.calls, 2)
 
     def test_ref_image_size_change_misses(self):
-        worker = _make_worker()
-        fingerprint = ((1, 2, 2, 3), "digest")
+        worker = self._worker()
 
-        worker._get_h3_ref2va_conditioning(_command(), _FakeTensor(), fingerprint)
-        worker._get_h3_ref2va_conditioning(
-            _command(ref_image_size="max"), _FakeTensor(), fingerprint
-        )
+        worker._get_h3_ref2va_conditioning(self._ref_command())
+        worker._get_h3_ref2va_conditioning(self._ref_command(ref_image_size="max"))
 
         self.assertEqual(_FakeH3ReferenceToVideo.calls, 2)
 
     def test_fl2va_and_ref2va_do_not_share_entries(self):
-        worker = _make_worker()
+        worker = self._worker()
         command = _command()
         fingerprint = ((1, 2, 2, 3), "digest")
 
         worker._get_h3_fl2va_conditioning(command, _FakeTensor(), fingerprint)
-        worker._get_h3_ref2va_conditioning(command, _FakeTensor(), fingerprint)
+        worker._get_h3_ref2va_conditioning(self._ref_command())
 
         self.assertEqual(_FakeH3ImageToVideo.calls, 1)
         self.assertEqual(_FakeH3ReferenceToVideo.calls, 1)
 
     def test_resource_identity_change_misses(self):
-        worker = _make_worker()
+        worker = self._worker()
         command = _command()
         fingerprint = ((1, 2, 2, 3), "digest")
 
-        worker._get_h3_ref2va_conditioning(command, _FakeTensor(), fingerprint)
+        command = self._ref_command()
+        worker._get_h3_ref2va_conditioning(command)
         worker.vae_path = Path("vae-2.safetensors")
-        worker._get_h3_ref2va_conditioning(command, _FakeTensor(), fingerprint)
+        worker._get_h3_ref2va_conditioning(command)
         worker.audio_vae_path = Path("audio-vae-2.safetensors")
-        worker._get_h3_ref2va_conditioning(command, _FakeTensor(), fingerprint)
+        worker._get_h3_ref2va_conditioning(command)
         worker.clip_path = Path("clip-2.safetensors")
-        worker._get_h3_ref2va_conditioning(command, _FakeTensor(), fingerprint)
+        worker._get_h3_ref2va_conditioning(command)
         worker.model_path = Path("model-2.safetensors")
-        worker._get_h3_ref2va_conditioning(command, _FakeTensor(), fingerprint)
+        worker._get_h3_ref2va_conditioning(command)
 
         # 初始 1 次 + vae/audio_vae/text encoder/模型各变 1 次，全部未命中。
         self.assertEqual(_FakeH3ReferenceToVideo.calls, 5)
 
     def test_clear_conditioning_caches_invalidates(self):
-        worker = _make_worker()
+        worker = self._worker()
         command = _command()
         fingerprint = ((1, 2, 2, 3), "digest")
 
@@ -371,7 +392,7 @@ class H3ImageConditioningCacheTests(unittest.TestCase):
         self.assertEqual(_FakeH3ImageToVideo.calls, 2)
 
     def test_lru_capacity_evicts_least_recently_used(self):
-        worker = _make_worker()
+        worker = self._worker()
         fingerprint = ((1, 2, 2, 3), "digest")
 
         worker._get_h3_fl2va_conditioning(_command(prompt="a"), _FakeTensor(), fingerprint)
@@ -387,7 +408,7 @@ class H3ImageConditioningCacheTests(unittest.TestCase):
         self.assertEqual(_FakeH3ImageToVideo.calls, 4)
 
     def test_entry_over_budget_is_not_cached_but_returned(self):
-        worker = _make_worker()
+        worker = self._worker()
         fingerprint = ((1, 2, 2, 3), "digest")
         # 伪造超大张量：201M 元素 × 4 字节 ≈ 768 MiB，超过 512 MiB 预算。
         huge = _FakeTensor(b"huge", (1, 3, 8192, 8192))
@@ -515,8 +536,13 @@ class MinimaxH3BranchTests(unittest.TestCase):
 
     def test_ref2va_branch_caches_conditioning_and_recreates_latent(self):
         worker = _make_h3_branch_worker()
+        ref_path = self.tmp_path / "ref.png"
+        ref_path.write_bytes(b"ref-content")
         command = _h3_command(
-            self.tmp_path, input_image_path=None, reference_image_path="ref.png"
+            self.tmp_path,
+            input_image_path=None,
+            video_model="minimax-h3-ref2va",
+            reference_image_paths=[str(ref_path)],
         )
 
         worker._generate_minimax_h3(command)
@@ -526,6 +552,35 @@ class MinimaxH3BranchTests(unittest.TestCase):
         self.assertEqual(_FakeH3ImageToVideo.calls, 0)
         self.assertEqual(_FakeEmptyLatent.calls, 2)
         self.assertEqual(worker.sample_calls, 2)
+
+
+class TestDownscaleImageToTarget(unittest.TestCase):
+    """edit-krea2 丢弃性 VAEEncode 前的源图缩放：超尺寸才缩，输出精确目标网格。"""
+
+    def _make_worker(self) -> ComfyWorker:
+        import torch
+
+        worker = object.__new__(ComfyWorker)
+        worker.torch = torch
+        return worker
+
+    def test_smaller_image_passes_through(self):
+        import torch
+
+        worker = self._make_worker()
+        image = torch.rand(1, 256, 320, 3)
+        result = worker._downscale_image_to_target(image, width=576, height=576)
+        self.assertIs(result, image)
+
+    def test_larger_image_is_downscaled_to_exact_target(self):
+        import torch
+
+        worker = self._make_worker()
+        image = torch.rand(1, 3060, 3060, 3)
+        result = worker._downscale_image_to_target(image, width=576, height=576)
+        self.assertEqual(tuple(result.shape), (1, 576, 576, 3))
+        self.assertGreaterEqual(float(result.min()), 0.0)
+        self.assertLessEqual(float(result.max()), 1.0)
 
 
 if __name__ == "__main__":

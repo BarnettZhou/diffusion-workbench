@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from .config import WorkbenchConfig
-from .domain import Mode, ResourceItem, ResourceKind, VideoModel
+from .domain import Mode, ResourceItem, ResourceKind, VideoModel, is_h3_ref2va_model_name
 from .storage import JobStore
 
 
@@ -60,13 +60,39 @@ class ResourceCatalog:
         resources = self.config.video_resources.get(video_model)
         if resources is None:
             return []
-        return self._list_model_files(resources.diffusion, include_gguf=True)
+        items = self._list_model_files(resources.diffusion, include_gguf=True)
+        # MiniMax H3 任务权重通常混放在同一目录,按文件名约定(ref2va 子串)拆分列表;
+        # turbo 与 fl2va 共用同一批 fl2va 权重
+        if video_model in (VideoModel.MINIMAX_H3_FL2VA, VideoModel.MINIMAX_H3_TURBO):
+            return self._reindex(
+                item for item in items if not is_h3_ref2va_model_name(item.path.name)
+            )
+        if video_model == VideoModel.MINIMAX_H3_REF2VA:
+            return self._reindex(
+                item for item in items if is_h3_ref2va_model_name(item.path.name)
+            )
+        return items
+
+    @staticmethod
+    def _reindex(items) -> list[ResourceItem]:
+        return [
+            ResourceItem(index=index, path=item.path, alias=item.alias)
+            for index, item in enumerate(items, start=1)
+        ]
 
     def list_video_vaes(self, video_model: VideoModel) -> list[ResourceItem]:
         resources = self.config.video_resources.get(video_model)
         if resources is None:
             return []
         return self._list_model_files(resources.vae)
+
+    def list_video_text_encoders(self, video_model: VideoModel) -> list[ResourceItem]:
+        # 视频 text encoder 与图片侧一样是"目录/文件列表 + index 选择";不含 gguf
+        # 与 diffusion 列表的拆分逻辑无关,直接全量扫描。
+        resources = self.config.video_resources.get(video_model)
+        if resources is None:
+            return []
+        return self._list_model_files(resources.text_encoder, include_gguf=True)
 
     @staticmethod
     def _list_model_files(

@@ -7,6 +7,9 @@ const VIDEO_MODEL_LABELS = {
   "wan2.2-ti2v-5b": "Wan 2.2 TI2V-5B",
   "wan2.2-i2v-14b": "Wan 2.2 I2V-14B",
   "minimax-h3": "MiniMax H3",
+  "minimax-h3-fl2va": "MiniMax H3 FL2VA",
+  "minimax-h3-ref2va": "MiniMax H3 Ref2VA",
+  "minimax-h3-turbo": "MiniMax H3 FL2VA Turbo",
 };
 
 function formatSize(bytes) {

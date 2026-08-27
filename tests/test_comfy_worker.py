@@ -95,7 +95,7 @@ class ComfyWorkerTests(unittest.TestCase):
 
     def test_h3_video_command_validates_native_av_contract(self):
         command = {
-            "video_model": "minimax-h3",
+            "video_model": "minimax-h3-fl2va",
             "clip_type": "minimax",
             "audio_vae_path": "audio.safetensors",
             "width": 608,
@@ -117,10 +117,10 @@ class ComfyWorkerTests(unittest.TestCase):
 
     def test_h3_ref2va_requires_matching_model_and_reference(self):
         command = {
-            "video_model": "minimax-h3",
+            "video_model": "minimax-h3-ref2va",
             "clip_type": "minimax",
             "model_path": "minimax_h3_ref2va_int4.safetensors",
-            "reference_image_path": "reference.png",
+            "reference_image_paths": ["reference.png"],
             "audio_vae_path": "audio.safetensors",
             "width": 608,
             "height": 352,
@@ -134,7 +134,7 @@ class ComfyWorkerTests(unittest.TestCase):
             "denoise": 1,
         }
         ComfyWorker._validate_video(None, command)
-        command["reference_image_path"] = None
+        command["reference_image_paths"] = []
         with self.assertRaisesRegex(ValueError, "Ref2VA"):
             ComfyWorker._validate_video(None, command)
 
@@ -297,6 +297,61 @@ class ComfyWorkerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "sampler"):
             ComfyWorker._validate(command)
 
+    def _rebalance_command(self, **overrides):
+        command = {
+            "mode": "krea2-rebalance",
+            "width": 1024,
+            "height": 1024,
+            "steps": 8,
+            "cfg": 1,
+            "sampler": "euler",
+            "scheduler": "simple",
+            "reference_image_paths": ["ref.png"],
+        }
+        command.update(overrides)
+        return command
+
+    def test_rebalance_command_with_reference_images_is_valid(self):
+        ComfyWorker._validate(self._rebalance_command())
+
+    def test_rebalance_command_requires_reference_images(self):
+        with self.assertRaisesRegex(ValueError, "参考图"):
+            ComfyWorker._validate(self._rebalance_command(reference_image_paths=[]))
+
+    def test_rebalance_command_rejects_too_many_reference_images(self):
+        with self.assertRaisesRegex(ValueError, "参考图"):
+            ComfyWorker._validate(
+                self._rebalance_command(reference_image_paths=["a", "b", "c", "d", "e"])
+            )
+
+    def test_rebalance_command_validates_token_tiers(self):
+        # 数量不一致
+        with self.assertRaisesRegex(ValueError, "数量"):
+            ComfyWorker._validate(
+                self._rebalance_command(
+                    reference_image_paths=["a", "b"],
+                    reference_image_tokens=["normal"],
+                )
+            )
+        # 非法档位
+        with self.assertRaisesRegex(ValueError, "档位"):
+            ComfyWorker._validate(
+                self._rebalance_command(reference_image_tokens=["ultra"])
+            )
+        # 合法档位全部通过
+        ComfyWorker._validate(
+            self._rebalance_command(
+                reference_image_paths=["a", "b", "c", "d"],
+                reference_image_tokens=["low", "normal", "high", "max"],
+            )
+        )
+
+    def test_non_rebalance_command_rejects_reference_images(self):
+        with self.assertRaisesRegex(ValueError, "krea2-rebalance"):
+            ComfyWorker._validate(
+                self._rebalance_command(mode="krea2")
+            )
+
     def test_sampling_progress_contains_speed_and_eta(self):
         progress = sampling_progress_payload(
             step=2,
@@ -329,6 +384,7 @@ class ComfyWorkerTests(unittest.TestCase):
         worker = object.__new__(ComfyWorker)
         worker.torch = FakeTorch()
         worker._validate = lambda _command: None
+        worker._comfy_execution_cleanup = lambda: None
         worker.available_samplers = {"euler"}
         worker.available_schedulers = {"simple"}
 
@@ -343,6 +399,98 @@ class ComfyWorkerTests(unittest.TestCase):
             {"type": "result"},
         )
         self.assertFalse(worker.torch.enabled)
+
+    def test_generation_runs_comfy_execution_cleanup_on_success_and_failure(self):
+        worker = object.__new__(ComfyWorker)
+        worker.torch = FakeTorch()
+        worker._validate = lambda _command: None
+        worker.available_samplers = {"euler"}
+        worker.available_schedulers = {"simple"}
+        calls = []
+        worker._comfy_execution_cleanup = lambda: calls.append("cleanup")
+
+        worker._generate = lambda _command: {"type": "result"}
+        worker.generate({"sampler": "euler", "scheduler": "simple"})
+
+        def failing_generate(_command):
+            raise RuntimeError("boom")
+
+        worker._generate = failing_generate
+        with self.assertRaises(RuntimeError):
+            worker.generate({"sampler": "euler", "scheduler": "simple"})
+
+        self.assertEqual(calls, ["cleanup", "cleanup"])
+
+    def test_release_runs_comfy_execution_cleanup(self):
+        calls = []
+
+        class FakeModelManagement:
+            def unload_all_models(self):
+                calls.append("unload_all_models")
+
+            def soft_empty_cache(self, force=False):
+                calls.append("soft_empty_cache")
+
+            def reset_cast_buffers(self):
+                calls.append("reset_cast_buffers")
+
+            def cleanup_models_gc(self):
+                calls.append("cleanup_models_gc")
+
+            def cleanup_models(self):
+                calls.append("cleanup_models")
+
+        class FakePrefetch:
+            def cleanup_prefetch_queues(self):
+                calls.append("cleanup_prefetch_queues")
+
+        class FakeModelVbar:
+            def vbars_reset_watermark_limits(self):
+                calls.append("vbars_reset_watermark_limits")
+
+        worker = object.__new__(ComfyWorker)
+        worker.model_management = FakeModelManagement()
+        worker.model_prefetch = FakePrefetch()
+        worker.model_vbar = FakeModelVbar()
+        worker._conditioning_cache = {}
+        worker.release()
+
+        for expected in (
+            "reset_cast_buffers",
+            "cleanup_prefetch_queues",
+            "vbars_reset_watermark_limits",
+        ):
+            self.assertIn(expected, calls)
+        # 全局收尾必须先于模型回收（cleanup_models*），否则引用仍挂住旧模型
+        self.assertLess(calls.index("reset_cast_buffers"), calls.index("cleanup_models_gc"))
+
+    def test_release_tolerates_missing_vbar_module(self):
+        class FakeModelManagement:
+            def unload_all_models(self):
+                pass
+
+            def soft_empty_cache(self, force=False):
+                pass
+
+            def reset_cast_buffers(self):
+                pass
+
+            def cleanup_models_gc(self):
+                pass
+
+            def cleanup_models(self):
+                pass
+
+        class FakePrefetch:
+            def cleanup_prefetch_queues(self):
+                pass
+
+        worker = object.__new__(ComfyWorker)
+        worker.model_management = FakeModelManagement()
+        worker.model_prefetch = FakePrefetch()
+        worker.model_vbar = None
+        worker._conditioning_cache = {}
+        worker.release()  # 不抛异常即可
 
 
 if __name__ == "__main__":

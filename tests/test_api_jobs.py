@@ -63,6 +63,7 @@ class CreateJobsTests(ApiTestCase):
             "mode": "krea2",
             "model_index": 1,
             "vae_index": 1,
+            "text_encoder_index": 1,
             "prompt": "an adult studio portrait",
         }
         payload.update(overrides)
@@ -86,7 +87,7 @@ class CreateJobsTests(ApiTestCase):
         self.assertEqual(settings.prompt, "an adult studio portrait")
         self.assertEqual(
             settings.text_encoder,
-            self.core.config.resources[Mode.KREA2].text_encoder,
+            self.core.root / "krea-te.safetensors",
         )
         self.assertEqual(settings.clip_type, "krea2")
         self.assertEqual(settings.model.path.name, "krea.safetensors")
@@ -99,6 +100,19 @@ class CreateJobsTests(ApiTestCase):
 
     def test_unknown_resource_index_returns_404(self):
         response = self.client.post("/api/v1/jobs", json=self._payload(model_index=99))
+        self.assertEqual(response.status_code, 404)
+
+    def test_missing_text_encoder_index_returns_422(self):
+        payload = self._payload()
+        del payload["text_encoder_index"]
+        response = self.client.post("/api/v1/jobs", json=payload)
+        self.assertEqual(response.status_code, 422)
+        self.assertIn("文本编码器", response.json()["detail"])
+
+    def test_unknown_text_encoder_index_returns_404(self):
+        response = self.client.post(
+            "/api/v1/jobs", json=self._payload(text_encoder_index=99)
+        )
         self.assertEqual(response.status_code, 404)
 
     def test_invalid_size_returns_422(self):
@@ -116,6 +130,7 @@ class CreateJobsTests(ApiTestCase):
             "mode": "zib",
             "model_index": 1,
             "vae_index": 1,
+            "text_encoder_index": 1,
             "prompt": "a cinematic portrait",
             "negative_prompt": "blurry, watermark",
             "steps": 40,
@@ -143,7 +158,7 @@ class CreateJobsTests(ApiTestCase):
         self.assertEqual(settings.scheduler, "sgm_uniform")
         self.assertEqual(
             settings.text_encoder,
-            self.core.config.resources[Mode.ZIB].text_encoder,
+            self.core.root / "zib-te.safetensors",
         )
 
     def test_omitted_new_fields_keep_legacy_defaults(self):
@@ -211,7 +226,13 @@ class GetJobTests(ApiTestCase):
     def test_get_job_returns_persisted_record(self):
         created = self.client.post(
             "/api/v1/jobs",
-            json={"mode": "zit", "model_index": 1, "vae_index": 1, "prompt": "p"},
+            json={
+                "mode": "zit",
+                "model_index": 1,
+                "vae_index": 1,
+                "text_encoder_index": 1,
+                "prompt": "p",
+            },
         ).json()["jobs"][0]
 
         response = self.client.get(f"/api/v1/jobs/{created['id']}")
@@ -230,6 +251,7 @@ class GetJobTests(ApiTestCase):
                 "mode": "zib",
                 "model_index": 1,
                 "vae_index": 1,
+                "text_encoder_index": 1,
                 "prompt": "p",
                 "negative_prompt": "blurry",
                 "steps": 40,
@@ -258,7 +280,13 @@ class ListJobsTests(ApiTestCase):
     def test_list_jobs_passes_filters_and_cursor(self):
         self.client.post(
             "/api/v1/jobs",
-            json={"mode": "zit", "model_index": 1, "vae_index": 1, "prompt": "p"},
+            json={
+                "mode": "zit",
+                "model_index": 1,
+                "vae_index": 1,
+                "text_encoder_index": 1,
+                "prompt": "p",
+            },
         )
         response = self.client.get(
             "/api/v1/jobs",
@@ -277,7 +305,13 @@ class ListJobsTests(ApiTestCase):
     def test_mode_filter_accepts_zib(self):
         self.client.post(
             "/api/v1/jobs",
-            json={"mode": "zib", "model_index": 1, "vae_index": 1, "prompt": "p"},
+            json={
+                "mode": "zib",
+                "model_index": 1,
+                "vae_index": 1,
+                "text_encoder_index": 1,
+                "prompt": "p",
+            },
         )
         response = self.client.get("/api/v1/jobs", params={"mode": "zib"})
         self.assertEqual(response.status_code, 200)

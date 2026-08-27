@@ -75,10 +75,23 @@ function VideoCard({ job }) {
             <img src={job.input_image_url} alt="输入图片" loading="lazy" />
           </div>
         )}
-        {job.reference_image_url && (
+        {job.last_frame_image_url && (
           <div className="video-card-input-image">
-            <img src={job.reference_image_url} alt="参考图片" loading="lazy" />
+            <img src={job.last_frame_image_url} alt="尾帧图片" loading="lazy" />
           </div>
+        )}
+        {(job.reference_image_urls ?? []).length > 0 && (
+          <div className="video-card-input-image video-card-ref-images">
+            {job.reference_image_urls.map((url) => (
+              <img key={url} src={url} alt="参考图片" loading="lazy" />
+            ))}
+          </div>
+        )}
+        {(job.reference_video_urls ?? []).length > 0 && (
+          <div className="video-card-params">参考视频 ×{job.reference_video_urls.length}</div>
+        )}
+        {(job.reference_audio_urls ?? []).length > 0 && (
+          <div className="video-card-params">参考音频 ×{job.reference_audio_urls.length}</div>
         )}
         <div className="video-card-params">
           {job.width}×{job.height} · {job.duration_seconds}s · {job.fps}fps ·{" "}

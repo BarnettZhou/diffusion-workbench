@@ -13,6 +13,9 @@ const VIDEO_MODEL_LABELS = {
   "wan2.2-ti2v-5b": "Wan 2.2 TI2V-5B",
   "wan2.2-i2v-14b": "Wan 2.2 I2V-14B",
   "minimax-h3": "MiniMax H3",
+  "minimax-h3-fl2va": "MiniMax H3 FL2VA",
+  "minimax-h3-ref2va": "MiniMax H3 Ref2VA",
+  "minimax-h3-turbo": "MiniMax H3 FL2VA Turbo",
 };
 
 // 宽屏(桌面)默认展开抽屉,窄屏(移动端)默认收起,由右上角悬浮按钮切换
@@ -31,6 +34,8 @@ export default function Lightbox({
   onNext = null,
   onSendToWorkbench = null,
   onSendToVideo = null,
+  onSendToEdit = null,
+  onSendToCaption = null,
 }) {
   const [meta, setMeta] = useState(null);
   const [drawerOpen, setDrawerOpen] = useState(
@@ -203,6 +208,8 @@ export default function Lightbox({
             meta && onSendToWorkbench ? () => onSendToWorkbench(meta) : null
           }
           onSendToVideo={onSendToVideo}
+          onSendToEdit={onSendToEdit}
+          onSendToCaption={onSendToCaption}
         />
       )}
     </div>
@@ -210,11 +217,13 @@ export default function Lightbox({
 }
 
 // 右侧信息抽屉:文件信息 + 生成参数 + 提示词(带复制),底部为操作工具栏
-function InfoDrawer({ view, meta, imageUrl, fileInfo, kind = "image", captureFrame = null, onClose, onSendToWorkbench, onSendToVideo }) {
+function InfoDrawer({ view, meta, imageUrl, fileInfo, kind = "image", captureFrame = null, onClose, onSendToWorkbench, onSendToVideo, onSendToEdit, onSendToCaption }) {
   const message = useMessage();
   const [menuOpen, setMenuOpen] = useState(false);
   const [settingCover, setSettingCover] = useState(false);
   const [sendingToVideo, setSendingToVideo] = useState(false);
+  const [sendingToEdit, setSendingToEdit] = useState(false);
+  const [sendingToCaption, setSendingToCaption] = useState(false);
   // 设为封面需要元数据里的分类与模型文件名;视频封面取当前帧,设到视频模型卡片
   const canSetCover =
     kind === "video"
@@ -271,6 +280,32 @@ function InfoDrawer({ view, meta, imageUrl, fileInfo, kind = "image", captureFra
       message.error(`发送到视频生成失败:${err.message}`);
     } finally {
       setSendingToVideo(false);
+    }
+  }
+
+  // 把当前图片导入为编辑输入图片(服务端本地复制)并跳到图像编辑 tab
+  async function handleSendToEdit() {
+    if (!onSendToEdit || sendingToEdit) return;
+    setSendingToEdit(true);
+    try {
+      await onSendToEdit();
+    } catch (err) {
+      message.error(`发送到图片编辑失败:${err.message}`);
+    } finally {
+      setSendingToEdit(false);
+    }
+  }
+
+  // 把当前图片导入为反推输入图片(与编辑共用受控通道)并跳到图片反推 tab
+  async function handleSendToCaption() {
+    if (!onSendToCaption || sendingToCaption) return;
+    setSendingToCaption(true);
+    try {
+      await onSendToCaption();
+    } catch (err) {
+      message.error(`发送到图片反推失败:${err.message}`);
+    } finally {
+      setSendingToCaption(false);
     }
   }
 
@@ -342,7 +377,7 @@ function InfoDrawer({ view, meta, imageUrl, fileInfo, kind = "image", captureFra
             <DrawerRow label="分类" value={VIDEO_MODEL_LABELS[view.video_model] ?? view.video_model} />
           )}
           {view.generation_type && (
-            <DrawerRow label="类型" value={view.generation_type === "i2v" ? "图生视频" : "文生视频"} />
+            <DrawerRow label="类型" value={view.generation_type === "r2v" ? "参考生视频" : view.generation_type === "i2v" ? "图生视频" : "文生视频"} />
           )}
           {view.duration_seconds != null && (
             <DrawerRow label="时长 / 帧率" value={`${view.duration_seconds}s / ${view.fps}fps`} />
@@ -418,6 +453,36 @@ function InfoDrawer({ view, meta, imageUrl, fileInfo, kind = "image", captureFra
                   }}
                 >
                   {sendingToVideo ? "发送中……" : "发送到视频生成"}
+                </button>
+              )}
+              {onSendToEdit && (
+                <button
+                  id="drawer-send-to-edit"
+                  type="button"
+                  role="menuitem"
+                  disabled={sendingToEdit}
+                  title="以此图片作为输入,进行 Krea2 图像编辑"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    handleSendToEdit();
+                  }}
+                >
+                  {sendingToEdit ? "发送中……" : "发送到图片编辑"}
+                </button>
+              )}
+              {onSendToCaption && (
+                <button
+                  id="drawer-send-to-caption"
+                  type="button"
+                  role="menuitem"
+                  disabled={sendingToCaption}
+                  title="以此图片作为输入,进行图片反推"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    handleSendToCaption();
+                  }}
+                >
+                  {sendingToCaption ? "发送中……" : "发送到图片反推"}
                 </button>
               )}
             </div>

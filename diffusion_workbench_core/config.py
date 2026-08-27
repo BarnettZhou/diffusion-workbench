@@ -3,7 +3,7 @@ from pathlib import Path
 
 import yaml
 
-from .domain import Mode, ModelLoader, VideoModel
+from .domain import MINIMAX_H3_MODELS, Mode, ModelLoader, VideoModel
 
 
 @dataclass(frozen=True)
@@ -16,9 +16,13 @@ class ComfyConfig:
 class ModeResources:
     diffusion: tuple[Path, ...]
     vae: tuple[Path, ...]
-    text_encoder: Path | None
+    # text encoder 候选目录/文件列表（与 diffusion/vae 同规则扫描第一层
+    # *.safetensors/*.sft），提交时按 index 选择；checkpoint 模式为空元组。
+    text_encoder: tuple[Path, ...]
     clip_type: str | None
     model_loader: ModelLoader = ModelLoader.COMPONENTS
+    # Krea2 图像编辑专用 LoRA；仅 Krea2/Krea2-Edit 实际使用，未配置时为 None。
+    edit_lora: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -30,9 +34,13 @@ class UpscalingConfig:
 class VideoResources:
     diffusion: tuple[Path, ...]
     vae: tuple[Path, ...]
-    text_encoder: Path
+    # text encoder 候选目录/文件列表（与图片侧同规则扫描），提交时按 index 选择；
+    # 兼容旧的单文件标量写法（load_config 自动包成单元素元组）。
+    text_encoder: tuple[Path, ...]
     clip_type: str = "wan"
     audio_vae: Path | None = None
+    # MiniMax H3 Turbo 专用蒸馏 LoRA；仅 minimax-h3-turbo 必须配置，其余类型为 None。
+    turbo_lora: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -71,18 +79,26 @@ def load_config(path: str | Path) -> WorkbenchConfig:
         model_loader = ModelLoader(item.get("model_loader", ModelLoader.COMPONENTS))
         if model_loader == ModelLoader.COMPONENTS:
             vae = tuple(_resolve(value, base) for value in item["vae"])
-            text_encoder = _resolve(item["text_encoder"], base)
+            # text_encoder 兼容旧的单文件写法（标量）与新的目录/文件列表写法
+            text_encoder_raw = item["text_encoder"]
+            if not isinstance(text_encoder_raw, (list, tuple)):
+                text_encoder_raw = (text_encoder_raw,)
+            text_encoder = tuple(_resolve(value, base) for value in text_encoder_raw)
             clip_type = str(item["clip_type"])
+            edit_lora_raw = item.get("edit_lora")
+            edit_lora = _resolve(edit_lora_raw, base) if edit_lora_raw else None
         else:
             vae = ()
-            text_encoder = None
+            text_encoder = ()
             clip_type = None
+            edit_lora = None
         resources[mode] = ModeResources(
             diffusion=tuple(_resolve(value, base) for value in item["diffusion"]),
             vae=vae,
             text_encoder=text_encoder,
             clip_type=clip_type,
             model_loader=model_loader,
+            edit_lora=edit_lora,
         )
     timeout = float(raw.get("worker_timeout_seconds", 3600))
     if timeout <= 0:
@@ -95,11 +111,14 @@ def load_config(path: str | Path) -> WorkbenchConfig:
         raise ValueError("video_resources 必须是映射")
     video_resources = {}
     for video_model in VideoModel:
+        # 历史遗留 minimax-h3 仅用于读取旧任务，不再接受配置
+        if video_model == VideoModel.MINIMAX_H3:
+            continue
         if video_model.value not in video_resources_raw:
             continue
         item = video_resources_raw[video_model.value]
         expected_clip_type = (
-            "minimax" if video_model == VideoModel.MINIMAX_H3 else "wan"
+            "minimax" if video_model in MINIMAX_H3_MODELS else "wan"
         )
         clip_type = str(item.get("clip_type", expected_clip_type))
         if clip_type != expected_clip_type:
@@ -107,14 +126,22 @@ def load_config(path: str | Path) -> WorkbenchConfig:
                 f"{video_model.value} clip_type 固定为 {expected_clip_type}"
             )
         audio_vae = item.get("audio_vae")
-        if video_model == VideoModel.MINIMAX_H3 and not audio_vae:
-            raise ValueError("minimax-h3 必须配置 audio_vae")
+        if video_model in MINIMAX_H3_MODELS and not audio_vae:
+            raise ValueError(f"{video_model.value} 必须配置 audio_vae")
+        turbo_lora = item.get("turbo_lora")
+        if video_model == VideoModel.MINIMAX_H3_TURBO and not turbo_lora:
+            raise ValueError(f"{video_model.value} 必须配置 turbo_lora")
+        # text_encoder 兼容旧的单文件写法（标量）与新的目录/文件列表写法
+        video_te_raw = item["text_encoder"]
+        if not isinstance(video_te_raw, (list, tuple)):
+            video_te_raw = (video_te_raw,)
         video_resources[video_model] = VideoResources(
             diffusion=tuple(_resolve(value, base) for value in item["diffusion"]),
             vae=tuple(_resolve(value, base) for value in item["vae"]),
-            text_encoder=_resolve(item["text_encoder"], base),
+            text_encoder=tuple(_resolve(value, base) for value in video_te_raw),
             clip_type=clip_type,
             audio_vae=_resolve(audio_vae, base) if audio_vae else None,
+            turbo_lora=_resolve(turbo_lora, base) if turbo_lora else None,
         )
     if not resources and not video_resources:
         raise ValueError("resources 或 video_resources 至少必须配置一种生成模式")

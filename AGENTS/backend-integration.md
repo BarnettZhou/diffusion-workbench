@@ -193,14 +193,19 @@ Core 不是 request-scoped 对象，不允许在 dependency 中重复构造。
 
 ## 7. DTO 与资源选择
 
-客户端只提交 mode、资源引用和生成参数。text encoder 与 clip type 由服务器按 mode
-固定，不接受客户端路径或覆盖值；`negative_prompt`、`steps`、`cfg`、`sampler`、
+客户端只提交 mode、资源引用和生成参数。model、VAE、text encoder 一律按 index 从
+服务端配置的资源列表选择（图片模式含 `text_encoder` 目录/文件列表），不接受客户端
+路径；clip type 由服务器按 mode 固定。`negative_prompt`、`steps`、`cfg`、`sampler`、
 `scheduler` 是任务级参数，客户端按任务提交，省略时取默认值。
 
-视频端点遵守同一规则：调用 `core.submit_video()`，不能另起 Worker。MiniMax H3 的
-text encoder、`clip_type=minimax` 和音频 VAE 全部由 `video_resources` 固定注入；客户端
-只能选择 diffusion、视频 VAE 和受控输入图片。H3 的 FL2VA 支持 T2V/单首帧 I2V，Ref2VA
-第一阶段支持单张参考图 R2V；不支持多图、参考视频或参考音频，且首帧与参考图不能并用。
+视频端点遵守同一规则：调用 `core.submit_video()`，不能另起 Worker。MiniMax H3 拆分为
+`minimax-h3-fl2va` 与 `minimax-h3-ref2va` 两个配置键，text encoder、`clip_type=minimax`
+和音频 VAE 全部由 `video_resources` 固定注入；客户端只能选择 diffusion、视频 VAE 和
+受控输入媒体。FL2VA 支持 T2V 与首帧/尾帧（各一张、可选）I2V；Ref2VA 支持多参考图（≤9）、
+参考视频（≤3）、参考音频（≤3）且总数 ≤12，表单实际上限由设置项 `ref2va_limits` 控制；
+两种类型的输入互不兼容，模型文件按文件名是否含 `ref2va` 自动归类。
+`minimax-h3-turbo` 复用 FL2VA 的输入规则与 diffusion 列表，额外要求配置键 `turbo_lora`
+（服务端固定的蒸馏加速 LoRA），采样为 euler + beta 调度的少步数配方（默认 8 步）。
 
 ```python
 from typing import Literal
@@ -256,13 +261,18 @@ def submit_jobs(core, payload: CreateJobsRequest):
     fixed = core.config.resources[mode]
     if fixed.model_loader == ModelLoader.COMPONENTS:
         vae = _resource_at(core, mode, ResourceKind.VAE, payload.vae_index)
+        # text encoder 同样按 index 从配置的 text_encoder 目录/文件列表选择
+        text_encoder = _resource_at(
+            core, mode, ResourceKind.TEXT_ENCODER, payload.text_encoder_index
+        ).path
     else:
         vae = None
+        text_encoder = None
     settings = GenerationSettings(
         mode=mode,
         model=model,
         vae=vae,
-        text_encoder=fixed.text_encoder,
+        text_encoder=text_encoder,
         clip_type=fixed.clip_type,
         model_loader=fixed.model_loader,
         prompt=payload.prompt,

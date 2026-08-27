@@ -26,6 +26,7 @@ export default function VideoParameterForm({
   paramsPrefill,
   promptPresets,
   sizePresets,
+  ref2vaLimits,
   onSubmit,
 }) {
   const [prompt, setPrompt] = useState("");
@@ -34,6 +35,7 @@ export default function VideoParameterForm({
   const [highModelIndex, setHighModelIndex] = useState(null);
   const [lowModelIndex, setLowModelIndex] = useState(null);
   const [vaeIndex, setVaeIndex] = useState(null);
+  const [textEncoderIndex, setTextEncoderIndex] = useState(null);
   // 数字输入框一律存原始字符串:允许删空和 "-1" 这类中间态,提交时才校验/转换
   const [width, setWidth] = useState("704");
   const [height, setHeight] = useState("960");
@@ -54,9 +56,18 @@ export default function VideoParameterForm({
   const [inputImage, setInputImage] = useState(null);
   const [inputImageUploading, setInputImageUploading] = useState(false);
   const inputImageRef = useRef(null);
-  const [referenceImage, setReferenceImage] = useState(null);
-  const [referenceImageUploading, setReferenceImageUploading] = useState(false);
-  const referenceImageRef = useRef(null);
+  // FL2VA 尾帧(可选),与首帧同一受控上传通道
+  const [lastFrameImage, setLastFrameImage] = useState(null);
+  const [lastFrameUploading, setLastFrameUploading] = useState(false);
+  const lastFrameRef = useRef(null);
+  // Ref2VA 多参考输入:[{id, previewUrl, name}],实际上限由设置页 ref2va_limits 控制
+  const [refImages, setRefImages] = useState([]);
+  const [refVideos, setRefVideos] = useState([]);
+  const [refAudios, setRefAudios] = useState([]);
+  const [refUploading, setRefUploading] = useState(false);
+  const refImageRef = useRef(null);
+  const refVideoRef = useRef(null);
+  const refAudioRef = useRef(null);
   // 输入图片裁剪弹窗开关;裁剪比例取自当前宽度/高度输入值
   const [cropOpen, setCropOpen] = useState(false);
   // 宽高失焦校验提示弹窗:{label, raw, min, max, multiple, suggestions, setValue}
@@ -69,9 +80,21 @@ export default function VideoParameterForm({
 
   const models = resources?.models ?? [];
   const vaes = resources?.vaes ?? [];
+  // text encoder 与图片侧一致:目录+index 选择,由 /video/models/{m}/resources 返回
+  const textEncoders = resources?.textEncoders ?? [];
   const usesDualModels = videoModel === "wan2.2-i2v-14b";
-  const isMiniMaxH3 = videoModel === "minimax-h3";
-  const isRef2va = isMiniMaxH3 && models.find((item) => item.index === modelIndex)?.name.toLowerCase().includes("ref2va");
+  const isTurbo = videoModel === "minimax-h3-turbo";
+  // turbo 复用 FL2VA 的输入规则（首/尾帧 I2V、不接受参考输入）
+  const isFl2va = videoModel === "minimax-h3-fl2va" || isTurbo;
+  const isRef2va = videoModel === "minimax-h3-ref2va";
+  const isMiniMaxH3 = isFl2va || isRef2va;
+  // Ref2VA 表单上限:设置页 ref2va_limits,未加载时用保守默认值
+  const refLimits = {
+    max_images: ref2vaLimits?.max_images ?? 3,
+    max_videos: ref2vaLimits?.max_videos ?? 1,
+    max_audios: ref2vaLimits?.max_audios ?? 1,
+  };
+  const refTotal = refImages.length + refVideos.length + refAudios.length;
   const highModels = models.filter((item) =>
     item.name.toLowerCase().includes("_high_noise_"),
   );
@@ -151,30 +174,48 @@ export default function VideoParameterForm({
     setVaeIndex((prev) =>
       vaes.some((item) => item.index === prev) ? prev : (vaes[0]?.index ?? null),
     );
+    setTextEncoderIndex((prev) =>
+      textEncoders.some((item) => item.index === prev)
+        ? prev
+        : (textEncoders[0]?.index ?? null),
+    );
   }, [resources]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    // Ref2VA 与首帧输入是互斥模式，切换模型时清除另一种图片状态。
+    // FL2VA 与 Ref2VA 是互斥模式，切换模型类型时清除另一种输入状态。
     if (isRef2va) {
       if (inputImage) clearInputImage();
-    } else if (referenceImage) {
-      clearReferenceImage();
+      if (lastFrameImage) clearLastFrameImage();
+    } else {
+      setRefImages((prev) => { prev.forEach(revokePreview); return []; });
+      setRefVideos((prev) => { prev.forEach(revokePreview); return []; });
+      setRefAudios((prev) => { prev.forEach(revokePreview); return []; });
+      if (!isFl2va && lastFrameImage) clearLastFrameImage();
     }
-  }, [isRef2va]);
+  }, [isRef2va, isFl2va]);
 
   // 按模型家族写入已验证的默认采样参数。
   useEffect(() => {
-    if (videoModel === "minimax-h3") {
+    if (isMiniMaxH3) {
       setWidth("608");
       setHeight("352");
       setDuration("5");
       setFps("24");
       setSteps("8");
       setCfg("1");
-      setShift("12");
-      setSampler("res_multistep");
+      if (isTurbo) {
+        // turbo 配方：euler + beta 调度，不使用 sigma shift
+        setShift("0");
+        setSampler("euler");
+        setScheduler("beta");
+      } else {
+        setShift("12");
+        setSampler("res_multistep");
+        setScheduler("simple");
+      }
     } else {
       setSampler(videoModel === "wan2.2-i2v-14b" ? "euler" : "uni_pc");
+      setScheduler("simple");
     }
   }, [videoModel]);
 
@@ -211,6 +252,10 @@ export default function VideoParameterForm({
     }
     const vae = vaes.find((item) => item.name === paramsPrefill.vae_name);
     if (vae) setVaeIndex(vae.index);
+    const textEncoder = textEncoders.find(
+      (item) => item.name === paramsPrefill.text_encoder_name,
+    );
+    if (textEncoder) setTextEncoderIndex(textEncoder.index);
   }, [paramsPrefill, resources]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // 相册"发送到视频生成"带过来的输入图片:直接引用受控 URL,不走本地上传
@@ -246,32 +291,70 @@ export default function VideoParameterForm({
     }
   }
 
-  async function handleReferenceImageSelect(file) {
+  // kind 为 images/videos/audios,分别对应三个参考输入列表与上传端点
+  async function handleRefMediaSelect(file, kind) {
     if (!file) return;
     setError(null);
-    setReferenceImageUploading(true);
+    setRefUploading(true);
     const previewUrl = URL.createObjectURL(file);
+    const upload = kind === "images" ? api.uploadVideoInputImage
+      : kind === "videos" ? api.uploadVideoInputVideo
+      : api.uploadVideoInputAudio;
+    const setList = kind === "images" ? setRefImages
+      : kind === "videos" ? setRefVideos : setRefAudios;
     try {
-      const saved = await api.uploadVideoInputImage(file);
-      setReferenceImage({ id: saved.id, previewUrl, name: file.name });
+      const saved = await upload(file);
+      setList((prev) => [...prev, { id: saved.id, previewUrl, name: file.name }]);
     } catch (err) {
       URL.revokeObjectURL(previewUrl);
       setError(err.message);
     } finally {
-      setReferenceImageUploading(false);
+      setRefUploading(false);
     }
   }
 
-  function clearReferenceImage() {
-    setReferenceImage((prev) => {
-      if (prev?.previewUrl?.startsWith("blob:")) URL.revokeObjectURL(prev.previewUrl);
+  function removeRefMedia(kind, index) {
+    const setList = kind === "images" ? setRefImages
+      : kind === "videos" ? setRefVideos : setRefAudios;
+    setList((prev) => {
+      revokePreview(prev[index]);
+      return prev.filter((_, i) => i !== index);
+    });
+  }
+
+  async function handleLastFrameSelect(file) {
+    if (!file) return;
+    setError(null);
+    setLastFrameUploading(true);
+    const previewUrl = URL.createObjectURL(file);
+    try {
+      const saved = await api.uploadVideoInputImage(file);
+      setLastFrameImage((prev) => {
+        revokePreview(prev);
+        return { id: saved.id, previewUrl, name: file.name };
+      });
+    } catch (err) {
+      URL.revokeObjectURL(previewUrl);
+      setError(err.message);
+    } finally {
+      setLastFrameUploading(false);
+    }
+  }
+
+  function clearLastFrameImage() {
+    setLastFrameImage((prev) => {
+      revokePreview(prev);
       return null;
     });
   }
 
+  function revokePreview(item) {
+    if (item?.previewUrl?.startsWith("blob:")) URL.revokeObjectURL(item.previewUrl);
+  }
+
   function clearInputImage() {
     setInputImage((prev) => {
-      if (prev?.previewUrl?.startsWith("blob:")) URL.revokeObjectURL(prev.previewUrl);
+      revokePreview(prev);
       return null;
     });
   }
@@ -313,16 +396,18 @@ export default function VideoParameterForm({
   function resetToDefaults() {
     setSteps(isMiniMaxH3 ? "8" : "20");
     setCfg(isMiniMaxH3 ? "1" : "5");
-    setShift(isMiniMaxH3 ? "12" : "8");
+    setShift(isTurbo ? "0" : isMiniMaxH3 ? "12" : "8");
     setLatentMultiplier("1");
     setSampler(
-      isMiniMaxH3
-        ? "res_multistep"
-        : videoModel === "wan2.2-i2v-14b"
-          ? "euler"
-          : "uni_pc",
+      isTurbo
+        ? "euler"
+        : isMiniMaxH3
+          ? "res_multistep"
+          : videoModel === "wan2.2-i2v-14b"
+            ? "euler"
+            : "uni_pc",
     );
-    setScheduler("simple");
+    setScheduler(isTurbo ? "beta" : "simple");
     setError(null);
   }
 
@@ -338,11 +423,20 @@ export default function VideoParameterForm({
     } else if (modelIndex === null || vaeIndex === null) {
       return "请选择模型和 VAE";
     }
+    if (textEncoders.length > 0 && textEncoderIndex === null) {
+      return "请选择文本编码器";
+    }
     if (!prompt.trim()) return "prompt 不能为空";
-    if (inputImageUploading || referenceImageUploading) return "图片上传中,请稍候";
-    if (isRef2va && !referenceImage) return "Ref2VA 必须提供一张参考图片";
-    if (!isRef2va && referenceImage) return "只有 Ref2VA 模型可以使用参考图片";
-    if (referenceImage && inputImage) return "首帧输入与 Ref2VA 参考图不能同时提供";
+    if (inputImageUploading || lastFrameUploading || refUploading) return "媒体上传中,请稍候";
+    if (isRef2va) {
+      if (refTotal === 0) return "Ref2VA 至少需要一个参考输入(图片/视频/音频)";
+      if (refImages.length > refLimits.max_images) return `参考图片超过设置上限 ${refLimits.max_images} 张`;
+      if (refVideos.length > refLimits.max_videos) return `参考视频超过设置上限 ${refLimits.max_videos} 段`;
+      if (refAudios.length > refLimits.max_audios) return `参考音频超过设置上限 ${refLimits.max_audios} 段`;
+      if (refTotal > 12) return "参考输入总数不能超过 12 个";
+    } else if (refTotal > 0) {
+      return "只有 Ref2VA 模型可以使用参考输入";
+    }
     if (requiresInputImage && !inputImage) {
       return `${videoModelLabel} 必须提供输入图片`;
     }
@@ -397,10 +491,14 @@ export default function VideoParameterForm({
       const payload = {
         video_model: videoModel,
         vae_index: vaeIndex,
+        text_encoder_index: textEncoderIndex,
         prompt: prompt.trim(),
         negative_prompt: negativePrompt,
         input_image_id: inputImage?.id ?? null,
-        reference_image_id: referenceImage?.id ?? null,
+        last_frame_image_id: lastFrameImage?.id ?? null,
+        reference_image_ids: refImages.map((item) => item.id),
+        reference_video_ids: refVideos.map((item) => item.id),
+        reference_audio_ids: refAudios.map((item) => item.id),
         width: Number(width),
         height: Number(height),
         duration_seconds: durationNum,
@@ -489,23 +587,50 @@ export default function VideoParameterForm({
       </div>
 
       {isRef2va && (
-        <div className="field" id="field-video-reference-image">
+        <div className="field" id="field-video-ref2va-inputs">
           <div className="label-row">
-            <label htmlFor="video-reference-image-input">Ref2VA 参考图片</label>
-            {referenceImage && <button type="button" className="prompt-assist-btn" onClick={clearReferenceImage}>移除</button>}
+            <label>Ref2VA 参考输入（总计 {refTotal}/12）</label>
           </div>
-          <div className={`video-input-image${referenceImage ? " has-image" : ""}`} role="button" tabIndex={0}
-            onClick={() => referenceImageRef.current?.click()}
-            onKeyDown={(e) => e.key === "Enter" && referenceImageRef.current?.click()}>
-            {referenceImage ? <img src={referenceImage.previewUrl} alt={referenceImage.name} /> : <div className="video-input-image-empty">{isRef2va ? "点击上传一张参考图片" : "选择 Ref2VA 模型后可上传参考图片"}</div>}
-            <input ref={referenceImageRef} id="video-reference-image-input" type="file"
-              accept="image/png,image/jpeg,image/webp" hidden disabled={referenceImageUploading || !isRef2va}
-              onChange={(e) => { handleReferenceImageSelect(e.target.files?.[0]); e.target.value = ""; }} />
-          </div>
+          {[
+            { kind: "images", label: "参考图片", items: refImages, limit: refLimits.max_images, inputRef: refImageRef, accept: "image/png,image/jpeg,image/webp", inputId: "video-ref-images-input" },
+            { kind: "videos", label: "参考视频", items: refVideos, limit: refLimits.max_videos, inputRef: refVideoRef, accept: "video/mp4,video/webm,video/quicktime", inputId: "video-ref-videos-input" },
+            { kind: "audios", label: "参考音频", items: refAudios, limit: refLimits.max_audios, inputRef: refAudioRef, accept: "audio/wav,audio/mpeg,audio/flac,audio/ogg,audio/mp4", inputId: "video-ref-audios-input" },
+          ].map((section) => (
+            <div className="ref2va-section" key={section.kind} id={`ref2va-${section.kind}`}>
+              <div className="label-row">
+                <span className="ref2va-section-title">{section.label} {section.items.length}/{section.limit}</span>
+                <button
+                  type="button"
+                  className="prompt-assist-btn"
+                  disabled={refUploading || section.items.length >= section.limit || refTotal >= 12}
+                  onClick={() => section.inputRef.current?.click()}
+                >
+                  {refUploading ? "上传中……" : "添加"}
+                </button>
+              </div>
+              {section.items.length > 0 && (
+                <div className="ref2va-item-list">
+                  {section.items.map((item, index) => (
+                    <div className="ref2va-item" key={item.id}>
+                      {section.kind === "images" ? (
+                        <img src={item.previewUrl} alt={item.name} />
+                      ) : (
+                        <span className="ref2va-item-name" title={item.name}>{item.name}</span>
+                      )}
+                      <button type="button" className="prompt-assist-btn" onClick={() => removeRefMedia(section.kind, index)}>移除</button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <input ref={section.inputRef} id={section.inputId} type="file" accept={section.accept} hidden
+                disabled={refUploading}
+                onChange={(e) => { handleRefMediaSelect(e.target.files?.[0], section.kind); e.target.value = ""; }} />
+            </div>
+          ))}
         </div>
       )}
 
-      <div className="field" id="field-video-negative-prompt">
+      {!isMiniMaxH3 && <div className="field" id="field-video-negative-prompt">
         <div className="label-row">
           <label htmlFor="video-negative-prompt-input">负面提示词 Negative Prompt</label>
           <div className="label-actions">
@@ -549,12 +674,12 @@ export default function VideoParameterForm({
           placeholder="不想出现在画面中的内容(可留空)……"
           onChange={(e) => setNegativePrompt(e.target.value)}
         />
-      </div>
+      </div>}
 
       {!isRef2va && <div className="field" id="field-video-input-image">
         <div className="label-row">
           <label htmlFor="video-input-image-input">
-            {requiresInputImage ? "输入图片(必选,图生视频)" : "输入图片(可选,图生视频)"}
+            {requiresInputImage ? "输入图片(必选,图生视频)" : isFl2va ? "首帧(可选,图生视频)" : "输入图片(可选,图生视频)"}
           </label>
           <div className="label-actions">
             {inputImage && (
@@ -588,7 +713,7 @@ export default function VideoParameterForm({
           className={`video-input-image${inputImage ? " has-image" : ""}`}
           role="button"
           tabIndex={0}
-          title="点击选择图片(png/jpeg/webp,≤10MB)"
+          title="点击选择图片(png/jpeg/webp,≤32MB)"
           onClick={() => inputImageRef.current?.click()}
           onKeyDown={(e) => e.key === "Enter" && inputImageRef.current?.click()}
         >
@@ -596,12 +721,13 @@ export default function VideoParameterForm({
             <img src={inputImage.previewUrl} alt={inputImage.name} />
           ) : (
             <div className="video-input-image-empty">
-              {inputImageUploading
-                ? "上传中……"
-                : requiresInputImage
-                  ? "此模型仅支持图生视频;点击上传输入图片"
-                  : "不设置为文生视频;点击上传图片做图生视频"}
+              {requiresInputImage
+                ? "此模型仅支持图生视频;点击上传输入图片"
+                : "不设置为文生视频;点击上传图片做图生视频"}
             </div>
+          )}
+          {inputImageUploading && (
+            <div className="video-input-image-loading">上传中……</div>
           )}
           <input
             ref={inputImageRef}
@@ -623,6 +749,30 @@ export default function VideoParameterForm({
           </p>
         )}
       </div>}
+
+      {isFl2va && (
+        <div className="field" id="field-video-last-frame-image">
+          <div className="label-row">
+            <label htmlFor="video-last-frame-input">尾帧(可选)</label>
+            {lastFrameImage && <button type="button" className="prompt-assist-btn" onClick={clearLastFrameImage}>移除</button>}
+          </div>
+          <div className={`video-input-image${lastFrameImage ? " has-image" : ""}`} role="button" tabIndex={0}
+            onClick={() => lastFrameRef.current?.click()}
+            onKeyDown={(e) => e.key === "Enter" && lastFrameRef.current?.click()}>
+            {lastFrameImage ? (
+              <img src={lastFrameImage.previewUrl} alt={lastFrameImage.name} />
+            ) : (
+              <div className="video-input-image-empty">不设置则仅按首帧/文本生成;点击上传尾帧图片</div>
+            )}
+            {lastFrameUploading && (
+              <div className="video-input-image-loading">上传中……</div>
+            )}
+            <input ref={lastFrameRef} id="video-last-frame-input" type="file"
+              accept="image/png,image/jpeg,image/webp" hidden disabled={lastFrameUploading}
+              onChange={(e) => { handleLastFrameSelect(e.target.files?.[0]); e.target.value = ""; }} />
+          </div>
+        </div>
+      )}
 
       {usesDualModels ? (
         <div className="row" id="video-dual-model-row">
@@ -689,20 +839,37 @@ export default function VideoParameterForm({
         </div>
       )}
 
-      <div className="field" id="field-video-vae">
-        <label htmlFor="video-vae-select">VAE</label>
-        <select
-          id="video-vae-select"
-          value={vaeIndex ?? ""}
-          disabled={!vaes.length}
-          onChange={(e) => setVaeIndex(Number(e.target.value))}
-        >
-          {vaes.map((item) => (
-            <option key={item.index} value={item.index}>
-              {item.display_name}
-            </option>
-          ))}
-        </select>
+      <div className="row" id="video-vae-te-row">
+        <div className="field" id="field-video-vae">
+          <label htmlFor="video-vae-select">VAE</label>
+          <select
+            id="video-vae-select"
+            value={vaeIndex ?? ""}
+            disabled={!vaes.length}
+            onChange={(e) => setVaeIndex(Number(e.target.value))}
+          >
+            {vaes.map((item) => (
+              <option key={item.index} value={item.index}>
+                {item.display_name}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="field" id="field-video-text-encoder">
+          <label htmlFor="video-text-encoder-select">文本编码器</label>
+          <select
+            id="video-text-encoder-select"
+            value={textEncoderIndex ?? ""}
+            disabled={!textEncoders.length}
+            onChange={(e) => setTextEncoderIndex(Number(e.target.value))}
+          >
+            {textEncoders.map((item) => (
+              <option key={item.index} value={item.index}>
+                {item.display_name}
+              </option>
+            ))}
+          </select>
+        </div>
       </div>
 
       <div className="row" id="video-size-row">
@@ -807,6 +974,7 @@ export default function VideoParameterForm({
           <select
             id="video-sampler-select"
             value={sampler}
+            disabled={isTurbo}
             onChange={(e) => setSampler(e.target.value)}
           >
             {samplerOptions.map((option) => (
@@ -819,6 +987,7 @@ export default function VideoParameterForm({
           <select
             id="video-scheduler-select"
             value={scheduler}
+            disabled={isTurbo}
             onChange={(e) => setScheduler(e.target.value)}
           >
             {schedulerOptions.map((option) => (
@@ -838,6 +1007,7 @@ export default function VideoParameterForm({
           <label htmlFor="video-shift-input">Shift (0–100)</label>
           <input
             id="video-shift-input" type="number" min={0} max={100} step="any"
+            disabled={isTurbo}
             value={shift} onChange={(e) => setShift(e.target.value)}
           />
         </div>
@@ -845,10 +1015,17 @@ export default function VideoParameterForm({
           <label htmlFor="video-latent-multiplier-input">Latent multiplier</label>
           <input
             id="video-latent-multiplier-input" type="number" min={0} step="any"
+            disabled={isMiniMaxH3}
             value={latentMultiplier} onChange={(e) => setLatentMultiplier(e.target.value)}
           />
         </div>
       </div>
+      {isTurbo && (
+        <p className="form-hint" id="video-turbo-recipe-hint">
+          Turbo 配方固定:turbo LoRA(strength 0.5) + euler + beta 调度 + 低 sigma 区间扩展;
+          步数指 beta 调度的步数,实际采样会因区间扩展多 2 步(如 8 → 10);shift 不生效。
+        </p>
+      )}
       </div>
 
       {error && <div id="video-form-error" className="form-error">{error}</div>}

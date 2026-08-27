@@ -5,14 +5,18 @@
 ## 项目概览
 
 diffusion-workbench 是一个基于 ComfyUI Core 的**本地单机文生图工作台**，支持
-ZIT、Krea2、ZIB 三种模型模式（`Mode` 枚举）。项目不是 ComfyUI 的插件，而是把
-ComfyUI 的 Python 环境当作推理后端：Core 以子进程方式启动一个长驻的 headless
-ComfyUI Worker（`diffusion_workbench_core/comfy_worker.py`，必须用 ComfyUI 自带的
-Python 运行），通过 stdin/stdout 上的 `DWB_EVENT=` JSON 行通信。
+ZIT、Krea2、Krea2 图像编辑（edit-krea2）、Krea2 参考图重排（krea2-rebalance）、
+ZIB、SDXL 六种模型模式（`Mode` 枚举）。
+项目不是 ComfyUI 的插件，而是把 ComfyUI 的 Python 环境当作推理后端：Core 以子进程
+方式启动一个长驻的 headless ComfyUI Worker
+（`diffusion_workbench_core/comfy_worker.py`，必须用 ComfyUI 自带的 Python 运行），
+通过 stdin/stdout 上的 `DWB_EVENT=` JSON 行通信。
 
 主要能力：单 GPU 串行任务队列、批量提交、模型跨任务复用与切模重载、跳过/停止、
 SQLite 任务持久化与资源别名、PNG 内嵌完整生成参数（iTXt 块）、采样进度/速度/ETA
-与 latent 预览事件、UTF-8 轮转日志。
+与 latent 预览事件、图片反推（caption，本地复用 krea2 的 Qwen3-VL 同步直调不入队；
+也可走设置中 `caption_api` 配置的外部视觉模型 API，Ollama / OpenAI 兼容，不经 GPU Worker）、
+UTF-8 轮转日志。
 
 运行目标环境为 Windows + RTX 5070 Ti（Blackwell, sm_120），因此 PyTorch 必须
 使用 cu128 及以上构建（见 `pyproject.toml` 的 `[tool.uv.index]`）。
@@ -29,7 +33,8 @@ SQLite 任务持久化与资源别名、PNG 内嵌完整生成参数（iTXt 块�
   - `png_metadata.py`：生成参数写入/读取 PNG iTXt。
 - `diffusion_workbench/` — Textual TUI 与 CLI（入口 `diffusion-workbench = diffusion_workbench.cli:main`）。
 - `diffusion_workbench_api/` — FastAPI 服务，把唯一的 `WorkbenchCore` 包装为 HTTP/WebSocket API。
-  路由模块：`jobs`、`files`、`album`、`settings`、`models`、`llm`（提示词辅助）、`events`（WebSocket 事件流）、`video`（视频生成）。
+  路由模块：`jobs`、`files`、`album`、`settings`、`models`、`llm`（提示词辅助）、`events`（WebSocket 事件流）、`video`（视频生成）、
+  `edit`（图像编辑/参考重排）、`caption`（图片反推，同步直调 Worker）。
   `console_status.py`：TTY 终端底部的任务进度状态栏（rich Live，非 TTY 为 no-op，`DWB_CONSOLE_STATUS=0` 关闭）。
   `app.py` 在 lifespan 中创建/关闭 Core，并静态托管 `frontend/dist`（存在时挂载到 `/`）。
 - `frontend/` — React 18 + Vite 7 前端（`src/` 下 `App.jsx`、`api/client.js`、`components/`）。
@@ -84,9 +89,9 @@ uv run pytest tests/test_api_jobs.py   # 单个文件
 - 所有生成任务只能经 `core.submit()` 串行执行；HTTP/TUI 层不得绕过 Core 启动
   第二套 GPU Worker 或重新实现队列/状态机。
 - Core 只在 FastAPI lifespan 中创建/关闭，不要在模块 import 时创建。
-- 客户端不能提交任何服务器路径；模型/VAE/text encoder 由服务端 `workbench.yaml`
-  固定（`WorkbenchCore.submit` 会校验）。资源用 index 引用，目录变化后 index 会
-  重排，不是永久 ID。
+- 客户端不能提交任何服务器路径；模型/VAE/text encoder 都按 index 引用服务端
+  `workbench.yaml` 配置的目录/文件列表（`WorkbenchCore.submit` 会校验成员资格），
+  clip type 由配置固定。资源用 index 引用，目录变化后 index 会重排，不是永久 ID。
 - 无鉴权、无限流、无 CORS allowlist：只绑定 `127.0.0.1` 单机使用，**不要暴露到网络**。
 - `POST /api/v1/control/stop` 是全局停止（清队列并终止当前任务），没有单任务取消；
   `skip` 只终止当前任务、保留队列。

@@ -218,7 +218,7 @@ class JobStoreTests(unittest.TestCase):
             root = Path(temp_dir)
             store = JobStore(root / "jobs.sqlite3", root / "output")
             settings = VideoGenerationSettings(
-                video_model=VideoModel.MINIMAX_H3,
+                video_model=VideoModel.MINIMAX_H3_FL2VA,
                 model=ResourceItem(1, root / "minimax_h3_fl2va_pruned_int4_convrot.safetensors"),
                 vae=ResourceItem(1, root / "video-vae.safetensors"),
                 text_encoder=root / "qwen.safetensors",
@@ -240,8 +240,82 @@ class JobStoreTests(unittest.TestCase):
 
             self.assertEqual(persisted.generation_type, "t2v")
             self.assertIsNone(persisted.input_image_path)
-            self.assertIsNone(persisted.reference_image_path)
+            self.assertIsNone(persisted.last_frame_image_path)
+            self.assertEqual(persisted.reference_image_paths, ())
             self.assertEqual(persisted.length, 124)
+
+    def test_video_jobs_persist_reference_inputs_json(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            store = JobStore(root / "jobs.sqlite3", root / "output")
+            settings = VideoGenerationSettings(
+                video_model=VideoModel.MINIMAX_H3_REF2VA,
+                model=ResourceItem(1, root / "minimax_h3_ref2va_pruned_int4_convrot.safetensors"),
+                vae=ResourceItem(1, root / "video-vae.safetensors"),
+                text_encoder=root / "qwen.safetensors",
+                audio_vae=root / "audio-vae.safetensors",
+                prompt="<Picture 1> in a quiet studio",
+                reference_images=(root / "ref-1.png", root / "ref-2.png"),
+                reference_videos=(root / "ref.mp4",),
+                reference_audios=(root / "ref.wav",),
+                width=608,
+                height=352,
+                duration_seconds=5,
+                fps=24,
+                steps=8,
+                cfg=1.0,
+                sampler="res_multistep",
+                scheduler="simple",
+                shift=12.0,
+            )
+
+            jobs = store.create_video_jobs(settings, 1)
+            persisted = store.get_video_job(jobs[0].id)
+
+            self.assertEqual(persisted.generation_type, "r2v")
+            self.assertEqual(
+                persisted.reference_image_paths,
+                ((root / "ref-1.png").resolve(), (root / "ref-2.png").resolve()),
+            )
+            self.assertEqual(
+                persisted.reference_video_paths, ((root / "ref.mp4").resolve(),)
+            )
+            self.assertEqual(
+                persisted.reference_audio_paths, ((root / "ref.wav").resolve(),)
+            )
+
+    def test_video_jobs_persist_first_and_last_frame(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            store = JobStore(root / "jobs.sqlite3", root / "output")
+            settings = VideoGenerationSettings(
+                video_model=VideoModel.MINIMAX_H3_FL2VA,
+                model=ResourceItem(1, root / "minimax_h3_fl2va_pruned_int4_convrot.safetensors"),
+                vae=ResourceItem(1, root / "video-vae.safetensors"),
+                text_encoder=root / "qwen.safetensors",
+                audio_vae=root / "audio-vae.safetensors",
+                prompt="a quiet studio",
+                input_image=root / "first.png",
+                last_frame_image=root / "last.png",
+                width=608,
+                height=352,
+                duration_seconds=5,
+                fps=24,
+                steps=8,
+                cfg=1.0,
+                sampler="res_multistep",
+                scheduler="simple",
+                shift=12.0,
+            )
+
+            jobs = store.create_video_jobs(settings, 1)
+            persisted = store.get_video_job(jobs[0].id)
+
+            self.assertEqual(persisted.generation_type, "i2v")
+            self.assertEqual(persisted.input_image_path, (root / "first.png").resolve())
+            self.assertEqual(
+                persisted.last_frame_image_path, (root / "last.png").resolve()
+            )
 
     def test_batch_reserves_daily_mode_paths_and_persists_settings(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -340,6 +414,255 @@ class JobStoreTests(unittest.TestCase):
 
             self.assertEqual(reopened.get_job(jobs[0].id).status, "cancelled")
             self.assertEqual(reopened.get_job(jobs[1].id).status, "cancelled")
+
+    def test_edit_krea2_jobs_persist_input_and_edit_metadata(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            store = JobStore(root / "jobs.sqlite3", root / "output")
+            input_image = root / "source.png"
+            input_image.write_bytes(b"source")
+            settings = GenerationSettings(
+                mode=Mode.KREA2_EDIT,
+                model=ResourceItem(1, root / "krea2.safetensors"),
+                vae=ResourceItem(1, root / "vae.safetensors"),
+                text_encoder=root / "te.safetensors",
+                clip_type="krea2",
+                prompt="turn the cat into a tiger",
+                grounding_px=512,
+                ref_boost=2.5,
+                input_image=input_image,
+            )
+            submitted = datetime(2026, 8, 1, 12, 0, tzinfo=timezone.utc)
+
+            jobs = store.create_jobs(settings, 2, submitted_at=submitted)
+            persisted = store.get_job(jobs[0].id)
+            persisted_again = store.get_job(jobs[0].id)
+
+            self.assertEqual(jobs[0].output_path, root / "output" / "2026-08-01" / "edit-krea2-00001.png")
+            self.assertEqual(jobs[1].output_path.name, "edit-krea2-00002.png")
+            self.assertEqual(persisted.input_image_path, input_image.resolve())
+            self.assertEqual(persisted.grounding_px, 512)
+            self.assertEqual(persisted.ref_boost, 2.5)
+            self.assertEqual(persisted.mode, Mode.KREA2_EDIT)
+            self.assertEqual(persisted_again.input_image_path, input_image.resolve())
+            self.assertEqual(persisted_again.grounding_px, 512)
+            self.assertEqual(persisted_again.ref_boost, 2.5)
+
+    def test_non_edit_jobs_persist_edit_fields_as_null(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            store = JobStore(root / "jobs.sqlite3", root / "output")
+            settings = GenerationSettings(
+                mode=Mode.KREA2,
+                model=ResourceItem(1, root / "krea2.safetensors"),
+                vae=ResourceItem(1, root / "vae.safetensors"),
+                text_encoder=root / "te.safetensors",
+                clip_type="krea2",
+                prompt="portrait",
+            )
+
+            jobs = store.create_jobs(settings, 1)
+            persisted = store.get_job(jobs[0].id)
+
+            self.assertIsNone(persisted.input_image_path)
+            self.assertIsNone(persisted.grounding_px)
+            self.assertIsNone(persisted.ref_boost)
+
+    def test_edit_krea2_validate_requires_input_image(self):
+        settings = GenerationSettings(
+            mode=Mode.KREA2_EDIT,
+            model=ResourceItem(1, Path("m")),
+            vae=ResourceItem(1, Path("v")),
+            text_encoder=Path("t"),
+            clip_type="krea2",
+            prompt="p",
+        )
+
+        with self.assertRaisesRegex(ValueError, "输入图片"):
+            settings.validate()
+
+    def test_edit_krea2_validate_rejects_upscale(self):
+        settings = GenerationSettings(
+            mode=Mode.KREA2_EDIT,
+            model=ResourceItem(1, Path("m")),
+            vae=ResourceItem(1, Path("v")),
+            text_encoder=Path("t"),
+            clip_type="krea2",
+            prompt="p",
+            input_image=Path("i"),
+            upscale=UpscaleSettings(enabled=True),
+        )
+
+        with self.assertRaisesRegex(ValueError, "放大"):
+            settings.validate()
+
+    def test_edit_krea2_validate_rejects_out_of_range_grounding_px(self):
+        for bad in (-1, 4097, "768", 1.5):
+            settings = GenerationSettings(
+                mode=Mode.KREA2_EDIT,
+                model=ResourceItem(1, Path("m")),
+                vae=ResourceItem(1, Path("v")),
+                text_encoder=Path("t"),
+                clip_type="krea2",
+                prompt="p",
+                input_image=Path("i"),
+                grounding_px=bad,
+            )
+            with self.assertRaises(ValueError):
+                settings.validate()
+
+    def test_edit_krea2_validate_rejects_out_of_range_ref_boost(self):
+        for bad in (-0.1, 1000.1, float("nan"), float("inf"), "1.0"):
+            settings = GenerationSettings(
+                mode=Mode.KREA2_EDIT,
+                model=ResourceItem(1, Path("m")),
+                vae=ResourceItem(1, Path("v")),
+                text_encoder=Path("t"),
+                clip_type="krea2",
+                prompt="p",
+                input_image=Path("i"),
+                ref_boost=bad,
+            )
+            with self.assertRaises(ValueError):
+                settings.validate()
+
+    def test_non_edit_validate_rejects_input_image(self):
+        for mode in (Mode.ZIT, Mode.KREA2, Mode.ZIB, Mode.SDXL):
+            settings = GenerationSettings(
+                mode=mode,
+                model=ResourceItem(1, Path("m")),
+                vae=ResourceItem(1, Path("v")),
+                text_encoder=Path("t"),
+                clip_type="krea2",
+                prompt="p",
+                input_image=Path("i"),
+            )
+            with self.assertRaisesRegex(ValueError, "edit-krea2"):
+                settings.validate()
+
+    def test_rebalance_jobs_persist_reference_metadata(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            store = JobStore(root / "jobs.sqlite3", root / "output")
+            ref_a = root / "ref-a.png"
+            ref_b = root / "ref-b.png"
+            ref_a.write_bytes(b"a")
+            ref_b.write_bytes(b"b")
+            settings = GenerationSettings(
+                mode=Mode.KREA2_REBALANCE,
+                model=ResourceItem(1, root / "krea2.safetensors"),
+                vae=ResourceItem(1, root / "vae.safetensors"),
+                text_encoder=root / "te.safetensors",
+                clip_type="krea2",
+                prompt="参考图重排",
+                reference_images=(ref_a, ref_b),
+                reference_image_tokens=("low", "max"),
+            )
+            submitted = datetime(2026, 8, 1, 12, 0, tzinfo=timezone.utc)
+
+            jobs = store.create_jobs(settings, 2, submitted_at=submitted)
+            persisted = store.get_job(jobs[0].id)
+
+            self.assertEqual(jobs[0].output_path.name, "krea2-rebalance-00001.png")
+            self.assertEqual(jobs[1].output_path.name, "krea2-rebalance-00002.png")
+            self.assertEqual(persisted.mode, Mode.KREA2_REBALANCE)
+            self.assertEqual(
+                persisted.reference_image_paths,
+                (ref_a.resolve(), ref_b.resolve()),
+            )
+            self.assertEqual(persisted.reference_image_tokens, ("low", "max"))
+            # 编辑字段对 rebalance 任务保持 None
+            self.assertIsNone(persisted.input_image_path)
+            self.assertIsNone(persisted.grounding_px)
+            self.assertIsNone(persisted.ref_boost)
+
+    def test_non_rebalance_jobs_persist_reference_fields_empty(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            store = JobStore(root / "jobs.sqlite3", root / "output")
+            settings = GenerationSettings(
+                mode=Mode.KREA2,
+                model=ResourceItem(1, root / "krea2.safetensors"),
+                vae=ResourceItem(1, root / "vae.safetensors"),
+                text_encoder=root / "te.safetensors",
+                clip_type="krea2",
+                prompt="portrait",
+            )
+
+            jobs = store.create_jobs(settings, 1)
+            persisted = store.get_job(jobs[0].id)
+
+            self.assertEqual(persisted.reference_image_paths, ())
+            self.assertEqual(persisted.reference_image_tokens, ())
+
+    def test_rebalance_validate_requires_reference_images(self):
+        settings = GenerationSettings(
+            mode=Mode.KREA2_REBALANCE,
+            model=ResourceItem(1, Path("m")),
+            vae=ResourceItem(1, Path("v")),
+            text_encoder=Path("t"),
+            clip_type="krea2",
+            prompt="p",
+        )
+        with self.assertRaisesRegex(ValueError, "参考图"):
+            settings.validate()
+
+    def test_rebalance_validate_rejects_too_many_reference_images(self):
+        settings = GenerationSettings(
+            mode=Mode.KREA2_REBALANCE,
+            model=ResourceItem(1, Path("m")),
+            vae=ResourceItem(1, Path("v")),
+            text_encoder=Path("t"),
+            clip_type="krea2",
+            prompt="p",
+            reference_images=tuple(Path(f"r{i}") for i in range(5)),
+        )
+        with self.assertRaisesRegex(ValueError, "参考图"):
+            settings.validate()
+
+    def test_rebalance_validate_rejects_token_mismatch_and_bad_tier(self):
+        base = dict(
+            mode=Mode.KREA2_REBALANCE,
+            model=ResourceItem(1, Path("m")),
+            vae=ResourceItem(1, Path("v")),
+            text_encoder=Path("t"),
+            clip_type="krea2",
+            prompt="p",
+            reference_images=(Path("a"), Path("b")),
+        )
+        with self.assertRaisesRegex(ValueError, "数量"):
+            GenerationSettings(**base, reference_image_tokens=("normal",)).validate()
+        with self.assertRaisesRegex(ValueError, "档位"):
+            GenerationSettings(
+                **base, reference_image_tokens=("normal", "ultra")
+            ).validate()
+
+    def test_non_rebalance_validate_rejects_reference_images(self):
+        for mode in (Mode.ZIT, Mode.KREA2, Mode.ZIB, Mode.SDXL):
+            settings = GenerationSettings(
+                mode=mode,
+                model=ResourceItem(1, Path("m")),
+                vae=ResourceItem(1, Path("v")),
+                text_encoder=Path("t"),
+                clip_type="krea2",
+                prompt="p",
+                reference_images=(Path("r"),),
+            )
+            with self.assertRaisesRegex(ValueError, "krea2-rebalance"):
+                settings.validate()
+        # edit-krea2 需先满足 input_image 校验,才会走到参考图拒绝分支
+        settings = GenerationSettings(
+            mode=Mode.KREA2_EDIT,
+            model=ResourceItem(1, Path("m")),
+            vae=ResourceItem(1, Path("v")),
+            text_encoder=Path("t"),
+            clip_type="krea2",
+            prompt="p",
+            input_image=Path("i"),
+            reference_images=(Path("r"),),
+        )
+        with self.assertRaisesRegex(ValueError, "krea2-rebalance"):
+            settings.validate()
 
 
 class RecordingRuntime:
@@ -745,6 +1068,7 @@ class WorkbenchCoreBoundaryTests(unittest.TestCase):
             configured_vae = vae_directory / "vae.safetensors"
             configured_model.touch()
             configured_vae.touch()
+            configured_encoder.touch()
             config = WorkbenchConfig(
                 path=root / "workbench.yaml",
                 comfyui=ComfyConfig(root, root / "python.exe"),
@@ -752,7 +1076,7 @@ class WorkbenchCoreBoundaryTests(unittest.TestCase):
                     Mode.ZIT: ModeResources(
                         (model_directory,),
                         (vae_directory,),
-                        configured_encoder,
+                        (configured_encoder,),
                         "stable_diffusion",
                     )
                 },
@@ -774,7 +1098,7 @@ class WorkbenchCoreBoundaryTests(unittest.TestCase):
                 prompt="portrait",
             )
 
-            with self.assertRaisesRegex(ValueError, "text encoder 固定"):
+            with self.assertRaisesRegex(ValueError, "text encoder 不属于"):
                 core.submit(settings, 1)
 
             wrong_model = GenerationSettings(

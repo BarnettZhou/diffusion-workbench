@@ -40,6 +40,8 @@ class CreateJobsRequest(BaseModel):
     mode: Mode = Mode.ZIT
     model_index: int = Field(ge=1)
     vae_index: int | None = Field(default=None, ge=1)
+    # components 模式必传,checkpoint 模式必须为空(文本编码器已内嵌)
+    text_encoder_index: int | None = Field(default=None, ge=1)
     prompt: str = Field(min_length=1, max_length=16_000)
     negative_prompt: str = Field(default="", max_length=16_000)
     width: int = 576
@@ -51,6 +53,92 @@ class CreateJobsRequest(BaseModel):
     sampler: str = "euler"
     scheduler: str = "simple"
     upscale: UpscaleRequest | None = None
+
+    # 合法值以 core domain 的 SAMPLERS/SCHEDULERS 为唯一事实来源
+    @field_validator("sampler")
+    @classmethod
+    def _check_sampler(cls, value: str) -> str:
+        if value not in SAMPLERS:
+            raise ValueError(f"不支持 sampler: {value}")
+        return value
+
+    @field_validator("scheduler")
+    @classmethod
+    def _check_scheduler(cls, value: str) -> str:
+        if value not in SCHEDULERS:
+            raise ValueError(f"不支持 scheduler: {value}")
+        return value
+
+
+class CreateEditJobsRequest(BaseModel):
+    """Krea2 图像编辑任务参数;结构校验在这里,合法组合以 core domain 为最终事实来源。
+
+    编辑模式复用 Krea2 的 diffusion/VAE/text encoder/clip_type 资源,
+    客户端不能提交任何服务器路径;`input_image_id` 引用受控上传接口落盘的图片。
+    编辑模式禁用 upscale(由 core domain 校验),此处不暴露 upscale 字段。
+    """
+
+    model_index: int = Field(ge=1)
+    vae_index: int = Field(ge=1)
+    # 文本编码器同样按 index 从 Krea2 配置的 text_encoder 目录/文件列表选择
+    text_encoder_index: int = Field(ge=1)
+    prompt: str = Field(min_length=1, max_length=16_000)
+    negative_prompt: str = Field(default="", max_length=16_000)
+    input_image_id: str = Field(min_length=1, max_length=64)
+    width: int = 576
+    height: int = 576
+    steps: int = Field(default=8, ge=1, le=100)
+    seed: int = Field(default=-1, ge=-1)
+    count: int = Field(default=1, ge=1, le=32)
+    cfg: float = Field(default=1.0, gt=0, allow_inf_nan=False)
+    sampler: str = "euler"
+    scheduler: str = "simple"
+    # 编辑专属参数;0 表示按原图尺寸,ref_boost=1.0 表示不强化。
+    grounding_px: int = Field(default=768, ge=0, le=4096)
+    ref_boost: float = Field(default=1.0, ge=0, le=1000, allow_inf_nan=False)
+
+    # 合法值以 core domain 的 SAMPLERS/SCHEDULERS 为唯一事实来源
+    @field_validator("sampler")
+    @classmethod
+    def _check_sampler(cls, value: str) -> str:
+        if value not in SAMPLERS:
+            raise ValueError(f"不支持 sampler: {value}")
+        return value
+
+    @field_validator("scheduler")
+    @classmethod
+    def _check_scheduler(cls, value: str) -> str:
+        if value not in SCHEDULERS:
+            raise ValueError(f"不支持 scheduler: {value}")
+        return value
+
+
+class CreateRebalanceJobsRequest(BaseModel):
+    """Krea2 参考图重排任务参数;结构校验在这里,合法组合以 core domain 为最终事实来源。
+
+    复用 Krea2 的 diffusion/VAE/text encoder/clip_type 资源,客户端不能提交任何服务器路径;
+    `reference_image_ids` 引用受控上传接口(/edit/input-images)落盘的图片,1-4 张。
+    `reference_image_tokens` 与参考图一一对应,缺省时全部按 "normal" 处理。
+    """
+
+    model_index: int = Field(ge=1)
+    vae_index: int = Field(ge=1)
+    # 文本编码器同样按 index 从 Krea2 配置的 text_encoder 目录/文件列表选择
+    text_encoder_index: int = Field(ge=1)
+    prompt: str = Field(min_length=1, max_length=16_000)
+    negative_prompt: str = Field(default="", max_length=16_000)
+    reference_image_ids: list[str] = Field(min_length=1, max_length=4)
+    reference_image_tokens: (
+        list[Literal["low", "normal", "high", "max"]] | None
+    ) = None
+    width: int = 576
+    height: int = 576
+    steps: int = Field(default=8, ge=1, le=100)
+    seed: int = Field(default=-1, ge=-1)
+    count: int = Field(default=1, ge=1, le=32)
+    cfg: float = Field(default=1.0, gt=0, allow_inf_nan=False)
+    sampler: str = "euler"
+    scheduler: str = "simple"
 
     # 合法值以 core domain 的 SAMPLERS/SCHEDULERS 为唯一事实来源
     @field_validator("sampler")
@@ -102,6 +190,7 @@ class JobResponse(BaseModel):
     cfg: float
     model_name: str
     vae_name: str | None
+    text_encoder_name: str | None = None
     prompt: str
     negative_prompt: str
     submitted_at: datetime
@@ -114,6 +203,14 @@ class JobResponse(BaseModel):
     upscale: UpscaleResponse
     upscaled_output_name: str | None
     upscaled_image_url: str | None
+    # Krea2 图像编辑字段;非编辑任务保持 None。input_image_url 在编辑任务有输入图时
+    # 指向 /api/v1/edit/input-images/{name},便于前端复用受控 URL。
+    input_image_url: str | None = None
+    grounding_px: int | None = None
+    ref_boost: float | None = None
+    # Krea2 参考图重排字段;非 krea2-rebalance 任务保持空列表。URL 同样指向受控上传目录。
+    reference_image_urls: list[str] = Field(default_factory=list)
+    reference_image_tokens: list[str] = Field(default_factory=list)
 
 
 def _error_summary(error: str | None) -> str | None:
@@ -149,6 +246,12 @@ def job_to_response(job: JobRecord) -> JobResponse:
         if upscaled_path is not None and upscaled_path.is_file()
         else None
     )
+    # 编辑任务的输入图由受控上传目录解析,文件名即 upload 接口返回的 id
+    input_image_url = (
+        f"/api/v1/edit/input-images/{job.input_image_path.name}"
+        if job.input_image_path is not None
+        else None
+    )
     return JobResponse(
         id=job.id,
         batch_id=job.batch_id,
@@ -163,6 +266,9 @@ def job_to_response(job: JobRecord) -> JobResponse:
         cfg=job.cfg,
         model_name=job.model_path.name,
         vae_name=job.vae_path.name if job.vae_path else None,
+        text_encoder_name=(
+            job.text_encoder_path.name if job.text_encoder_path else None
+        ),
         prompt=job.prompt,
         negative_prompt=job.negative_prompt,
         submitted_at=job.submitted_at,
@@ -175,6 +281,14 @@ def job_to_response(job: JobRecord) -> JobResponse:
         upscale=upscale_to_response(job.upscale),
         upscaled_output_name=upscaled_path.name if upscaled_path is not None else None,
         upscaled_image_url=upscaled_image_url,
+        input_image_url=input_image_url,
+        grounding_px=job.grounding_px,
+        ref_boost=job.ref_boost,
+        reference_image_urls=[
+            f"/api/v1/edit/input-images/{path.name}"
+            for path in job.reference_image_paths
+        ],
+        reference_image_tokens=list(job.reference_image_tokens),
     )
 
 
@@ -299,7 +413,8 @@ class CreateVideoJobsRequest(BaseModel):
     """视频生成任务参数;结构校验在这里,合法组合以 core domain 为最终事实来源。
 
     input_image_id 引用受控上传接口(`POST /video/input-images`)落盘的图片,
-    设置后为 I2V,不设置为 T2V;text_encoder 由服务端配置固定注入。
+    设置后为 I2V,不设置为 T2V;text_encoder 按 text_encoder_index 从服务端配置的
+    目录/文件列表中选择(与图片模式一致)。
     """
 
     video_model: VideoModel
@@ -307,10 +422,14 @@ class CreateVideoJobsRequest(BaseModel):
     high_model_index: int | None = Field(default=None, ge=1)
     low_model_index: int | None = Field(default=None, ge=1)
     vae_index: int = Field(ge=1)
+    text_encoder_index: int | None = Field(default=None, ge=1)
     prompt: str = Field(min_length=1, max_length=16_000)
     negative_prompt: str = Field(default="", max_length=16_000)
     input_image_id: str | None = Field(default=None, max_length=64)
-    reference_image_id: str | None = Field(default=None, max_length=64)
+    last_frame_image_id: str | None = Field(default=None, max_length=64)
+    reference_image_ids: list[str] = Field(default_factory=list, max_length=9)
+    reference_video_ids: list[str] = Field(default_factory=list, max_length=3)
+    reference_audio_ids: list[str] = Field(default_factory=list, max_length=3)
     width: int = 704
     height: int = 960
     duration_seconds: int = Field(default=5, ge=1)
@@ -361,6 +480,7 @@ class VideoJobResponse(BaseModel):
     latent_multiplier: float
     model_name: str
     vae_name: str
+    text_encoder_name: str | None = None
     prompt: str
     negative_prompt: str
     submitted_at: datetime
@@ -370,7 +490,10 @@ class VideoJobResponse(BaseModel):
     output_name: str
     video_url: str | None
     input_image_url: str | None
-    reference_image_url: str | None
+    last_frame_image_url: str | None
+    reference_image_urls: list[str]
+    reference_video_urls: list[str]
+    reference_audio_urls: list[str]
     error: str | None
 
 
@@ -383,10 +506,23 @@ def video_job_to_response(job: VideoJobRecord) -> VideoJobResponse:
         if job.input_image_path is not None
         else None
     )
-    reference_image_url = (
-        f"/api/v1/video/input-images/{job.reference_image_path.name}"
-        if job.reference_image_path is not None else None
+    last_frame_image_url = (
+        f"/api/v1/video/input-images/{job.last_frame_image_path.name}"
+        if job.last_frame_image_path is not None
+        else None
     )
+    reference_image_urls = [
+        f"/api/v1/video/input-images/{path.name}"
+        for path in job.reference_image_paths
+    ]
+    reference_video_urls = [
+        f"/api/v1/video/input-videos/{path.name}"
+        for path in job.reference_video_paths
+    ]
+    reference_audio_urls = [
+        f"/api/v1/video/input-audios/{path.name}"
+        for path in job.reference_audio_paths
+    ]
     return VideoJobResponse(
         id=job.id,
         batch_id=job.batch_id,
@@ -408,6 +544,7 @@ def video_job_to_response(job: VideoJobRecord) -> VideoJobResponse:
         latent_multiplier=job.latent_multiplier,
         model_name=job.model_path.name,
         vae_name=job.vae_path.name,
+        text_encoder_name=job.text_encoder_path.name,
         prompt=job.prompt,
         negative_prompt=job.negative_prompt,
         submitted_at=job.submitted_at,
@@ -417,6 +554,9 @@ def video_job_to_response(job: VideoJobRecord) -> VideoJobResponse:
         output_name=job.output_path.name,
         video_url=video_url,
         input_image_url=input_image_url,
-        reference_image_url=reference_image_url,
+        last_frame_image_url=last_frame_image_url,
+        reference_image_urls=reference_image_urls,
+        reference_video_urls=reference_video_urls,
+        reference_audio_urls=reference_audio_urls,
         error=_error_summary(job.error),
     )

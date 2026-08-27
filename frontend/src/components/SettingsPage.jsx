@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import LLMRecords from "./LLMRecords";
+import CaptionRecords from "./CaptionRecords";
 import ModelSettings from "./ModelSettings";
 import VideoModelSettings from "./VideoModelSettings";
 import PromptPresets from "./PromptPresets";
@@ -13,6 +14,7 @@ const SETTINGS_TABS = [
   { key: "video", label: "视频设置" },
   { key: "videoModels", label: "视频模型" },
   { key: "llm", label: "大模型" },
+  { key: "caption", label: "图片反推" },
   { key: "prompts", label: "提示词" },
 ];
 
@@ -47,6 +49,9 @@ export default function SettingsPage({ settings, modes, onUpdate, onResourcesCha
         {active === "videoModels" && <VideoModelSettings />}
         {active === "llm" && (
           <LLMTab settings={settings} onUpdate={onUpdate} />
+        )}
+        {active === "caption" && (
+          <CaptionApiTab settings={settings} onUpdate={onUpdate} />
         )}
         {active === "prompts" && (
           <PromptPresets
@@ -288,6 +293,221 @@ function LLMSettings({ settings, onUpdate }) {
   );
 }
 
+// 图片反推页内部的二级 tabs:反推设置 / 请求记录(与 LLMTab 同构)。
+// 两个面板同时挂载、仅切换显隐,避免切换 tab 丢失未保存的表单内容。
+const CAPTION_SUB_TABS = [
+  { key: "settings", label: "反推设置" },
+  { key: "records", label: "请求记录" },
+];
+
+function CaptionApiTab({ settings, onUpdate }) {
+  const [sub, setSub] = useState("settings");
+
+  return (
+    <div id="settings-caption-tab">
+      <nav id="caption-subnav">
+        {CAPTION_SUB_TABS.map((item) => (
+          <button
+            key={item.key}
+            id={`caption-subtab-${item.key}`}
+            type="button"
+            className={sub === item.key ? "active" : ""}
+            onClick={() => setSub(item.key)}
+          >
+            {item.label}
+          </button>
+        ))}
+      </nav>
+      <div hidden={sub !== "settings"}>
+        <CaptionApiSettings settings={settings} onUpdate={onUpdate} />
+      </div>
+      <div hidden={sub !== "records"}>
+        <CaptionRecords />
+      </div>
+    </div>
+  );
+}
+
+// 后端 settings.caption_api 缺失或缺键时的前端兜底(服务端保存时也会补齐默认值;
+// prompt 默认值与本地反推的系统提示词一致,由服务端补齐)
+const CAPTION_API_DEFAULTS = {
+  interface: "ollama",
+  base_url: "http://127.0.0.1:11434",
+  api_key: "",
+  model: "",
+  prompt: "",
+  think: false,
+};
+
+// 图片反推 API 设置:图片反推 tab 的「API 反推」使用的外部视觉模型接口配置。
+// 结构与 LLMSettings 一致:本地表单 + 「未保存」标记,保存后以后端返回值为准。
+function CaptionApiSettings({ settings, onUpdate }) {
+  const captionApi = settings?.caption_api ?? null;
+  const message = useMessage();
+  const [form, setForm] = useState(() => ({
+    ...CAPTION_API_DEFAULTS,
+    ...(captionApi ?? {}),
+  }));
+  const [saving, setSaving] = useState(false);
+  const [testing, setTesting] = useState(false);
+
+  // 已保存快照:与表单对比得出「未保存」状态
+  const savedSnapshot = useMemo(
+    () => JSON.stringify({ ...CAPTION_API_DEFAULTS, ...(captionApi ?? {}) }),
+    [captionApi],
+  );
+  const dirty = JSON.stringify(form) !== savedSnapshot;
+
+  // 初次进入及保存成功后,以后端返回的最新 settings.caption_api 为准同步表单
+  useEffect(() => {
+    setForm({ ...CAPTION_API_DEFAULTS, ...(captionApi ?? {}) });
+  }, [captionApi]);
+
+  function setField(key, value) {
+    setForm((prev) => ({ ...prev, [key]: value }));
+  }
+
+  async function save() {
+    setSaving(true);
+    try {
+      await onUpdate({ caption_api: { ...form } });
+      // 保存成功后 settings.caption_api 更新,dirty 随之消除
+      message.success("图片反推 API 设置已保存");
+    } catch (err) {
+      message.error(`保存失败:${err.message}`);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  // 连通性测试直接用表单当前值,不要求先保存
+  async function testConnection() {
+    setTesting(true);
+    try {
+      const result = await api.captionRemoteTest({
+        interface: form.interface,
+        base_url: form.base_url,
+        api_key: form.api_key,
+        model: form.model,
+      });
+      message.success(result.detail || "连接成功");
+    } catch (err) {
+      message.error(`测试失败:${err.message}`);
+    } finally {
+      setTesting(false);
+    }
+  }
+
+  return (
+    <div id="settings-caption-api" className="panel">
+      <h2>
+        图片反推 API
+        {dirty && (
+          <span id="caption-api-unsaved-badge" className="unsaved-badge">
+            未保存
+          </span>
+        )}
+      </h2>
+      <div className="settings-item" id="settings-item-caption-api-interface">
+        <label className="settings-item-label" htmlFor="caption-api-interface">接口类型</label>
+        <p className="settings-item-desc">
+          「API 反推」使用的视觉模型接口:Ollama 本地服务或 OpenAI 兼容接口。
+        </p>
+        <select
+          id="caption-api-interface"
+          value={form.interface}
+          onChange={(e) => setField("interface", e.target.value)}
+        >
+          <option value="ollama">Ollama</option>
+          <option value="openai">OpenAI 兼容</option>
+        </select>
+      </div>
+      <div className="settings-item" id="settings-item-caption-api-base-url">
+        <label className="settings-item-label" htmlFor="caption-api-base-url">Base URL</label>
+        <input
+          id="caption-api-base-url"
+          type="text"
+          value={form.base_url}
+          placeholder="http://127.0.0.1:11434"
+          onChange={(e) => setField("base_url", e.target.value)}
+        />
+      </div>
+      <div className="settings-item" id="settings-item-caption-api-api-key">
+        <label className="settings-item-label" htmlFor="caption-api-api-key">API Key</label>
+        <p className="settings-item-desc">OpenAI 兼容接口需要;Ollama 可留空。</p>
+        <input
+          id="caption-api-api-key"
+          type="password"
+          value={form.api_key}
+          autoComplete="off"
+          onChange={(e) => setField("api_key", e.target.value)}
+        />
+      </div>
+      <div className="settings-item" id="settings-item-caption-api-model">
+        <label className="settings-item-label" htmlFor="caption-api-model">模型 ID</label>
+        <p className="settings-item-desc">需要支持图片输入的视觉模型。</p>
+        <input
+          id="caption-api-model"
+          type="text"
+          value={form.model}
+          placeholder="例如 qwen3-vl:8b 或 gpt-4o-mini"
+          onChange={(e) => setField("model", e.target.value)}
+        />
+      </div>
+      <div className="settings-item" id="settings-item-caption-api-think">
+        <label className="settings-item-label" htmlFor="caption-api-think">思考 Thinking</label>
+        <p className="settings-item-desc">
+          反推一般无需思考,关闭可明显加快响应;Ollama 原生支持,
+          OpenAI 兼容接口关闭时通过 enable_thinking=false 下发(服务端不支持时请保持开启)。
+        </p>
+        <label className="settings-toggle">
+          <input
+            id="caption-api-think"
+            type="checkbox"
+            checked={form.think}
+            onChange={(e) => setField("think", e.target.checked)}
+          />
+          启用思考
+        </label>
+      </div>
+      <div className="settings-item" id="settings-item-caption-api-prompt">
+        <label className="settings-item-label" htmlFor="caption-api-prompt">提示词</label>
+        <p className="settings-item-desc">
+          API 反推使用的系统提示词,默认值与本地反推一致;留空时回退默认值。
+        </p>
+        <textarea
+          id="caption-api-prompt"
+          rows={10}
+          value={form.prompt}
+          onChange={(e) => setField("prompt", e.target.value)}
+        />
+      </div>
+      <div className="settings-item" id="settings-item-caption-api-actions">
+        <div className="settings-actions-row">
+          <button
+            id="caption-api-test-btn"
+            type="button"
+            className="chip"
+            disabled={testing}
+            onClick={testConnection}
+          >
+            {testing ? "测试中……" : "测试连通性"}
+          </button>
+          <button
+            id="caption-api-save-btn"
+            type="button"
+            className="chip"
+            disabled={saving}
+            onClick={save}
+          >
+            {saving ? "保存中……" : "保存"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function GeneralSettings({ settings, modes, onUpdate }) {
   return (
     <div id="settings-general" className="panel">
@@ -341,6 +561,50 @@ function VideoSettings({ settings, onUpdate }) {
           onUpdate={onUpdate}
         />
       </div>
+      <div className="settings-item" id="settings-item-ref2va-limits">
+        <label className="settings-item-label">Ref2VA 输入上限</label>
+        <p className="settings-item-desc">
+          Ref2VA 表单中参考图片/视频/音频的最多可添加数量;本地算力有限,可按需调低。
+          合法范围:图片 0-9、视频 0-3、音频 0-3,总数不超过 12。
+        </p>
+        <Ref2vaLimitsEditor limits={settings?.ref2va_limits} onUpdate={onUpdate} />
+      </div>
+    </div>
+  );
+}
+
+const REF2VA_LIMIT_FIELDS = [
+  ["max_images", "参考图片上限", 9],
+  ["max_videos", "参考视频上限", 3],
+  ["max_audios", "参考音频上限", 3],
+];
+
+// Ref2VA 表单输入上限编辑器;单项修改即提交,后端用默认值合并其余键
+function Ref2vaLimitsEditor({ limits, onUpdate }) {
+  const current = {
+    max_images: limits?.max_images ?? 3,
+    max_videos: limits?.max_videos ?? 1,
+    max_audios: limits?.max_audios ?? 1,
+  };
+  return (
+    <div className="ref2va-limits-editor">
+      {REF2VA_LIMIT_FIELDS.map(([key, label, max]) => (
+        <label className="ref2va-limit-field" key={key} id={`settings-ref2va-${key}`}>
+          <span>{label}</span>
+          <input
+            type="number"
+            min={0}
+            max={max}
+            step={1}
+            value={current[key]}
+            onChange={(e) => {
+              const value = Number(e.target.value);
+              if (!Number.isInteger(value)) return;
+              onUpdate({ ref2va_limits: { [key]: value } });
+            }}
+          />
+        </label>
+      ))}
     </div>
   );
 }

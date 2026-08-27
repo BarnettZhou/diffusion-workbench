@@ -12,7 +12,7 @@ const BUILTIN_DIR = "output";
 // 相册:顶部 tabs 为目录列表(内置 output + 用户添加的目录),网格展示当前
 // 目录全部图片,按修改时间倒序。数据来自后端扫盘索引(不依赖 jobs 表),
 // 容忍图片被删除/移动。
-export default function AlbumPage({ onSendToWorkbench, onSendToVideo, onSendVideoMeta }) {
+export default function AlbumPage({ onSendToWorkbench, onSendToVideo, onSendToEdit, onSendToCaption, onSendVideoMeta }) {
   const [dirs, setDirs] = useState(null);
   const [activeDir, setActiveDir] = useState(BUILTIN_DIR);
   const [images, setImages] = useState([]);
@@ -141,6 +141,20 @@ export default function AlbumPage({ onSendToWorkbench, onSendToVideo, onSendVide
     const saved = await api.importVideoInputFromAlbum(image.id, activeDir);
     setSelected(null);
     onSendToVideo?.({ id: saved.id, url: saved.url, name: image.name });
+  }
+
+  // 抽屉"发送到图片编辑":图片在服务端本地复制为编辑输入图片,再切 tab 预填表单
+  async function handleSendToEdit(image) {
+    const saved = await api.importEditInputFromAlbum(image.id, activeDir);
+    setSelected(null);
+    onSendToEdit?.({ id: saved.id, url: saved.url, name: image.name });
+  }
+
+  // 抽屉"发送到图片反推":反推复用编辑输入图通道,服务端本地复制后切 tab 预填
+  async function handleSendToCaption(image) {
+    const saved = await api.importEditInputFromAlbum(image.id, activeDir);
+    setSelected(null);
+    onSendToCaption?.({ id: saved.id, url: saved.url, name: image.name });
   }
 
   // 汉堡按钮:开关子目录弹层,打开时拉取当前目录的一级子目录列表
@@ -609,6 +623,18 @@ export default function AlbumPage({ onSendToWorkbench, onSendToVideo, onSendVide
             // 「发送到视频生成」仅对图片(作为 I2V 输入图)开放
             selected.kind !== "video" && onSendToVideo
               ? () => handleSendToVideo(selected)
+              : null
+          }
+          onSendToEdit={
+            // 「发送到图片编辑」同样仅对图片(作为编辑输入图)开放
+            selected.kind !== "video" && onSendToEdit
+              ? () => handleSendToEdit(selected)
+              : null
+          }
+          onSendToCaption={
+            // 「发送到图片反推」同样仅对图片(作为反推输入图)开放
+            selected.kind !== "video" && onSendToCaption
+              ? () => handleSendToCaption(selected)
               : null
           }
         />

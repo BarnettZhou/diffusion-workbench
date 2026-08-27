@@ -7,7 +7,8 @@ from test_api_jobs import ApiTestCase
 
 WAN = VideoModel.WAN22_TI2V_5B.value
 WAN_14B = VideoModel.WAN22_I2V_14B.value
-H3 = VideoModel.MINIMAX_H3.value
+H3_FL2VA = VideoModel.MINIMAX_H3_FL2VA.value
+H3_REF2VA = VideoModel.MINIMAX_H3_REF2VA.value
 
 
 class VideoModelsTests(ApiTestCase):
@@ -31,10 +32,23 @@ class VideoModelsTests(ApiTestCase):
                         "requires_input_image": True,
                     },
                     {
-                        "video_model": H3,
-                        "label": "MiniMax H3",
-                        "generation_types": ["t2v", "i2v", "r2v"],
+                        "video_model": H3_FL2VA,
+                        "label": "MiniMax H3 FL2VA",
+                        "generation_types": ["t2v", "i2v"],
                         "requires_input_image": False,
+                        "supports_last_frame": True,
+                    },
+                    {
+                        "video_model": H3_REF2VA,
+                        "label": "MiniMax H3 Ref2VA",
+                        "generation_types": ["r2v"],
+                        "requires_input_image": False,
+                        "reference_limits": {
+                            "images": 9,
+                            "videos": 3,
+                            "audios": 3,
+                            "total": 12,
+                        },
                     },
                 ]
             },
@@ -51,6 +65,13 @@ class VideoModelsTests(ApiTestCase):
         self.assertEqual(body["models"][0]["index"], 1)
         # 视频资源没有 alias 机制
         self.assertIsNone(body["models"][0]["alias"])
+        # text encoder 同样按目录+index 选择,响应公开 index/name/display_name
+        self.assertEqual(
+            [te["name"] for te in body["text_encoders"]],
+            ["wan-te.safetensors"],
+        )
+        self.assertEqual(body["text_encoders"][0]["index"], 1)
+        self.assertIsNone(body["text_encoders"][0]["alias"])
 
     def test_list_14b_fp8_resources(self):
         response = self.client.get(f"/api/v1/video/models/{WAN_14B}/resources")
@@ -75,7 +96,7 @@ class VideoModelsTests(ApiTestCase):
 
     def test_status_hides_h3_audio_vae_path(self):
         self.core.loaded_resources = {
-            "workload": H3,
+            "workload": H3_FL2VA,
             "model": r"C:\models\h3.safetensors",
             "vae": r"C:\models\video-vae.safetensors",
             "audio_vae": r"C:\models\audio-vae.safetensors",
@@ -99,6 +120,8 @@ class CreateVideoJobsTests(ApiTestCase):
             "video_model": WAN,
             "model_index": 1,
             "vae_index": 1,
+            # 视频 text encoder 改为目录+index 选择;提交时必须显式选择
+            "text_encoder_index": 1,
             "prompt": "一只猫在雪地里奔跑",
         }
         payload.update(overrides)
@@ -133,10 +156,10 @@ class CreateVideoJobsTests(ApiTestCase):
         self.assertEqual(settings.scheduler, "simple")
         self.assertEqual(settings.cfg, 5.0)
         self.assertIsNone(settings.input_image)
-        # text encoder 固定注入服务端配置,不接受客户端指定
+        # text encoder 改为按客户端 index 从服务端 text_encoder 列表中解析
         self.assertEqual(
             settings.text_encoder,
-            self.core.config.video_resources[VideoModel.WAN22_TI2V_5B].text_encoder,
+            self.core.video_text_encoder_items[VideoModel.WAN22_TI2V_5B][0].path,
         )
 
     def test_single_job_has_no_batch_id(self):
@@ -147,12 +170,12 @@ class CreateVideoJobsTests(ApiTestCase):
     def test_h3_uses_fixed_audio_vae_and_model_defaults(self):
         response = self.client.post(
             "/api/v1/video/jobs",
-            json=self._payload(video_model=H3),
+            json=self._payload(video_model=H3_FL2VA),
         )
 
         self.assertEqual(response.status_code, 202)
         body = response.json()["jobs"][0]
-        self.assertEqual(body["video_model"], H3)
+        self.assertEqual(body["video_model"], H3_FL2VA)
         self.assertEqual(body["fps"], 24)
         self.assertEqual(body["length"], 124)
         self.assertEqual(body["cfg"], 1.0)
@@ -161,7 +184,7 @@ class CreateVideoJobsTests(ApiTestCase):
         settings, _ = self.core.video_submitted[-1]
         self.assertEqual(
             settings.audio_vae,
-            self.core.config.video_resources[VideoModel.MINIMAX_H3].audio_vae,
+            self.core.config.video_resources[VideoModel.MINIMAX_H3_FL2VA].audio_vae,
         )
 
     def test_h3_ref2va_accepts_single_reference_image(self):
@@ -173,17 +196,18 @@ class CreateVideoJobsTests(ApiTestCase):
         response = self.client.post(
             "/api/v1/video/jobs",
             json=self._payload(
-                video_model=H3,
-                model_index=2,
-                reference_image_id=image_id,
+                video_model=H3_REF2VA,
+                reference_image_ids=[image_id],
             ),
         )
         self.assertEqual(response.status_code, 202)
         body = response.json()["jobs"][0]
         self.assertEqual(body["generation_type"], "r2v")
-        self.assertEqual(body["reference_image_url"], f"/api/v1/video/input-images/{image_id}")
+        self.assertEqual(
+            body["reference_image_urls"], [f"/api/v1/video/input-images/{image_id}"]
+        )
         settings, _ = self.core.video_submitted[-1]
-        self.assertEqual(settings.reference_image.name, image_id)
+        self.assertEqual(settings.reference_images[0].name, image_id)
         self.assertIsNone(settings.input_image)
 
     def test_h3_rejects_reference_image_with_fl2va_or_first_frame(self):
@@ -194,12 +218,135 @@ class CreateVideoJobsTests(ApiTestCase):
         ).json()["id"]
         response = self.client.post(
             "/api/v1/video/jobs",
-            json=self._payload(video_model=H3, model_index=1, reference_image_id=image_id),
+            json=self._payload(video_model=H3_FL2VA, reference_image_ids=[image_id]),
         )
         self.assertEqual(response.status_code, 422)
         response = self.client.post(
             "/api/v1/video/jobs",
-            json=self._payload(video_model=H3, model_index=2, reference_image_id=image_id, input_image_id=image_id),
+            json=self._payload(
+                video_model=H3_REF2VA,
+                reference_image_ids=[image_id],
+                input_image_id=image_id,
+            ),
+        )
+        self.assertEqual(response.status_code, 422)
+
+    def test_h3_fl2va_accepts_first_and_last_frame(self):
+        first_id = self.client.post(
+            "/api/v1/video/input-images",
+            content=_png_bytes(),
+            headers={"Content-Type": "image/png"},
+        ).json()["id"]
+        last_id = self.client.post(
+            "/api/v1/video/input-images",
+            content=_png_bytes(),
+            headers={"Content-Type": "image/png"},
+        ).json()["id"]
+        response = self.client.post(
+            "/api/v1/video/jobs",
+            json=self._payload(
+                video_model=H3_FL2VA,
+                input_image_id=first_id,
+                last_frame_image_id=last_id,
+            ),
+        )
+        self.assertEqual(response.status_code, 202)
+        body = response.json()["jobs"][0]
+        self.assertEqual(body["generation_type"], "i2v")
+        self.assertEqual(
+            body["last_frame_image_url"], f"/api/v1/video/input-images/{last_id}"
+        )
+        settings, _ = self.core.video_submitted[-1]
+        self.assertEqual(settings.input_image.name, first_id)
+        self.assertEqual(settings.last_frame_image.name, last_id)
+
+    def test_h3_ref2va_accepts_multiple_reference_inputs(self):
+        image_ids = [
+            self.client.post(
+                "/api/v1/video/input-images",
+                content=_png_bytes(),
+                headers={"Content-Type": "image/png"},
+            ).json()["id"]
+            for _ in range(2)
+        ]
+        video_id = self.client.post(
+            "/api/v1/video/input-videos",
+            content=b"fake-video",
+            headers={"Content-Type": "video/mp4"},
+        ).json()["id"]
+        audio_id = self.client.post(
+            "/api/v1/video/input-audios",
+            content=b"fake-audio",
+            headers={"Content-Type": "audio/wav"},
+        ).json()["id"]
+        response = self.client.post(
+            "/api/v1/video/jobs",
+            json=self._payload(
+                video_model=H3_REF2VA,
+                reference_image_ids=image_ids,
+                reference_video_ids=[video_id],
+                reference_audio_ids=[audio_id],
+            ),
+        )
+        self.assertEqual(response.status_code, 202)
+        body = response.json()["jobs"][0]
+        self.assertEqual(body["generation_type"], "r2v")
+        self.assertEqual(
+            body["reference_video_urls"], [f"/api/v1/video/input-videos/{video_id}"]
+        )
+        self.assertEqual(
+            body["reference_audio_urls"], [f"/api/v1/video/input-audios/{audio_id}"]
+        )
+        settings, _ = self.core.video_submitted[-1]
+        self.assertEqual([path.name for path in settings.reference_images], image_ids)
+        self.assertEqual(settings.reference_videos[0].name, video_id)
+        self.assertEqual(settings.reference_audios[0].name, audio_id)
+
+    def test_h3_ref2va_requires_reference_input(self):
+        response = self.client.post(
+            "/api/v1/video/jobs",
+            json=self._payload(video_model=H3_REF2VA),
+        )
+        self.assertEqual(response.status_code, 422)
+        self.assertIn("至少需要一个参考输入", response.json()["detail"])
+
+    def test_h3_ref2va_enforces_settings_limits(self):
+        image_ids = [
+            self.client.post(
+                "/api/v1/video/input-images",
+                content=_png_bytes(),
+                headers={"Content-Type": "image/png"},
+            ).json()["id"]
+            for _ in range(4)
+        ]
+        # 默认上限 max_images=3,4 张参考图被服务端设置校验拒绝
+        response = self.client.post(
+            "/api/v1/video/jobs",
+            json=self._payload(
+                video_model=H3_REF2VA, reference_image_ids=image_ids
+            ),
+        )
+        self.assertEqual(response.status_code, 422)
+        self.assertIn("上限", response.json()["detail"])
+        # 设置页放宽到 9 后同一请求可提交;收窄到 1 后 2 张被拒绝
+        self.client.put(
+            "/api/v1/settings", json={"ref2va_limits": {"max_images": 9}}
+        )
+        response = self.client.post(
+            "/api/v1/video/jobs",
+            json=self._payload(
+                video_model=H3_REF2VA, reference_image_ids=image_ids
+            ),
+        )
+        self.assertEqual(response.status_code, 202)
+        self.client.put(
+            "/api/v1/settings", json={"ref2va_limits": {"max_images": 1}}
+        )
+        response = self.client.post(
+            "/api/v1/video/jobs",
+            json=self._payload(
+                video_model=H3_REF2VA, reference_image_ids=image_ids[:2]
+            ),
         )
         self.assertEqual(response.status_code, 422)
 
@@ -211,7 +358,7 @@ class CreateVideoJobsTests(ApiTestCase):
         ).json()["id"]
         response = self.client.post(
             "/api/v1/video/jobs",
-            json=self._payload(video_model=WAN, reference_image_id=image_id),
+            json=self._payload(video_model=WAN, reference_image_ids=[image_id]),
         )
         self.assertEqual(response.status_code, 422)
         self.assertIn("只支持 MiniMax H3 Ref2VA", response.json()["detail"])
@@ -223,6 +370,35 @@ class CreateVideoJobsTests(ApiTestCase):
         self.assertEqual(response.status_code, 404)
         response = self.client.post("/api/v1/video/jobs", json=self._payload(vae_index=99))
         self.assertEqual(response.status_code, 404)
+
+    def test_submit_without_text_encoder_index_returns_422(self):
+        # 视频 text encoder 改为按 index 选择,缺省视为必填参数被服务端拒绝
+        response = self.client.post(
+            "/api/v1/video/jobs", json=self._payload(text_encoder_index=None)
+        )
+        self.assertEqual(response.status_code, 422)
+        self.assertIn("必须选择文本编码器", response.json()["detail"])
+
+    def test_submit_with_unknown_text_encoder_index_returns_404(self):
+        # index 越界走 LookupError 路径,API 映射为 404,与 model/VAE 越界一致
+        response = self.client.post(
+            "/api/v1/video/jobs", json=self._payload(text_encoder_index=99)
+        )
+        self.assertEqual(response.status_code, 404)
+
+    def test_response_includes_text_encoder_name(self):
+        # 视频任务响应公开 text_encoder_name,等于所选 text encoder 的文件名
+        response = self.client.post(
+            "/api/v1/video/jobs", json=self._payload(seed=42)
+        )
+        self.assertEqual(response.status_code, 202)
+        job = response.json()["jobs"][0]
+        self.assertEqual(job["text_encoder_name"], "wan-te.safetensors")
+        # 服务端按 index 解析后注入 settings,响应文本编码器名应与 core 实际收到的一致
+        settings, _ = self.core.video_submitted[-1]
+        self.assertEqual(
+            job["text_encoder_name"], settings.text_encoder.name
+        )
 
     def test_invalid_sampler_returns_422(self):
         response = self.client.post(
@@ -331,6 +507,7 @@ class VideoInputImageTests(ApiTestCase):
                 "video_model": WAN,
                 "model_index": 1,
                 "vae_index": 1,
+                "text_encoder_index": 1,
                 "prompt": "让画面动起来",
                 "input_image_id": image_id,
             },
@@ -346,7 +523,13 @@ class VideoInputImageTests(ApiTestCase):
     def test_submit_t2v_has_no_input_image_url(self):
         response = self.client.post(
             "/api/v1/video/jobs",
-            json={"video_model": WAN, "model_index": 1, "vae_index": 1, "prompt": "猫"},
+            json={
+                "video_model": WAN,
+                "model_index": 1,
+                "vae_index": 1,
+                "text_encoder_index": 1,
+                "prompt": "猫",
+            },
         )
         self.assertEqual(response.status_code, 202)
         job = response.json()["jobs"][0]
@@ -360,6 +543,7 @@ class VideoInputImageTests(ApiTestCase):
                 "video_model": WAN_14B,
                 "model_index": 1,
                 "vae_index": 1,
+                "text_encoder_index": 1,
                 "prompt": "让人物自然转头",
             },
         )
@@ -374,6 +558,7 @@ class VideoInputImageTests(ApiTestCase):
                 "video_model": WAN_14B,
                 "model_index": 1,
                 "vae_index": 1,
+                "text_encoder_index": 1,
                 "prompt": "让人物自然转头",
                 "input_image_id": image_id,
                 "width": 512,
@@ -392,9 +577,10 @@ class VideoInputImageTests(ApiTestCase):
         settings, _ = self.core.video_submitted[-1]
         self.assertEqual(settings.video_model, VideoModel.WAN22_I2V_14B)
         self.assertEqual(settings.sampler, "euler")
+        # text encoder 改为按 index 解析,index 1 对应 wan14-te.safetensors
         self.assertEqual(
             settings.text_encoder,
-            self.core.config.video_resources[VideoModel.WAN22_I2V_14B].text_encoder,
+            self.core.video_text_encoder_items[VideoModel.WAN22_I2V_14B][0].path,
         )
 
     def test_submit_14b_with_explicit_high_and_low_models(self):
@@ -407,6 +593,7 @@ class VideoInputImageTests(ApiTestCase):
                 "high_model_index": 1,
                 "low_model_index": 2,
                 "vae_index": 1,
+                "text_encoder_index": 1,
                 "prompt": "让人物自然转头",
                 "input_image_id": image_id,
             },
@@ -424,6 +611,7 @@ class VideoInputImageTests(ApiTestCase):
         base = {
             "video_model": WAN_14B,
             "vae_index": 1,
+            "text_encoder_index": 1,
             "prompt": "让人物自然转头",
             "input_image_id": image_id,
         }
@@ -448,6 +636,7 @@ class VideoInputImageTests(ApiTestCase):
                 "video_model": WAN,
                 "model_index": 1,
                 "vae_index": 1,
+                "text_encoder_index": 1,
                 "prompt": "猫",
                 "input_image_id": "f" * 32 + ".png",
             },
@@ -461,11 +650,74 @@ class VideoInputImageTests(ApiTestCase):
                 "video_model": WAN,
                 "model_index": 1,
                 "vae_index": 1,
+                "text_encoder_index": 1,
                 "prompt": "猫",
                 "input_image_id": "../../jobs.sqlite3",
             },
         )
         self.assertEqual(response.status_code, 404)
+
+
+class VideoRefMediaUploadTests(ApiTestCase):
+    """Ref2VA 参考视频/音频的受控上传端点。"""
+
+    def test_upload_video_and_audio_roundtrip(self):
+        video = self.client.post(
+            "/api/v1/video/input-videos",
+            content=b"fake-video",
+            headers={"Content-Type": "video/mp4"},
+        )
+        self.assertEqual(video.status_code, 201)
+        video_id = video.json()["id"]
+        self.assertRegex(video_id, r"^[0-9a-f]{32}\.mp4$")
+        served = self.client.get(video.json()["url"])
+        self.assertEqual(served.status_code, 200)
+        self.assertEqual(served.headers["content-type"], "video/mp4")
+        self.assertEqual(served.content, b"fake-video")
+
+        audio = self.client.post(
+            "/api/v1/video/input-audios",
+            content=b"fake-audio",
+            headers={"Content-Type": "audio/wav"},
+        )
+        self.assertEqual(audio.status_code, 201)
+        audio_id = audio.json()["id"]
+        self.assertRegex(audio_id, r"^[0-9a-f]{32}\.wav$")
+        served = self.client.get(audio.json()["url"])
+        self.assertEqual(served.status_code, 200)
+        self.assertEqual(served.headers["content-type"], "audio/wav")
+
+    def test_upload_rejects_unsupported_media_type(self):
+        video = self.client.post(
+            "/api/v1/video/input-videos",
+            content=b"fake",
+            headers={"Content-Type": "video/x-msvideo"},
+        )
+        self.assertEqual(video.status_code, 422)
+        audio = self.client.post(
+            "/api/v1/video/input-audios",
+            content=b"fake",
+            headers={"Content-Type": "audio/aac"},
+        )
+        self.assertEqual(audio.status_code, 422)
+
+    def test_upload_rejects_empty_content(self):
+        video = self.client.post(
+            "/api/v1/video/input-videos",
+            content=b"",
+            headers={"Content-Type": "video/mp4"},
+        )
+        self.assertEqual(video.status_code, 422)
+
+    def test_get_unknown_media_returns_404(self):
+        self.assertEqual(
+            self.client.get(f"/api/v1/video/input-videos/{'0' * 32}.mp4").status_code,
+            404,
+        )
+        self.assertEqual(
+            self.client.get(f"/api/v1/video/input-audios/{'0' * 32}.wav").status_code,
+            404,
+        )
 
 
 class VideoInputFromAlbumTests(ApiTestCase):
@@ -495,6 +747,7 @@ class VideoInputFromAlbumTests(ApiTestCase):
                 "video_model": WAN,
                 "model_index": 1,
                 "vae_index": 1,
+                "text_encoder_index": 1,
                 "prompt": "让画面动起来",
                 "input_image_id": image_id,
             },
@@ -528,6 +781,66 @@ class VideoInputFromAlbumTests(ApiTestCase):
         self.assertEqual(response.status_code, 400)
 
 
+class VideoInputFromJobTests(ApiTestCase):
+    """生成/编辑任务的输出图直接导入为 I2V 输入图片(服务端本地复制)。"""
+
+    def _submit_image_job(self) -> str:
+        response = self.client.post(
+            "/api/v1/jobs",
+            json={
+                "mode": "krea2",
+                "model_index": 1,
+                "vae_index": 1,
+                "text_encoder_index": 1,
+                "prompt": "an adult studio portrait",
+            },
+        )
+        self.assertEqual(response.status_code, 202)
+        return response.json()["jobs"][0]["id"]
+
+    def test_import_from_job_roundtrip(self):
+        job_id = self._submit_image_job()
+        job = self.core.jobs[job_id]
+        job.output_path.parent.mkdir(parents=True, exist_ok=True)
+        job.output_path.write_bytes(_png_bytes())
+        response = self.client.post(
+            "/api/v1/video/input-images/from-job", json={"job_id": job_id}
+        )
+        self.assertEqual(response.status_code, 201)
+        image_id = response.json()["id"]
+        self.assertRegex(image_id, r"^[0-9a-f]{32}\.png$")
+        # 导入的图片按同一受控 URL 可读,可直接用于提交 I2V 任务
+        served = self.client.get(response.json()["url"])
+        self.assertEqual(served.status_code, 200)
+        submit = self.client.post(
+            "/api/v1/video/jobs",
+            json={
+                "video_model": WAN,
+                "model_index": 1,
+                "vae_index": 1,
+                "text_encoder_index": 1,
+                "prompt": "让画面动起来",
+                "input_image_id": image_id,
+            },
+        )
+        self.assertEqual(submit.status_code, 202)
+        self.assertEqual(submit.json()["jobs"][0]["generation_type"], "i2v")
+
+    def test_import_unknown_job_returns_404(self):
+        response = self.client.post(
+            "/api/v1/video/input-images/from-job", json={"job_id": "nope"}
+        )
+        self.assertEqual(response.status_code, 404)
+
+    def test_import_job_without_output_returns_404(self):
+        # 任务存在但输出文件未落盘(未完成/已丢失)
+        job_id = self._submit_image_job()
+        response = self.client.post(
+            "/api/v1/video/input-images/from-job", json={"job_id": job_id}
+        )
+        self.assertEqual(response.status_code, 404)
+
+
 class VideoAlbumMetadataTests(ApiTestCase):
     """相册 mp4 的 metadata:参数来自 jobs 表的视频任务记录。"""
 
@@ -538,6 +851,7 @@ class VideoAlbumMetadataTests(ApiTestCase):
                 "video_model": WAN,
                 "model_index": 1,
                 "vae_index": 1,
+                "text_encoder_index": 1,
                 "prompt": "一只猫在雪地里奔跑",
                 "shift": 10,
             },
@@ -584,6 +898,7 @@ class VideoJobQueryTests(ApiTestCase):
                 "video_model": WAN,
                 "model_index": 1,
                 "vae_index": 1,
+                "text_encoder_index": 1,
                 "prompt": "一只猫",
             },
         )

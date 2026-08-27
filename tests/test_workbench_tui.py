@@ -22,15 +22,15 @@ class TuiCore:
             comfyui=ComfyConfig(root, root / "python.exe"),
             resources={
                 Mode.ZIT: ModeResources(
-                    (), (), root / "zit-te.safetensors", "stable_diffusion"
+                    (), (), (root / "zit-te.safetensors",), "stable_diffusion"
                 ),
                 Mode.KREA2: ModeResources(
-                    (), (), root / "krea-te.safetensors", "krea2"
+                    (), (), (root / "krea-te.safetensors",), "krea2"
                 ),
                 Mode.ZIB: ModeResources(
-                    (), (), root / "zib-te.safetensors", "stable_diffusion"
+                    (), (), (root / "zib-te.safetensors",), "stable_diffusion"
                 ),
-                Mode.SDXL: ModeResources((), (), None, None, ModelLoader.CHECKPOINT),
+                Mode.SDXL: ModeResources((), (), (), None, ModelLoader.CHECKPOINT),
             },
             output_dir=root / "output",
             database=root / "jobs.sqlite3",

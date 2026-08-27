@@ -108,14 +108,52 @@ def validate_sampling(steps: int, cfg: float, sampler: str, scheduler: str) -> N
 class Mode(StrEnum):
     ZIT = "zit"
     KREA2 = "krea2"
+    # Krea2 图像编辑：复用 KREA2 的 diffusion/VAE/text encoder/clip_type,
+    # 通过 ModeResources.edit_lora + 输入图片走 Krea2Edit 节点实现。
+    KREA2_EDIT = "edit-krea2"
+    # Krea2 参考图重排：复用 KREA2 资源，经 ComfyUI-Conditioning-Rebalance 的
+    # Krea2EncodeRebalance 把提示词与 1-4 张参考图一起编码为 conditioning，
+    # 不加载 LoRA、不修改模型 forward，属于"参考式"重生成而非像素级编辑。
+    KREA2_REBALANCE = "krea2-rebalance"
     ZIB = "zib"
     SDXL = "sdxl"
+
+
+# Krea2 参考图重排的每张参考图 token 档位（对应 Krea2EncodeRebalance 的 imageN_tokens）。
+REBALANCE_TOKEN_TIERS = ("low", "normal", "high", "max")
+REBALANCE_MAX_REFERENCE_IMAGES = 4
 
 
 class VideoModel(StrEnum):
     WAN22_TI2V_5B = "wan2.2-ti2v-5b"
     WAN22_I2V_14B = "wan2.2-i2v-14b"
+    MINIMAX_H3_FL2VA = "minimax-h3-fl2va"
+    MINIMAX_H3_REF2VA = "minimax-h3-ref2va"
+    # Turbo：复用 fl2va 权重，加载 turbo 蒸馏 LoRA 后走 euler + beta 调度的少步数采样
+    MINIMAX_H3_TURBO = "minimax-h3-turbo"
+    # 历史遗留类型，仅用于读取 SQLite 中的旧任务记录，不再接受配置与提交
     MINIMAX_H3 = "minimax-h3"
+
+
+# 当前可配置、可提交的 MiniMax H3 类型（不含历史遗留 MINIMAX_H3）
+MINIMAX_H3_MODELS = frozenset(
+    {
+        VideoModel.MINIMAX_H3_FL2VA,
+        VideoModel.MINIMAX_H3_REF2VA,
+        VideoModel.MINIMAX_H3_TURBO,
+    }
+)
+
+# Ref2VA 参考输入硬上限：图片 9、视频 3、音频 3，总数不超过 12
+H3_REF2VA_MAX_IMAGES = 9
+H3_REF2VA_MAX_VIDEOS = 3
+H3_REF2VA_MAX_AUDIOS = 3
+H3_REF2VA_MAX_TOTAL = 12
+
+
+def is_h3_ref2va_model_name(name: str) -> bool:
+    """按文件名判断 H3 diffusion 模型属于 Ref2VA 任务权重。"""
+    return "ref2va" in name.casefold()
 
 
 class ModelLoader(StrEnum):
@@ -126,6 +164,7 @@ class ModelLoader(StrEnum):
 class ResourceKind(StrEnum):
     DIFFUSION = "diffusion"
     VAE = "vae"
+    TEXT_ENCODER = "text_encoder"
 
 
 class UpscaleMethod(StrEnum):
@@ -262,6 +301,14 @@ class GenerationSettings:
     cfg: float = 1.0
     upscale: UpscaleSettings = field(default_factory=UpscaleSettings)
     model_loader: ModelLoader = ModelLoader.COMPONENTS
+    # Krea2 图像编辑专用字段；其他 mode 时保持默认 None / 默认值。
+    input_image: Path | None = None
+    grounding_px: int = 768
+    ref_boost: float = 1.0
+    # Krea2 参考图重排专用字段；其他 mode 时保持空 tuple。
+    # reference_image_tokens 为空时按全部 "normal" 处理。
+    reference_images: tuple[Path, ...] = ()
+    reference_image_tokens: tuple[str, ...] = ()
 
     def validate(self) -> None:
         if not self.prompt.strip():
@@ -277,6 +324,42 @@ class GenerationSettings:
             raise ValueError("seed 必须为 -1 或非负整数")
         validate_sampling(self.steps, self.cfg, self.sampler, self.scheduler)
         self.upscale.validate()
+        if self.mode == Mode.KREA2_EDIT:
+            if self.input_image is None:
+                raise ValueError("编辑模式必须提供输入图片")
+            if self.upscale.enabled:
+                raise ValueError("编辑模式暂不支持图片放大")
+            if (
+                not isinstance(self.grounding_px, int)
+                or isinstance(self.grounding_px, bool)
+                or not 0 <= self.grounding_px <= 4096
+            ):
+                raise ValueError("grounding_px 必须是 0 到 4096 的整数")
+            if (
+                not isinstance(self.ref_boost, (int, float))
+                or isinstance(self.ref_boost, bool)
+                or not math.isfinite(self.ref_boost)
+                or not 0 <= self.ref_boost <= 1000
+            ):
+                raise ValueError("ref_boost 必须是 0 到 1000 的有限数值")
+        elif self.input_image is not None:
+            raise ValueError("仅 edit-krea2 模式支持输入图片编辑")
+        if self.mode == Mode.KREA2_REBALANCE:
+            if not 1 <= len(self.reference_images) <= REBALANCE_MAX_REFERENCE_IMAGES:
+                raise ValueError(
+                    f"krea2-rebalance 模式必须提供 1 到 {REBALANCE_MAX_REFERENCE_IMAGES} 张参考图"
+                )
+            if self.reference_image_tokens and len(self.reference_image_tokens) != len(
+                self.reference_images
+            ):
+                raise ValueError("reference_image_tokens 数量必须与参考图数量一致")
+            for tier in self.reference_image_tokens:
+                if tier not in REBALANCE_TOKEN_TIERS:
+                    raise ValueError(
+                        f"参考图 token 档位必须是 {'/'.join(REBALANCE_TOKEN_TIERS)}: {tier}"
+                    )
+        elif self.reference_images:
+            raise ValueError("仅 krea2-rebalance 模式支持参考图")
 
 
 @dataclass(frozen=True)
@@ -306,6 +389,13 @@ class JobRecord:
     upscaled_output_path: Path | None = None
     upscale: UpscaleSettings = field(default_factory=UpscaleSettings)
     model_loader: ModelLoader = ModelLoader.COMPONENTS
+    # Krea2 编辑专用字段；非编辑模式为 None / 默认值。
+    input_image_path: Path | None = None
+    grounding_px: int | None = None
+    ref_boost: float | None = None
+    # Krea2 参考图重排专用字段；非 krea2-rebalance 模式为空 tuple。
+    reference_image_paths: tuple[Path, ...] = ()
+    reference_image_tokens: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -318,7 +408,10 @@ class VideoGenerationSettings:
     audio_vae: Path | None = None
     negative_prompt: str = ""
     input_image: Path | None = None
-    reference_image: Path | None = None
+    last_frame_image: Path | None = None
+    reference_images: tuple[Path, ...] = ()
+    reference_videos: tuple[Path, ...] = ()
+    reference_audios: tuple[Path, ...] = ()
     width: int = 704
     height: int = 960
     duration_seconds: int = 5
@@ -334,7 +427,7 @@ class VideoGenerationSettings:
 
     @property
     def length(self) -> int:
-        if self.video_model == VideoModel.MINIMAX_H3:
+        if self.video_model in MINIMAX_H3_MODELS:
             if self.width % 32 or self.height % 32:
                 raise ValueError("MiniMax H3 视频宽高必须是 32 的倍数")
             length = max(5, round(self.duration_seconds * 24))
@@ -345,9 +438,11 @@ class VideoGenerationSettings:
 
     @property
     def generation_type(self) -> str:
-        if self.reference_image is not None:
+        if self.reference_images or self.reference_videos or self.reference_audios:
             return "r2v"
-        return "i2v" if self.input_image is not None else "t2v"
+        if self.input_image is not None or self.last_frame_image is not None:
+            return "i2v"
+        return "t2v"
 
     def validate(self) -> None:
         if not self.prompt.strip():
@@ -364,7 +459,7 @@ class VideoGenerationSettings:
             raise ValueError("视频时长必须是正整数")
         if not 1 <= self.fps <= 120:
             raise ValueError("帧率必须在 1 到 120 之间")
-        if self.video_model == VideoModel.MINIMAX_H3:
+        if self.video_model in MINIMAX_H3_MODELS:
             if self.width > H3_MAX_SIZE or self.height > H3_MAX_SIZE:
                 raise ValueError(f"MiniMax H3 宽高不能超过 {H3_MAX_SIZE} 像素")
             if self.width * self.height > H3_MAX_PIXELS:
@@ -377,16 +472,47 @@ class VideoGenerationSettings:
                 raise ValueError("MiniMax H3 CFG 固定为 1")
             if self.audio_vae is None:
                 raise ValueError("MiniMax H3 必须配置音频 VAE")
-            model_is_ref2va = "ref2va" in self.model.path.name.casefold()
-            if model_is_ref2va != (self.reference_image is not None):
-                raise ValueError("MiniMax H3 Ref2VA 必须使用 ref2va 模型和单张参考图；FL2VA 不接受参考图")
-            if self.input_image is not None and self.reference_image is not None:
-                raise ValueError("MiniMax H3 首帧输入与参考图不能同时提供")
-        elif self.reference_image is not None:
-            raise ValueError("参考图片只支持 MiniMax H3 Ref2VA")
+            model_is_ref2va = is_h3_ref2va_model_name(self.model.path.name)
+            has_references = bool(
+                self.reference_images or self.reference_videos or self.reference_audios
+            )
+            if self.video_model in (
+                VideoModel.MINIMAX_H3_FL2VA,
+                VideoModel.MINIMAX_H3_TURBO,
+            ):
+                if model_is_ref2va:
+                    raise ValueError(f"{self.video_model.value} 必须选择 fl2va 模型")
+                if has_references:
+                    raise ValueError(f"{self.video_model.value} 不接受参考输入，请使用 minimax-h3-ref2va")
+            else:
+                if not model_is_ref2va:
+                    raise ValueError("MiniMax H3 Ref2VA 必须选择 ref2va 模型")
+                if self.input_image is not None or self.last_frame_image is not None:
+                    raise ValueError("MiniMax H3 Ref2VA 不接受首帧/尾帧输入，请使用 minimax-h3-fl2va")
+                if not has_references:
+                    raise ValueError("MiniMax H3 Ref2VA 至少需要一个参考输入")
+                if len(self.reference_images) > H3_REF2VA_MAX_IMAGES:
+                    raise ValueError(f"MiniMax H3 Ref2VA 参考图不能超过 {H3_REF2VA_MAX_IMAGES} 张")
+                if len(self.reference_videos) > H3_REF2VA_MAX_VIDEOS:
+                    raise ValueError(f"MiniMax H3 Ref2VA 参考视频不能超过 {H3_REF2VA_MAX_VIDEOS} 段")
+                if len(self.reference_audios) > H3_REF2VA_MAX_AUDIOS:
+                    raise ValueError(f"MiniMax H3 Ref2VA 参考音频不能超过 {H3_REF2VA_MAX_AUDIOS} 段")
+                if (
+                    len(self.reference_images)
+                    + len(self.reference_videos)
+                    + len(self.reference_audios)
+                    > H3_REF2VA_MAX_TOTAL
+                ):
+                    raise ValueError(f"MiniMax H3 Ref2VA 参考输入总数不能超过 {H3_REF2VA_MAX_TOTAL} 个")
+        elif (
+            self.reference_images or self.reference_videos or self.reference_audios
+        ):
+            raise ValueError("参考输入只支持 MiniMax H3 Ref2VA")
+        elif self.last_frame_image is not None:
+            raise ValueError("尾帧输入只支持 MiniMax H3 FL2VA/Turbo")
         elif (self.length - 1) % 4:
             raise ValueError("视频总帧数必须满足 length = 4n + 1")
-        if self.video_model == VideoModel.MINIMAX_H3:
+        if self.video_model in MINIMAX_H3_MODELS:
             if self.width % 32 or self.height % 32:
                 raise ValueError("MiniMax H3 视频宽高必须是 32 的倍数")
         elif self.width % 16 or self.height % 16:
@@ -451,7 +577,10 @@ class VideoJobRecord:
     latent_multiplier: float = 1.0
     negative_prompt: str = ""
     input_image_path: Path | None = None
-    reference_image_path: Path | None = None
+    last_frame_image_path: Path | None = None
+    reference_image_paths: tuple[Path, ...] = ()
+    reference_video_paths: tuple[Path, ...] = ()
+    reference_audio_paths: tuple[Path, ...] = ()
     started_at: datetime | None = None
     completed_at: datetime | None = None
     elapsed_seconds: float | None = None
@@ -459,6 +588,12 @@ class VideoJobRecord:
 
     @property
     def generation_type(self) -> str:
-        if self.reference_image_path is not None:
+        if (
+            self.reference_image_paths
+            or self.reference_video_paths
+            or self.reference_audio_paths
+        ):
             return "r2v"
-        return "i2v" if self.input_image_path is not None else "t2v"
+        if self.input_image_path is not None or self.last_frame_image_path is not None:
+            return "i2v"
+        return "t2v"
