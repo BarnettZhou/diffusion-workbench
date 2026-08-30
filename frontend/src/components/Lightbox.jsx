@@ -222,7 +222,7 @@ function InfoDrawer({ view, meta, imageUrl, fileInfo, kind = "image", captureFra
   const [menuOpen, setMenuOpen] = useState(false);
   const [settingCover, setSettingCover] = useState(false);
   const [sendingToVideo, setSendingToVideo] = useState(false);
-  const [sendingToEdit, setSendingToEdit] = useState(false);
+  const [sendingToEdit, setSendingToEdit] = useState(null); // 正在发送的编辑槽位:single / scene / subject
   const [sendingToCaption, setSendingToCaption] = useState(false);
   // 设为封面需要元数据里的分类与模型文件名;视频封面取当前帧,设到视频模型卡片
   const canSetCover =
@@ -283,16 +283,17 @@ function InfoDrawer({ view, meta, imageUrl, fileInfo, kind = "image", captureFra
     }
   }
 
-  // 把当前图片导入为编辑输入图片(服务端本地复制)并跳到图像编辑 tab
-  async function handleSendToEdit() {
+  // 把当前图片导入为编辑输入图片(服务端本地复制)并跳到图像编辑 tab;
+  // slot 决定预填到单图编辑还是多图编辑的场景/主体槽位
+  async function handleSendToEdit(slot) {
     if (!onSendToEdit || sendingToEdit) return;
-    setSendingToEdit(true);
+    setSendingToEdit(slot);
     try {
-      await onSendToEdit();
+      await onSendToEdit(slot);
     } catch (err) {
       message.error(`发送到图片编辑失败:${err.message}`);
     } finally {
-      setSendingToEdit(false);
+      setSendingToEdit(null);
     }
   }
 
@@ -456,19 +457,47 @@ function InfoDrawer({ view, meta, imageUrl, fileInfo, kind = "image", captureFra
                 </button>
               )}
               {onSendToEdit && (
-                <button
-                  id="drawer-send-to-edit"
-                  type="button"
-                  role="menuitem"
-                  disabled={sendingToEdit}
-                  title="以此图片作为输入,进行 Krea2 图像编辑"
-                  onClick={() => {
-                    setMenuOpen(false);
-                    handleSendToEdit();
-                  }}
-                >
-                  {sendingToEdit ? "发送中……" : "发送到图片编辑"}
-                </button>
+                <>
+                  <button
+                    id="drawer-send-to-edit-single"
+                    type="button"
+                    role="menuitem"
+                    disabled={Boolean(sendingToEdit)}
+                    title="以此图片作为单图编辑的输入"
+                    onClick={() => {
+                      setMenuOpen(false);
+                      handleSendToEdit("single");
+                    }}
+                  >
+                    {sendingToEdit === "single" ? "发送中……" : "发送到单图编辑"}
+                  </button>
+                  <button
+                    id="drawer-send-to-edit-scene"
+                    type="button"
+                    role="menuitem"
+                    disabled={Boolean(sendingToEdit)}
+                    title="以此图片作为多图编辑的场景图(图片 1)"
+                    onClick={() => {
+                      setMenuOpen(false);
+                      handleSendToEdit("scene");
+                    }}
+                  >
+                    {sendingToEdit === "scene" ? "发送中……" : "发送到多图编辑-场景"}
+                  </button>
+                  <button
+                    id="drawer-send-to-edit-subject"
+                    type="button"
+                    role="menuitem"
+                    disabled={Boolean(sendingToEdit)}
+                    title="以此图片作为多图编辑的主体图(图片 2)"
+                    onClick={() => {
+                      setMenuOpen(false);
+                      handleSendToEdit("subject");
+                    }}
+                  >
+                    {sendingToEdit === "subject" ? "发送中……" : "发送到多图编辑-主体"}
+                  </button>
+                </>
               )}
               {onSendToCaption && (
                 <button

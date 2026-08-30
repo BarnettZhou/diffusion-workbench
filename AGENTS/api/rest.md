@@ -218,10 +218,10 @@ admission limit);`cfg` 为大于 0 的有限浮点数（默认 1.0);`sampler`/`s
 - `image_url` 在原图文件实际存在时为 `/api/v1/images/{job_id}`(放大失败或取消时
   原图可能已保存，不以 `status == "completed"` 为条件）;`upscaled_image_url` 同理，
   指向 `/api/v1/images/{job_id}/upscaled`;`upscaled_output_name` 仅启用放大时存在。
-- `input_image_url` / `grounding_px` / `ref_boost` 仅 Krea2 编辑任务
+- `input_image_url` / `secondary_input_image_url` / `grounding_px` / `ref_boost` 仅 Krea2 编辑任务
   (`mode == "edit-krea2"`) 有值；其他任务保持 `null`。`input_image_url` 在编辑任务
   上指向 `/api/v1/edit/input-images/{input_image_path.name}`(受控上传目录)，便于前端
-  复用受控 URL 重新读取输入图。
+  复用受控 URL 重新读取输入图；`secondary_input_image_url` 仅双图编辑任务有值。
 - `reference_image_urls` / `reference_image_tokens` 仅 Krea2 参考图重排任务
   (`mode == "krea2-rebalance"`) 有值；其他任务保持空列表。`reference_image_urls`
   同样指向 `/api/v1/edit/input-images/{name}` 受控目录。
@@ -564,6 +564,7 @@ mp4 没有内嵌元数据,改为按输出文件(日期目录名 + 文件名)反�
 ```json
 {
   "size_presets": [[576, 576], [768, 768], [1024, 1024], [960, 1280]],
+  "aspect_ratio_presets": [[1, 1], [3, 4], [4, 3], [5, 4], [4, 5], [16, 9], [9, 16]],
   "wan_video_size_presets": [[704, 960], [960, 704], [1280, 720], [720, 1280]],
   "minimax_video_size_presets": [],
   "ref2va_limits": {"max_images": 3, "max_videos": 1, "max_audios": 1},
@@ -577,10 +578,17 @@ mp4 没有内嵌元数据,改为按输出文件(日期目录名 + 文件名)反�
     "sdxl": {"steps": 8, "sampler": "euler", "scheduler": "simple", "cfg": 1}
   },
   "llm": {
-    "interface": "ollama",
-    "base_url": "http://127.0.0.1:11434",
-    "api_key": "",
-    "model": "",
+    "endpoints": [
+      {
+        "id": "a1b2c3d4",
+        "name": "本地 Ollama",
+        "interface": "ollama",
+        "base_url": "http://127.0.0.1:11434",
+        "api_key": "",
+        "models": ["qwen2.5:7b"]
+      }
+    ],
+    "selected": {"endpoint_id": "a1b2c3d4", "model": "qwen2.5:7b"},
     "system_prompt": "",
     "sd_system_prompt": "适合 Stable Diffusion / SDXL 的提示词要求",
     "format_prompt": "输出 Positive/Negative 的格式要求",
@@ -589,10 +597,17 @@ mp4 没有内嵌元数据,改为按输出文件(日期目录名 + 文件名)反�
     "think_effort": ""
   },
   "caption_api": {
-    "interface": "ollama",
-    "base_url": "http://127.0.0.1:11434",
-    "api_key": "",
-    "model": "",
+    "endpoints": [
+      {
+        "id": "c1d2e3f4",
+        "name": "本地视觉模型",
+        "interface": "ollama",
+        "base_url": "http://127.0.0.1:11434",
+        "api_key": "",
+        "models": ["qwen3-vl:8b"]
+      }
+    ],
+    "selected": {"endpoint_id": "c1d2e3f4", "model": "qwen3-vl:8b"},
     "prompt": "API 反推的系统提示词,默认与本地反推一致",
     "think": false
   }
@@ -609,6 +624,8 @@ mp4 没有内嵌元数据,改为按输出文件(日期目录名 + 文件名)反�
 `size_presets` 与视频表单尺寸标签的每项必须是 `[宽, 高]`，正整数且自动去重；宽高倍数
 按系列区分：`size_presets` 与 `wan_video_size_presets`（wan 系列视频尺寸标签）要求 16 的倍数，
 `minimax_video_size_presets`（MiniMax 系列视频尺寸标签）要求 32 的倍数。
+`aspect_ratio_presets` 是尺寸卡片「自动计算」模式可选的图片比例，每项为 `[宽, 高]` 的
+正整数比（无倍数要求），自动去重。
 旧版统一的 `video_size_presets` 在加载时自动迁移为 `wan_video_size_presets`。
 `ref2va_limits` 是 Ref2VA 表单的参考输入上限：`max_images` 0–9、`max_videos` 0–3、
 `max_audios` 0–3，三项之和不超过 12；允许只提交部分键，服务端用默认值补齐。
@@ -619,13 +636,17 @@ mp4 没有内嵌元数据,改为按输出文件(日期目录名 + 文件名)反�
 `steps` 为 1-100 的整数，`cfg` 为大于 0 的数值，`sampler` / `scheduler` 必须是
 `GET /api/v1/sampling-options` 返回的合法值。
 
-`llm` 可以局部提交，服务端会用默认值补齐未提交字段。`interface` 只允许 `ollama`
-或 `openai`；`think` 必须是布尔值，其余大模型设置字段必须是字符串。
+`llm` 可以局部提交，服务端会用默认值补齐未提交字段。每个端点包含 8 位 hex `id`、
+`name`、`interface`、`base_url`、`api_key` 和 `models`；`interface` 只允许
+`ollama` 或 `openai`，`base_url` 必须非空，`models` 是去空去重的字符串列表。
+`selected.endpoint_id` 必须引用已配置端点，`selected.model` 必须是非空字符串。
+`think` 必须是布尔值；系统提示词、`think_effort` 等共享字段必须是字符串。
+旧版平铺 `interface` / `base_url` / `api_key` / `model` 会在 PUT 或加载旧 JSON
+时自动迁移为一个端点，随后从保存结构中移除。
 
-`caption_api` 是图片反推 tab 的「API 反推」使用的外部视觉模型接口配置，合并语义
-与 `llm` 相同。`interface` 只允许 `ollama` 或 `openai`；`think` 必须是布尔值；
-`base_url` / `api_key` / `model` / `prompt` 必须是字符串，其中 `prompt` 是反推系统
-提示词，默认值与本地反推一致（要求双语输出：一段英文一段中文）。
+`caption_api` 是图片反推 tab 的「API 反推」使用的外部视觉模型接口配置，使用与
+`llm` 相同的 `endpoints` + `selected` 结构。`prompt` 是共享的反推系统提示词，
+必须为字符串，默认值与本地反推一致（要求双语输出：一段英文一段中文）。
 
 `prompt_presets` 是设置页「提示词」tab 管理的常用提示词预设，整表替换式提交。每项为
 `{"id", "title", "kind", "text"}`：`id` 是客户端生成的非空字符串，`title` 不能为空，
@@ -646,8 +667,11 @@ mp4 没有内嵌元数据,改为按输出文件(日期目录名 + 文件名)反�
 ```
 
 `language` 只允许 `en` 或 `zh`；`prompt_style` 只允许 `flux` 或 `sd`，省略时默认为
-`flux`，兼容旧客户端。服务端依次拼接对应风格的用户自定义提示词、输出格式规范和
-语言要求。响应包含 `positive`、`negative`、`raw`、`parsed` 和独立的 `session_id`。
+`flux`，兼容旧客户端。服务端按 `settings.llm.selected` 从 `settings.llm.endpoints`
+解析目标端点，并合并端点配置与共享提示词字段；未配置端点或未选择模型返回 400
+「请先在设置中配置大模型并选择模型」。请求记录包含 `endpoint_name`。
+
+响应包含 `positive`、`negative`、`raw`、`parsed` 和独立的 `session_id`。
 
 ### `POST /api/v1/prompt-assist/chat`
 
@@ -655,6 +679,22 @@ mp4 没有内嵌元数据,改为按输出文件(日期目录名 + 文件名)反�
 `session`，若干 `thinking` / `content`，最后是 `done` 或 `error`。只有语言和
 `prompt_style` 均一致时才复用会话历史；任一项变化都会创建新 session，避免不同
 提示词上下文相互污染。
+
+### `POST /api/v1/remote/models`
+
+按接口类型拉取远端可用模型列表。`interface` 为 `ollama` 或 `openai`；`base_url`
+去空白后不能为空，`api_key` 仅 OpenAI 兼容接口作为 Bearer 凭据使用。成功返回
+`{"models": ["qwen3:8b"]}`；连接失败、超时、HTTP 错误或响应解析失败返回 502。
+
+请求体示例：
+
+```json
+{
+  "interface": "ollama",
+  "base_url": "http://127.0.0.1:11434",
+  "api_key": ""
+}
+```
 
 ## 模型信息
 
@@ -1058,6 +1098,7 @@ ComfyUI-Conditioning-Rebalance 节点包，缺失时任务在 Worker 侧报错�
   "prompt": "把人物改成夜晚氛围",
   "negative_prompt": "",
   "input_image_id": "....png",
+  "secondary_input_image_id": null,
   "width": 576,
   "height": 576,
   "steps": 8,
@@ -1067,17 +1108,21 @@ ComfyUI-Conditioning-Rebalance 节点包，缺失时任务在 Worker 侧报错�
   "sampler": "euler",
   "scheduler": "simple",
   "grounding_px": 768,
-  "ref_boost": 1.0
+  "ref_boost": 1.0,
+  "upscale": null
 }
 ```
 
 约束：`model_index` / `vae_index` / `text_encoder_index` ≥ 1（引用 Krea2 资源列表，
 与 `mode=krea2` 共用同一份 index）；`prompt` 1–16000 字符；`negative_prompt` 最长 16000；`input_image_id`
-必填且最长 64 字符；宽高必须是 16 的倍数；`steps` 1–100（默认 8）；`seed` ≥ -1；
+必填且最长 64 字符；`secondary_input_image_id` 可选（双图编辑，引用同一受控上传接口
+落盘的第二张图片，对应工作流中的主体参考图）；宽高必须是 16 的倍数；`steps` 1–100（默认 8）；`seed` ≥ -1；
 `count` 1–32；`cfg` 为大于 0 的有限浮点数（默认 1.0）；`sampler` / `scheduler` 合法值
 与图片任务同源；`grounding_px` 0–4096 的整数（默认 768，0 表示按原图尺寸）；
-`ref_boost` 0–1000 的有限浮点数（默认 1.0，1.0 表示不强化）。编辑模式禁用 upscale，
-`GenerationSettings.validate()` 在 `mode == edit-krea2` 时会拒绝 `upscale.enabled=True`。
+`ref_boost` 0–1000 的有限浮点数（默认 1.0，1.0 表示不强化）。编辑模式支持 upscale，
+但仅限纯后处理方法 `resize` / `upscale_model`（latent_hires 的二段采样与 in-context
+patch 冲突，`GenerationSettings.validate()` 在 `mode == edit-krea2` 时会拒绝该方法）；
+`upscale` 字段结构与 `POST /api/v1/jobs` 相同。
 
 text encoder 按 `text_encoder_index` 从 Krea2 配置的 text_encoder 目录/文件列表
 选择；clip type 由服务器按 Krea2 资源固定注入，客户端不能指定。
@@ -1131,6 +1176,7 @@ text encoder 按 `text_encoder_index` 从 Krea2 配置的 text_encoder 目录/�
       "upscaled_output_name": null,
       "upscaled_image_url": null,
       "input_image_url": "/api/v1/edit/input-images/....png",
+      "secondary_input_image_url": null,
       "grounding_px": 768,
       "ref_boost": 1.0
     }
@@ -1140,15 +1186,18 @@ text encoder 按 `text_encoder_index` 从 Krea2 配置的 text_encoder 目录/�
 
 - `mode` 固定为 `"edit-krea2"`，前端应以此路由到编辑标签页。
 - `input_image_url` 在编辑任务总是有值（`input_image_id` 必填），指向受控上传目录
-  的同名 id；普通任务该字段为 `null`。
+  的同名 id；普通任务该字段为 `null`。`secondary_input_image_url` 仅在双图编辑任务
+  有值，其余任务为 `null`。
 - 编辑任务的随机 seed 此刻仍是 `-1`，实际 seed 由 `job_started` 事件公布并写回
   SQLite，之后从 `GET /api/v1/jobs/{job_id}` 读取。
 - `error` 只含首行摘要，完整 traceback 只保留在服务端 SQLite。
-- 错误：404 `input_image_id` 不存在、编辑未启用或资源 index 不存在；422 参数校验
+- 错误：404 `input_image_id` / `secondary_input_image_id` 不存在、编辑未启用或资源
+  index 不存在；422 参数校验
   失败（含 `grounding_px` / `ref_boost` 越界、`edit_lora` 文件缺失等）。
 
 `GET /api/v1/jobs/{job_id}` 对编辑任务返回的响应包含 `input_image_url` /
-`grounding_px` / `ref_boost`，字段定义同上；其他模式任务这三字段为 `null`。
+`secondary_input_image_url` / `grounding_px` / `ref_boost`，字段定义同上；其他模式任务
+这几字段为 `null`。
 `GET /api/v1/jobs` 与 `/jobs/{job_id}` 不再为编辑任务单开端点。
 
 ### `POST /api/v1/edit/rebalance-jobs`
@@ -1179,11 +1228,12 @@ text encoder 按 `text_encoder_index` 从 Krea2 配置的 text_encoder 目录/�
 
 约束：`reference_image_ids` 必填，1–4 张（`max_reference_images`）；`reference_image_tokens`
 可选，合法值为 `low`/`normal`/`high`/`max`，缺省表示全部按 `normal` 处理，提供时数量必须
-与参考图一致；其余字段约束与 `POST /api/v1/edit/jobs` 相同。与编辑模式不同，重排模式
-**不**禁用 upscale。
+与参考图一致；其余字段约束与 `POST /api/v1/edit/jobs` 相同。与编辑模式只放行
+`resize` / `upscale_model` 不同，重排模式不限制 upscale 方法（含 `latent_hires`），
+但前端表单当前未暴露放大设置。
 
 响应 202 的 job 对象与编辑任务同构，差异：`mode` 为 `"krea2-rebalance"`；
-`input_image_url` / `grounding_px` / `ref_boost` 为 `null`；
+`input_image_url` / `secondary_input_image_url` / `grounding_px` / `ref_boost` 为 `null`；
 `reference_image_urls` 按参考图顺序指向受控上传目录的同名 id，
 `reference_image_tokens` 回显实际档位（缺省时为空列表）。其他模式任务这两个字段为
 空列表。
@@ -1229,10 +1279,11 @@ text encoder 按 `text_encoder_index` 从 Krea2 配置的 text_encoder 目录/�
 
 ### `POST /api/v1/caption/remote`
 
-API 反推：把图片（base64）发给 `settings.caption_api` 配置的外部视觉模型接口
-（Ollama 或 OpenAI 兼容），同样是同步请求但**不经过 GPU Worker、不排队**；
-结果不落库、不发 WebSocket 事件。请求体与 `POST /api/v1/caption` 相同
-（`image_id` / `hint` / `max_length` / `seed`）。
+API 反推：把图片（base64）发给 `settings.caption_api` 中按 `selected` 选中的
+外部视觉模型端点（Ollama 或 OpenAI 兼容），同样是同步请求但**不经过 GPU Worker、
+不排队**；结果不落库、不发 WebSocket 事件。未配置端点或未选择模型返回 400
+「请先在设置中配置图片反推 API 并选择模型」。请求体与 `POST /api/v1/caption`
+相同（`image_id` / `hint` / `max_length` / `seed`）。
 
 - 提示词取 `caption_api.prompt`（为空回退本地反推默认提示词），`hint` 以
   `Additional user instructions:` 追加在末尾。
@@ -1255,7 +1306,7 @@ API 反推：把图片（base64）发给 `settings.caption_api` 配置的外部�
 }
 ```
 
-- 错误：400 未配置 `caption_api` 的 `base_url` / `model`；404 图片 id 不存在；
+- 错误：400 未配置 `caption_api` 端点或未选择模型；404 图片 id 不存在；
   422 参数校验失败或图片文件缺失；502 远端服务连接失败/超时/返回错误
   （detail 为中文错误描述）。
 
@@ -1267,34 +1318,9 @@ API 反推：把图片（base64）发给 `settings.caption_api` 配置的外部�
 
 API 反推请求记录分页查询：`page` 从 1 开始，`page_size` 1–100（默认 10）。
 响应与 `GET /api/v1/llm/requests` 同构（`total` / `page` / `page_size` / `items`），
-记录字段为 `id` / `timestamp` / `base_url` / `model` / `request` / `response` /
-`error` / `input_tokens` / `output_tokens` / `cached_tokens`（反推无会话，不含
-`session_id`）。
-
-### `POST /api/v1/caption/remote/test`
-
-反推 API 连通性测试：拉取远端模型列表（Ollama `GET /api/tags`，OpenAI 兼容
-`GET /models`）并确认目标模型存在。请求体字段均可选，留空回退到已保存的
-`caption_api` 设置，前端可直接用表单当前值测试：
-
-```json
-{
-  "interface": "ollama",
-  "base_url": "http://127.0.0.1:11434",
-  "api_key": "",
-  "model": "qwen3-vl:8b"
-}
-```
-
-`interface` 只允许 `ollama` 或 `openai`。Ollama 的 `model` 允许省略 `:latest`
-后缀，OpenAI 兼容接口要求精确匹配。响应 200：
-
-```json
-{"ok": true, "detail": "连接成功,模型 qwen3-vl:8b 可用"}
-```
-
-- 错误：400 Base URL / 模型 ID 为空，或连接成功但模型不存在（detail 附可用模型
-  列表前 10 项）；502 连接失败/超时/HTTP 错误。
+记录字段为 `id` / `timestamp` / `base_url` / `model` / `endpoint_name` / `request` /
+`response` / `error` / `input_tokens` / `output_tokens` / `cached_tokens`（反推无会话，
+不含 `session_id`）。
 
 ## 错误码汇总
 

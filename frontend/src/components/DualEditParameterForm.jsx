@@ -6,9 +6,6 @@ import UpscaleCard, { DEFAULT_UPSCALE, validateUpscaleValue, buildUpscalePayload
 import { useMessage } from "./Message";
 import PromptPresetPicker from "./PromptPresetPicker";
 
-// normalizeUploadFile 已移至 EditImageField,这里再导出保持原有 import 路径不变
-export { normalizeUploadFile } from "./EditImageField";
-
 // 采样器/调度器选项从 /api/v1/sampling-options 拉取,接口不可用时用兜底列表
 const FALLBACK_SAMPLERS = ["euler", "dpmpp_2m_sde"];
 const FALLBACK_SCHEDULERS = ["simple", "sgm_uniform", "beta"];
@@ -18,11 +15,11 @@ const LIMITS = {
   size: { min: 256, max: 4096, multiple: 16 },
 };
 
-// Krea2 图像编辑参数表单。结构参照 ParameterForm,字段对齐后端契约。
-// resources 取自 App.resources["krea2"],defaults 取自 /api/v1/edit/info。
-// 输入图片使用 EditImageField(受控上传 + ImageEditModal 编辑 + 双栏展示);
-// 尺寸输入集中在 SizeInputCard 卡片(手动输入 / 自动计算两种模式)。
-export default function EditParameterForm({
+// Krea2 双图编辑参数表单。结构参照 EditParameterForm,提交同一个 /api/v1/edit/jobs
+// 接口(mode 仍为 edit-krea2),额外携带 secondary_input_image_id。
+// 图片 1(场景)的裁剪按目标宽高锁定比例;图片 2(主体)的裁剪为自由裁剪,
+// 原工作流对输入图片比例没有要求。
+export default function DualEditParameterForm({
   resources,
   defaults,
   sizePresets,
@@ -55,10 +52,11 @@ export default function EditParameterForm({
   const [refBoost, setRefBoost] = useState("1");
   // 图片放大:编辑模式只支持纯后处理方法(resize / upscale_model),latent_hires 不暴露
   const [upscale, setUpscale] = useState(DEFAULT_UPSCALE);
-  // 输入图片:{original, edited} | null;edited 存在时作为提交输入,否则用原图。
-  // 上传/编辑交互封装在 EditImageField 内,这里只持有受控值与上传中标记。
-  const [inputImageValue, setInputImageValue] = useState(null);
-  const [inputImageUploading, setInputImageUploading] = useState(false);
+  // 两张输入图:{original, edited} | null;edited 存在时作为提交输入,否则用原图
+  const [primaryImage, setPrimaryImage] = useState(null);
+  const [secondaryImage, setSecondaryImage] = useState(null);
+  const [primaryUploading, setPrimaryUploading] = useState(false);
+  const [secondaryUploading, setSecondaryUploading] = useState(false);
   // 预设提示词选择弹窗
   const [presetTarget, setPresetTarget] = useState(null);
   // prompt/负面提示词输入框高度倍率
@@ -169,27 +167,40 @@ export default function EditParameterForm({
     );
   }, [resources]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // 相册"发送到图片编辑"带过来的输入图片:已在服务端导入,直接引用受控 URL,不走本地上传
+  // 相册/结果"发送到多图编辑"带过来的输入图片:按 slot 预填场景(图片 1)或主体(图片 2)
   useEffect(() => {
-    if (!inputImagePrefill) return;
-    setInputImageValue((prev) => {
-      revokePreview(prev?.original);
-      revokePreview(prev?.edited);
-      return {
-        original: {
-          id: inputImagePrefill.id,
-          previewUrl: inputImagePrefill.url,
-          name: inputImagePrefill.name,
-        },
-        edited: null,
-      };
-    });
+    if (
+      !inputImagePrefill ||
+      (inputImagePrefill.slot !== "scene" && inputImagePrefill.slot !== "subject")
+    ) {
+      return;
+    }
+    const image = {
+      original: {
+        id: inputImagePrefill.image.id,
+        previewUrl: inputImagePrefill.image.url,
+        name: inputImagePrefill.image.name,
+      },
+      edited: null,
+    };
+    if (inputImagePrefill.slot === "scene") {
+      setPrimaryImage((prev) => {
+        revokePreview(prev?.original);
+        revokePreview(prev?.edited);
+        return image;
+      });
+    } else {
+      setSecondaryImage((prev) => {
+        revokePreview(prev?.original);
+        revokePreview(prev?.edited);
+        return image;
+      });
+    }
   }, [inputImagePrefill]);
 
   function revokePreview(item) {
     if (item?.previewUrl?.startsWith("blob:")) URL.revokeObjectURL(item.previewUrl);
   }
-
   function resetToDefaults() {
     if (defaults) {
       if (Number.isFinite(Number(defaults.grounding_px))) {
@@ -215,8 +226,9 @@ export default function EditParameterForm({
       return usesCheckpointVae ? "请选择模型" : "请选择模型、VAE 和文本编码器";
     }
     if (!prompt.trim()) return "prompt 不能为空";
-    if (!inputImageValue?.original) return "请先上传输入图片";
-    if (inputImageUploading) return "输入图片上传中,请稍候";
+    if (!primaryImage?.original) return "请先上传场景图(图片 1)";
+    if (!secondaryImage?.original) return "请先上传主体图(图片 2)";
+    if (primaryUploading || secondaryUploading) return "输入图片上传中,请稍候";
     const { multiple, min, max } = LIMITS.size;
     for (const [label, raw] of [["宽度", width], ["高度", height]]) {
       const value = Number(raw);
@@ -258,7 +270,8 @@ export default function EditParameterForm({
         text_encoder_index: textEncoderIndex,
         prompt: prompt.trim(),
         negative_prompt: negativePrompt,
-        input_image_id: (inputImageValue.edited ?? inputImageValue.original).id,
+        input_image_id: (primaryImage.edited ?? primaryImage.original).id,
+        secondary_input_image_id: (secondaryImage.edited ?? secondaryImage.original).id,
         width: Number(width),
         height: Number(height),
         steps: Number(steps),
@@ -278,12 +291,12 @@ export default function EditParameterForm({
   }
 
   return (
-    <form id="edit-parameter-form" className="form-stack" onSubmit={handleSubmit}>
-      <div id="edit-basic-params-card" className="panel form">
+    <form id="dual-edit-parameter-form" className="form-stack" onSubmit={handleSubmit}>
+      <div id="dual-edit-basic-params-card" className="panel form">
         <div className="card-header">
-          <h2>Krea2 图像编辑参数</h2>
+          <h2>Krea2 双图编辑参数</h2>
           <button
-            id="edit-reset-defaults-btn"
+            id="dual-edit-reset-defaults-btn"
             type="button"
             className="chip"
             title="用编辑默认参数 + krea2 默认采样参数填写"
@@ -293,12 +306,12 @@ export default function EditParameterForm({
           </button>
         </div>
 
-        <div className="field" id="field-edit-prompt">
+        <div className="field" id="field-dual-edit-prompt">
           <div className="label-row">
-            <label htmlFor="edit-prompt-input">Prompt</label>
+            <label htmlFor="dual-edit-prompt-input">Prompt</label>
             <div className="label-actions">
               <button
-                id="edit-prompt-preset-btn"
+                id="dual-edit-prompt-preset-btn"
                 type="button"
                 className="prompt-assist-btn"
                 title="选择预设提示词"
@@ -308,7 +321,7 @@ export default function EditParameterForm({
                 预设
               </button>
               <button
-                id="edit-prompt-size-btn"
+                id="dual-edit-prompt-size-btn"
                 type="button"
                 className="prompt-assist-btn"
                 title={`切换输入框高度(当前 ${promptSize}x)`}
@@ -318,7 +331,7 @@ export default function EditParameterForm({
                 {promptSize}x
               </button>
               <button
-                id="edit-prompt-clear-btn"
+                id="dual-edit-prompt-clear-btn"
                 type="button"
                 className="prompt-assist-btn"
                 title="清空 prompt"
@@ -331,20 +344,20 @@ export default function EditParameterForm({
             </div>
           </div>
           <textarea
-            id="edit-prompt-input"
+            id="dual-edit-prompt-input"
             className={promptSize > 1 ? `prompt-size-${promptSize}` : undefined}
             value={prompt}
-            placeholder="描述你想要的编辑效果……"
+            placeholder="描述如何把人/物放进场景……"
             onChange={(e) => setPrompt(e.target.value)}
           />
         </div>
 
-        <div className="field" id="field-edit-negative-prompt">
+        <div className="field" id="field-dual-edit-negative-prompt">
           <div className="label-row">
-            <label htmlFor="edit-negative-prompt-input">负面提示词 Negative Prompt</label>
+            <label htmlFor="dual-edit-negative-prompt-input">负面提示词 Negative Prompt</label>
             <div className="label-actions">
               <button
-                id="edit-negative-preset-btn"
+                id="dual-edit-negative-preset-btn"
                 type="button"
                 className="prompt-assist-btn"
                 title="选择预设提示词"
@@ -354,7 +367,7 @@ export default function EditParameterForm({
                 预设
               </button>
               <button
-                id="edit-negative-size-btn"
+                id="dual-edit-negative-size-btn"
                 type="button"
                 className="prompt-assist-btn"
                 title={`切换输入框高度(当前 ${negativePromptSize}x)`}
@@ -364,7 +377,7 @@ export default function EditParameterForm({
                 {negativePromptSize}x
               </button>
               <button
-                id="edit-negative-clear-btn"
+                id="dual-edit-negative-clear-btn"
                 type="button"
                 className="prompt-assist-btn"
                 title="清空负面提示词"
@@ -377,7 +390,7 @@ export default function EditParameterForm({
             </div>
           </div>
           <textarea
-            id="edit-negative-prompt-input"
+            id="dual-edit-negative-prompt-input"
             className={negativePromptSize > 1 ? `prompt-size-${negativePromptSize}` : undefined}
             value={negativePrompt}
             placeholder="不想出现在画面中的内容(可留空)……"
@@ -386,22 +399,36 @@ export default function EditParameterForm({
         </div>
 
         <EditImageField
-          idPrefix="edit-input-image"
-          label="输入图片(必选)"
-          value={inputImageValue}
-          onChange={setInputImageValue}
+          idPrefix="dual-primary-image"
+          label="图片 1 · 场景(必选)"
+          value={primaryImage}
+          onChange={setPrimaryImage}
           ratio={Number(width) / Number(height)}
           targetWidth={Number(width)}
           targetHeight={Number(height)}
+          requiredHint="点击上传场景图"
           onError={setError}
-          onUploadingChange={setInputImageUploading}
+          onUploadingChange={setPrimaryUploading}
         />
 
-        <div className="field" id="field-edit-model">
+        <EditImageField
+          idPrefix="dual-secondary-image"
+          label="图片 2 · 主体(必选)"
+          value={secondaryImage}
+          onChange={setSecondaryImage}
+          targetWidth={Number(width)}
+          targetHeight={Number(height)}
+          defaultFreeCrop
+          requiredHint="点击上传主体图"
+          onError={setError}
+          onUploadingChange={setSecondaryUploading}
+        />
+
+        <div className="field" id="field-dual-edit-model">
           <div className="label-row">
-            <label htmlFor="edit-model-select">模型 Checkpoint</label>
+            <label htmlFor="dual-edit-model-select">模型 Checkpoint</label>
             <button
-              id="edit-model-picker-toggle"
+              id="dual-edit-model-picker-toggle"
               type="button"
               className="prompt-assist-btn"
               title={modelPickerOpen ? "收起模型画廊" : "查看模型画廊"}
@@ -413,7 +440,7 @@ export default function EditParameterForm({
             </button>
           </div>
           <select
-            id="edit-model-select"
+            id="dual-edit-model-select"
             value={modelIndex ?? ""}
             disabled={!models.length}
             onChange={(e) => setModelIndex(Number(e.target.value))}
@@ -427,13 +454,13 @@ export default function EditParameterForm({
         </div>
 
         {modelPickerOpen && (
-          <div id="edit-model-picker" className="model-picker">
+          <div id="dual-edit-model-picker" className="model-picker">
             {pickerModels.map((item) => {
               const cover = modelCovers[item.name];
               return (
                 <button
                   key={item.index}
-                  id={`edit-model-pick-${item.index}`}
+                  id={`dual-edit-model-pick-${item.index}`}
                   type="button"
                   className={`model-card picker-card ${modelIndex === item.index ? "active" : ""}`}
                   title={item.display_name}
@@ -456,10 +483,10 @@ export default function EditParameterForm({
         )}
 
         {!usesCheckpointVae && (
-          <div className="field" id="field-edit-vae">
-            <label htmlFor="edit-vae-select">VAE</label>
+          <div className="field" id="field-dual-edit-vae">
+            <label htmlFor="dual-edit-vae-select">VAE</label>
             <select
-              id="edit-vae-select"
+              id="dual-edit-vae-select"
               value={vaeIndex ?? ""}
               disabled={!vaes.length}
               onChange={(e) => setVaeIndex(Number(e.target.value))}
@@ -474,10 +501,10 @@ export default function EditParameterForm({
         )}
 
         {!usesCheckpointVae && (
-          <div className="field" id="field-edit-text-encoder">
-            <label htmlFor="edit-text-encoder-select">文本编码器 Text Encoder</label>
+          <div className="field" id="field-dual-edit-text-encoder">
+            <label htmlFor="dual-edit-text-encoder-select">文本编码器 Text Encoder</label>
             <select
-              id="edit-text-encoder-select"
+              id="dual-edit-text-encoder-select"
               value={textEncoderIndex ?? ""}
               disabled={!textEncoders.length}
               onChange={(e) => setTextEncoderIndex(Number(e.target.value))}
@@ -492,7 +519,7 @@ export default function EditParameterForm({
         )}
 
         <SizeInputCard
-          idPrefix="edit-size"
+          idPrefix="dual-edit-size"
           embedded
           width={width}
           height={height}
@@ -503,30 +530,30 @@ export default function EditParameterForm({
           limits={LIMITS.size}
         />
 
-        <div className="row" id="edit-steps-count-row">
-          <div className="field" id="field-edit-steps">
-            <label htmlFor="edit-steps-input">采样步数 Steps</label>
+        <div className="row" id="dual-edit-steps-count-row">
+          <div className="field" id="field-dual-edit-steps">
+            <label htmlFor="dual-edit-steps-input">采样步数 Steps</label>
             <input
-              id="edit-steps-input" type="number"
+              id="dual-edit-steps-input" type="number"
               min={LIMITS.steps.min} max={LIMITS.steps.max}
               value={steps} onChange={(e) => setSteps(e.target.value)}
             />
           </div>
-          <div className="field" id="field-edit-count">
-            <label htmlFor="edit-count-input">批次数量</label>
+          <div className="field" id="field-dual-edit-count">
+            <label htmlFor="dual-edit-count-input">批次数量</label>
             <input
-              id="edit-count-input" type="number"
+              id="dual-edit-count-input" type="number"
               min={LIMITS.count.min} max={LIMITS.count.max}
               value={count} onChange={(e) => setCount(e.target.value)}
             />
           </div>
         </div>
 
-        <div className="row" id="edit-fixed-params-row">
-          <div className="field" id="field-edit-sampler">
-            <label htmlFor="edit-sampler-select">采样器 Sampler</label>
+        <div className="row" id="dual-edit-fixed-params-row">
+          <div className="field" id="field-dual-edit-sampler">
+            <label htmlFor="dual-edit-sampler-select">采样器 Sampler</label>
             <select
-              id="edit-sampler-select"
+              id="dual-edit-sampler-select"
               value={sampler}
               onChange={(e) => setSampler(e.target.value)}
             >
@@ -535,10 +562,10 @@ export default function EditParameterForm({
               ))}
             </select>
           </div>
-          <div className="field" id="field-edit-scheduler">
-            <label htmlFor="edit-scheduler-select">调度器 Scheduler</label>
+          <div className="field" id="field-dual-edit-scheduler">
+            <label htmlFor="dual-edit-scheduler-select">调度器 Scheduler</label>
             <select
-              id="edit-scheduler-select"
+              id="dual-edit-scheduler-select"
               value={scheduler}
               onChange={(e) => setScheduler(e.target.value)}
             >
@@ -547,41 +574,41 @@ export default function EditParameterForm({
               ))}
             </select>
           </div>
-          <div className="field" id="field-edit-cfg">
-            <label htmlFor="edit-cfg-input">CFG</label>
+          <div className="field" id="field-dual-edit-cfg">
+            <label htmlFor="dual-edit-cfg-input">CFG</label>
             <input
-              id="edit-cfg-input" type="number" min={0} step="any"
+              id="dual-edit-cfg-input" type="number" min={0} step="any"
               value={cfg} onChange={(e) => setCfg(e.target.value)}
             />
           </div>
-          <div className="field" id="field-edit-seed">
-            <label htmlFor="edit-seed-input">种子 Seed</label>
+          <div className="field" id="field-dual-edit-seed">
+            <label htmlFor="dual-edit-seed-input">种子 Seed</label>
             <input
-              id="edit-seed-input" type="number" min={-1} step={1}
+              id="dual-edit-seed-input" type="number" min={-1} step={1}
               title="-1 表示随机"
               value={seed} onChange={(e) => setSeed(e.target.value)}
             />
           </div>
         </div>
 
-        <div className="row" id="edit-grounding-ref-row">
-          <div className="field" id="field-edit-grounding">
-            <label htmlFor="edit-grounding-input">Grounding 像素</label>
+        <div className="row" id="dual-edit-grounding-ref-row">
+          <div className="field" id="field-dual-edit-grounding">
+            <label htmlFor="dual-edit-grounding-input">Grounding 像素</label>
             <input
-              id="edit-grounding-input" type="number" min={0} step={32}
+              id="dual-edit-grounding-input" type="number" min={0} step={32}
               title="参考图缩放后的短边像素,0 表示使用原图尺寸"
               value={groundingPx} onChange={(e) => setGroundingPx(e.target.value)}
             />
-            <p className="form-hint" id="edit-grounding-hint">0 = 原图尺寸</p>
+            <p className="form-hint" id="dual-edit-grounding-hint">0 = 原图尺寸</p>
           </div>
-          <div className="field" id="field-edit-ref-boost">
-            <label htmlFor="edit-ref-boost-input">Ref Boost</label>
+          <div className="field" id="field-dual-edit-ref-boost">
+            <label htmlFor="dual-edit-ref-boost-input">Ref Boost</label>
             <input
-              id="edit-ref-boost-input" type="number" min={0} step="0.05"
+              id="dual-edit-ref-boost-input" type="number" min={0} step={0.05}
               title="参考图加强度,1.0 为关闭,大于 1 更贴近参考图"
               value={refBoost} onChange={(e) => setRefBoost(e.target.value)}
             />
-            <p className="form-hint" id="edit-ref-boost-hint">1.0 = 关闭,&gt;1 更贴近参考图</p>
+            <p className="form-hint" id="dual-edit-ref-boost-hint">1.0 = 关闭,&gt;1 更贴近参考图</p>
           </div>
         </div>
       </div>
@@ -590,10 +617,10 @@ export default function EditParameterForm({
         value={upscale}
         onChange={setUpscale}
         allowedMethods={["none", "resize", "upscale_model"]}
-        idPrefix="edit-upscale"
+        idPrefix="dual-edit-upscale"
       />
 
-      {error && <div id="edit-form-error" className="form-error">{error}</div>}
+      {error && <div id="dual-edit-form-error" className="form-error">{error}</div>}
 
       {presetTarget && (
         <PromptPresetPicker

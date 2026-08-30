@@ -27,6 +27,7 @@ from .settings import SettingsStore
 router = APIRouter(prefix="/api/v1")
 
 _LLM_TIMEOUT = 120.0
+_MODELS_FETCH_TIMEOUT = 10.0
 
 _LANGUAGES = {"en": "ENG", "zh": "中文"}
 PromptStyle = Literal["flux", "sd"]
@@ -34,7 +35,6 @@ _STYLE_PROMPT_KEYS: dict[PromptStyle, str] = {
     "flux": "system_prompt",
     "sd": "sd_system_prompt",
 }
-
 
 class PromptAssistRequest(BaseModel):
     instruction: str = Field(min_length=1, max_length=4000)
@@ -48,11 +48,14 @@ class PromptAssistRequest(BaseModel):
             raise ValueError("instruction 去空白后不能为空")
         return value
 
-
 class PromptChatRequest(PromptAssistRequest):
     # 为空表示新对话:服务端在首次请求时创建 session
     session_id: str | None = None
 
+class RemoteModelsRequest(BaseModel):
+    interface: Literal["ollama", "openai"] = "ollama"
+    base_url: str
+    api_key: str = ""
 
 class PromptAssistResponse(BaseModel):
     positive: str
@@ -60,7 +63,6 @@ class PromptAssistResponse(BaseModel):
     raw: str
     parsed: bool
     session_id: str
-
 
 def _build_system_prompt(
     llm_config: dict, language: str, prompt_style: PromptStyle = "flux"
@@ -74,7 +76,6 @@ def _build_system_prompt(
         .replace("{language}", _LANGUAGES[language]),
     ]
     return "\n".join(part for part in parts if part)
-
 
 def _build_chat_request(
     *,
@@ -117,7 +118,6 @@ def _build_chat_request(
         headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
     return url, payload, headers
 
-
 def _openai_usage(usage_raw: dict | None) -> dict:
     """从 OpenAI 兼容响应的 usage 字段提取 token 用量,缺项为 None。"""
     usage_raw = usage_raw or {}
@@ -131,7 +131,6 @@ def _openai_usage(usage_raw: dict | None) -> dict:
         "output_tokens": usage_raw.get("completion_tokens"),
         "cached_tokens": cached,
     }
-
 
 async def call_llm_chat(
     *,
@@ -170,7 +169,6 @@ async def call_llm_chat(
         }
         return data["message"]["content"], usage
     return data["choices"][0]["message"]["content"], _openai_usage(data.get("usage"))
-
 
 async def stream_llm_chat(
     *,
@@ -239,9 +237,7 @@ async def stream_llm_chat(
                         if delta.get("content"):
                             yield {"type": "content", "delta": delta["content"]}
 
-
 _MARKER = re.compile(r"^[#\s\-*]*(positive|negative)\s*[:：]\s*", re.IGNORECASE)
-
 
 def _parse_content(content: str) -> tuple[str, str] | None:
     """从模型输出中拆出 Positive/Negative 两段,容忍大小写和 markdown 噪声。"""
@@ -262,7 +258,6 @@ def _parse_content(content: str) -> tuple[str, str] | None:
     if "negative" not in sections:
         return None
     return positive, negative
-
 
 class LLMRecordStore:
     """cache 目录下的 JSON 大模型请求记录,按时间倒序,最多保留 _MAX_RECORDS 条。"""
@@ -317,18 +312,15 @@ class LLMRecordStore:
         )
         tmp.replace(self._path)
 
-
 @dataclass(frozen=True)
 class PromptSessionContext:
     language: str
     prompt_style: PromptStyle
 
-
 @dataclass
 class _PromptSession:
     context: PromptSessionContext | None
     history: list[dict] = field(default_factory=list)
-
 
 class PromptSessionStore:
     """内存中的提示词对话会话,只存 user/assistant 轮次(system prompt 每次请求现拼)。
@@ -371,7 +363,6 @@ class PromptSessionStore:
                 session.history.extend(messages)
                 self._sessions.move_to_end(session_id)
 
-
 def _llm_error_detail(exc: Exception) -> str:
     """把 httpx/解析异常映射为面向用户的错误描述(与 HTTP 502 detail 一致)。"""
     if isinstance(exc, httpx.ConnectError):
@@ -383,7 +374,88 @@ def _llm_error_detail(exc: Exception) -> str:
     return f"大模型服务返回异常: {exc}"
 
 
+async def fetch_remote_models(
+    *, interface: str, base_url: str, api_key: str = ""
+) -> list[str]:
+    """拉取远端可用模型名列表(Ollama /api/tags,OpenAI 兼容 /models)。"""
+    base = base_url.rstrip("/")
+    if interface == "ollama":
+        url = f"{base}/api/tags"
+        headers = {}
+    else:
+        url = f"{base}/models"
+        headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    async with httpx.AsyncClient(timeout=_MODELS_FETCH_TIMEOUT) as client:
+        response = await client.get(url, headers=headers)
+        response.raise_for_status()
+    data = response.json()
+    # 响应结构校验:LM Studio 等服务对未知路径也回 200 + {"error": ...},
+    # 缺字段直接报错并提示检查 Base URL,而不是静默返回空列表
+    key = "models" if interface == "ollama" else "data"
+    items = data.get(key) if isinstance(data, dict) else None
+    if not isinstance(items, list):
+        detail = data.get("error") if isinstance(data, dict) else None
+        raise ValueError(
+            f"模型列表响应格式不符合预期({detail or f'缺少 {key} 字段'});"
+            "请确认接口类型与 Base URL 是否正确(OpenAI 兼容接口通常以 /v1 结尾)"
+        )
+    if interface == "ollama":
+        return [item.get("name", "") for item in items if isinstance(item, dict)]
+    return [item.get("id", "") for item in items if isinstance(item, dict)]
+
+
 _LLM_CALL_ERRORS = (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError)
+
+
+def _resolve_llm_target(store: SettingsStore) -> dict:
+    config = store.get().get("llm", {})
+    selected = config.get("selected", {})
+    endpoint_id = selected.get("endpoint_id", "") if isinstance(selected, dict) else ""
+    model = selected.get("model", "") if isinstance(selected, dict) else ""
+    endpoint = next(
+        (item for item in config.get("endpoints", []) if item.get("id") == endpoint_id),
+        None,
+    )
+    if endpoint is None or not model:
+        raise HTTPException(
+            status_code=400, detail="请先在设置中配置大模型并选择模型"
+        )
+    resolved = dict(endpoint)
+    resolved["model"] = model
+    for key in (
+        "system_prompt",
+        "sd_system_prompt",
+        "format_prompt",
+        "language_prompt",
+        "think",
+        "think_effort",
+    ):
+        resolved[key] = config.get(key, False if key == "think" else "")
+    return resolved
+
+
+_MODELS_FETCH_ERRORS = (
+    httpx.HTTPError,
+    KeyError,
+    IndexError,
+    TypeError,
+    ValueError,
+    AttributeError,
+)
+
+
+@router.post("/remote/models")
+async def fetch_remote_models_route(payload: RemoteModelsRequest):
+    base_url = payload.base_url.strip()
+    if not base_url:
+        raise HTTPException(status_code=400, detail="Base URL 去空白后不能为空")
+    try:
+        models = await fetch_remote_models(
+            interface=payload.interface, base_url=base_url, api_key=payload.api_key
+        )
+    except _MODELS_FETCH_ERRORS as exc:
+        raise HTTPException(status_code=502, detail=_llm_error_detail(exc)) from exc
+    return {"models": models}
 
 
 @router.post("/prompt-assist", response_model=PromptAssistResponse)
@@ -392,9 +464,7 @@ async def prompt_assist(
     store: SettingsStore = Depends(get_settings_store),
     records: LLMRecordStore = Depends(get_llm_record_store),
 ):
-    llm_config = store.get().get("llm", {})
-    if not llm_config.get("model") or not llm_config.get("base_url"):
-        raise HTTPException(status_code=400, detail="请先在设置中配置大模型")
+    llm_config = _resolve_llm_target(store)
     system_prompt = _build_system_prompt(
         llm_config, payload.language, payload.prompt_style
     )
@@ -408,6 +478,7 @@ async def prompt_assist(
         "session_id": uuid4().hex,
         "base_url": llm_config["base_url"],
         "model": llm_config["model"],
+        "endpoint_name": llm_config.get("name", ""),
         "request": json.dumps(messages, ensure_ascii=False, indent=2),
         "response": "",
         "error": "",
@@ -451,10 +522,8 @@ async def prompt_assist(
         session_id=record["session_id"],
     )
 
-
 def _sse(event: dict) -> str:
     return f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
-
 
 @router.post("/prompt-assist/chat")
 async def prompt_assist_chat(
@@ -468,9 +537,7 @@ async def prompt_assist_chat(
     session(会话 id) → thinking/content 增量 → done(全文+用量) 或 error。
     session_id 为空或已失效时创建新会话;会话内连续对话可调整已生成的提示词。
     """
-    llm_config = store.get().get("llm", {})
-    if not llm_config.get("model") or not llm_config.get("base_url"):
-        raise HTTPException(status_code=400, detail="请先在设置中配置大模型")
+    llm_config = _resolve_llm_target(store)
     system_prompt = _build_system_prompt(
         llm_config, payload.language, payload.prompt_style
     )
@@ -492,6 +559,7 @@ async def prompt_assist_chat(
         "session_id": session_id,
         "base_url": llm_config["base_url"],
         "model": llm_config["model"],
+        "endpoint_name": llm_config.get("name", ""),
         "request": json.dumps(messages, ensure_ascii=False, indent=2),
         "response": "",
         "error": "",
@@ -539,7 +607,6 @@ async def prompt_assist_chat(
         yield _sse({"type": "done", "usage": usage})
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
-
 
 @router.get("/llm/requests")
 async def list_llm_requests(

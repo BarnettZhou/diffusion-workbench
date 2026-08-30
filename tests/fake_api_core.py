@@ -231,6 +231,9 @@ class FakeApiCore:
             cfg=settings.cfg,
             model_loader=settings.model_loader,
             input_image_path=settings.input_image if is_edit else None,
+            secondary_input_image_path=(
+                settings.secondary_input_image if is_edit else None
+            ),
             grounding_px=settings.grounding_px if is_edit else None,
             ref_boost=settings.ref_boost if is_edit else None,
             reference_image_paths=settings.reference_images if is_rebalance else (),

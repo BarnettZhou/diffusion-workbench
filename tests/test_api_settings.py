@@ -53,6 +53,39 @@ class SettingsTests(ApiTestCase):
             self.assertEqual(response.status_code, 422, f"{key} 不应成为全局设置")
 
 
+class AspectRatioPresetsTests(ApiTestCase):
+    def test_returns_defaults_without_file(self):
+        response = self.client.get("/api/v1/settings")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json()["aspect_ratio_presets"],
+            [[1, 1], [3, 4], [4, 3], [5, 4], [4, 5], [16, 9], [9, 16]],
+        )
+
+    def test_round_trip_persists_and_dedupes(self):
+        presets = [[3, 4], [16, 9], [3, 4]]
+        response = self.client.put(
+            "/api/v1/settings", json={"aspect_ratio_presets": presets}
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["aspect_ratio_presets"], [[3, 4], [16, 9]])
+
+        settings_file = self.core.config.database.parent / "settings.json"
+        reloaded = SettingsStore(settings_file)
+        self.assertEqual(reloaded.get()["aspect_ratio_presets"], [[3, 4], [16, 9]])
+
+    def test_rejects_invalid_values(self):
+        for payload in (
+            {"aspect_ratio_presets": "not-a-list"},
+            {"aspect_ratio_presets": [[3]]},
+            {"aspect_ratio_presets": [[0, 4]]},
+            {"aspect_ratio_presets": [[3.0, 4]]},
+            {"aspect_ratio_presets": [[True, 4]]},
+        ):
+            response = self.client.put("/api/v1/settings", json=payload)
+            self.assertEqual(response.status_code, 422, f"{payload} 应被拒绝")
+
+
 class VideoSizePresetsTests(ApiTestCase):
     def test_returns_defaults_without_file(self):
         response = self.client.get("/api/v1/settings")
@@ -167,14 +200,27 @@ class Ref2vaLimitsTests(ApiTestCase):
 
 
 class LlmSettingsTests(ApiTestCase):
+    def _endpoint(self, **overrides):
+        endpoint = {
+            "id": "a1b2c3d4",
+            "name": "本地 Ollama",
+            "interface": "ollama",
+            "base_url": "http://127.0.0.1:11434",
+            "api_key": "",
+            "models": ["qwen3"],
+        }
+        endpoint.update(overrides)
+        return endpoint
+
+    def _selected(self, model="qwen3"):
+        return {"endpoint_id": "a1b2c3d4", "model": model}
+
     def test_llm_defaults(self):
         response = self.client.get("/api/v1/settings")
         self.assertEqual(response.status_code, 200)
         llm = response.json()["llm"]
-        self.assertEqual(llm["interface"], "ollama")
-        self.assertEqual(llm["base_url"], "http://127.0.0.1:11434")
-        self.assertEqual(llm["api_key"], "")
-        self.assertEqual(llm["model"], "")
+        self.assertEqual(llm["endpoints"], [])
+        self.assertEqual(llm["selected"], {"endpoint_id": "", "model": ""})
         self.assertEqual(llm["system_prompt"], "")
         self.assertIn("SDXL", llm["sd_system_prompt"])
         self.assertIn("逗号分隔短语", llm["sd_system_prompt"])
@@ -194,14 +240,17 @@ class LlmSettingsTests(ApiTestCase):
     def test_llm_partial_update_merges_defaults(self):
         response = self.client.put(
             "/api/v1/settings",
-            json={"llm": {"interface": "openai", "model": "gpt-4o-mini"}},
+            json={
+                "llm": {
+                    "endpoints": [self._endpoint(interface="openai")],
+                    "selected": self._selected(model="gpt-4o-mini"),
+                }
+            },
         )
         self.assertEqual(response.status_code, 200)
         llm = response.json()["llm"]
-        self.assertEqual(llm["interface"], "openai")
-        self.assertEqual(llm["model"], "gpt-4o-mini")
-        # 未提交的键回退默认值
-        self.assertEqual(llm["base_url"], "http://127.0.0.1:11434")
+        self.assertEqual(llm["endpoints"][0]["interface"], "openai")
+        self.assertEqual(llm["selected"]["model"], "gpt-4o-mini")
         self.assertIn("{language}", llm["language_prompt"])
 
     def test_llm_prompt_styles_round_trip_independently(self):
@@ -226,45 +275,146 @@ class LlmSettingsTests(ApiTestCase):
 
     def test_llm_rejects_invalid_interface(self):
         response = self.client.put(
-            "/api/v1/settings", json={"llm": {"interface": "anthropic"}}
+            "/api/v1/settings",
+            json={"llm": {"endpoints": [self._endpoint(interface="anthropic")]}},
         )
         self.assertEqual(response.status_code, 422)
 
     def test_llm_rejects_wrong_types_and_unknown_keys(self):
         for payload in (
             {"llm": "not-a-dict"},
-            {"llm": {"model": 123}},
+            {"llm": {"endpoints": "not-a-list"}},
+            {"llm": {"endpoints": [self._endpoint(models=[1])]}},
             {"llm": {"nope": "x"}},
         ):
             response = self.client.put("/api/v1/settings", json=payload)
             self.assertEqual(response.status_code, 422, f"{payload} 应被拒绝")
 
+    def test_llm_rejects_unknown_endpoint_keys_and_blank_base_url(self):
+        endpoint = self._endpoint(extra="x")
+        bad = self.client.put("/api/v1/settings", json={"llm": {"endpoints": [endpoint]}})
+        self.assertEqual(bad.status_code, 422)
+        bad = self.client.put(
+            "/api/v1/settings",
+            json={"llm": {"endpoints": [self._endpoint(base_url="  ")]}},
+        )
+        self.assertEqual(bad.status_code, 422)
+
+    def test_legacy_flat_llm_migrates_on_update_and_file_load(self):
+        response = self.client.put(
+            "/api/v1/settings",
+            json={
+                "llm": {
+                    "interface": "openai",
+                    "base_url": "https://api.example/v1",
+                    "api_key": "secret",
+                    "model": "gpt-4o-mini",
+                }
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        llm = response.json()["llm"]
+        self.assertEqual(llm["endpoints"][0]["name"], "")
+        self.assertEqual(llm["endpoints"][0]["models"], ["gpt-4o-mini"])
+        self.assertEqual(llm["selected"], {"endpoint_id": llm["endpoints"][0]["id"], "model": "gpt-4o-mini"})
+        self.assertNotIn("model", llm)
+
+        settings_file = self.core.config.database.parent / "settings.json"
+        settings_file.write_text(
+            json.dumps(
+                {
+                    "llm": {
+                        "interface": "ollama",
+                        "base_url": "http://127.0.0.1:11434",
+                        "api_key": "",
+                        "model": "qwen3",
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        reloaded = SettingsStore(settings_file).get()["llm"]
+        self.assertEqual(reloaded["endpoints"][0]["models"], ["qwen3"])
+        self.assertNotIn("model", reloaded)
+
+    def test_selected_endpoint_must_exist(self):
+        response = self.client.put(
+            "/api/v1/settings",
+            json={
+                "llm": {
+                    "endpoints": [self._endpoint()],
+                    "selected": {"endpoint_id": "missing", "model": "qwen3"},
+                }
+            },
+        )
+        self.assertEqual(response.status_code, 422)
+
+    def test_endpoint_with_local_temp_id_gets_generated_id(self):
+        # 前端本地新建的端点带 local-* 临时 id,保存时服务端应重新生成而非报错
+        response = self.client.put(
+            "/api/v1/settings",
+            json={"llm": {"endpoints": [self._endpoint(id="local-1730000000000")]}},
+        )
+        self.assertEqual(response.status_code, 200)
+        endpoint = response.json()["llm"]["endpoints"][0]
+        self.assertEqual(len(endpoint["id"]), 8)
+        int(endpoint["id"], 16)
+
+    def test_selected_only_update_preserves_endpoints(self):
+        # 前端切换默认模型只提交 selected;endpoints 等其余键必须保留
+        self.client.put(
+            "/api/v1/settings", json={"llm": {"endpoints": [self._endpoint()]}}
+        )
+        response = self.client.put(
+            "/api/v1/settings", json={"llm": {"selected": self._selected()}}
+        )
+        self.assertEqual(response.status_code, 200)
+        llm = response.json()["llm"]
+        self.assertEqual(llm["selected"], self._selected())
+        self.assertEqual(len(llm["endpoints"]), 1)
+        self.assertEqual(llm["endpoints"][0]["models"], ["qwen3"])
+
 
 class CaptionApiSettingsTests(ApiTestCase):
+    def _endpoint(self, **overrides):
+        endpoint = {
+            "id": "c1d2e3f4",
+            "name": "视觉模型",
+            "interface": "ollama",
+            "base_url": "http://127.0.0.1:11434",
+            "api_key": "",
+            "models": ["qwen3-vl:8b"],
+        }
+        endpoint.update(overrides)
+        return endpoint
+
+    def _selected(self, model="qwen3-vl:8b"):
+        return {"endpoint_id": "c1d2e3f4", "model": model}
+
     def test_caption_api_defaults(self):
         response = self.client.get("/api/v1/settings")
         self.assertEqual(response.status_code, 200)
         caption_api = response.json()["caption_api"]
-        self.assertEqual(caption_api["interface"], "ollama")
-        self.assertEqual(caption_api["base_url"], "http://127.0.0.1:11434")
-        self.assertEqual(caption_api["api_key"], "")
-        self.assertEqual(caption_api["model"], "")
+        self.assertEqual(caption_api["endpoints"], [])
+        self.assertEqual(caption_api["selected"], {"endpoint_id": "", "model": ""})
         self.assertIs(caption_api["think"], False)
-        # 提示词默认值与本地反推的系统提示词一致(含双语输出要求)
         self.assertIn("image prompt engineer", caption_api["prompt"])
         self.assertIn("bilingual", caption_api["prompt"])
 
     def test_caption_api_partial_update_merges_defaults(self):
         response = self.client.put(
             "/api/v1/settings",
-            json={"caption_api": {"interface": "openai", "model": "gpt-4o-mini"}},
+            json={
+                "caption_api": {
+                    "endpoints": [self._endpoint(interface="openai")],
+                    "selected": self._selected(model="gpt-4o-mini"),
+                }
+            },
         )
         self.assertEqual(response.status_code, 200)
         caption_api = response.json()["caption_api"]
-        self.assertEqual(caption_api["interface"], "openai")
-        self.assertEqual(caption_api["model"], "gpt-4o-mini")
-        # 未提交的键回退默认值
-        self.assertEqual(caption_api["base_url"], "http://127.0.0.1:11434")
+        self.assertEqual(caption_api["endpoints"][0]["interface"], "openai")
+        self.assertEqual(caption_api["selected"]["model"], "gpt-4o-mini")
         self.assertIn("image prompt engineer", caption_api["prompt"])
 
     def test_caption_api_think_toggle(self):
@@ -280,29 +430,89 @@ class CaptionApiSettingsTests(ApiTestCase):
 
     def test_caption_api_rejects_invalid_interface(self):
         response = self.client.put(
-            "/api/v1/settings", json={"caption_api": {"interface": "anthropic"}}
+            "/api/v1/settings",
+            json={"caption_api": {"endpoints": [self._endpoint(interface="anthropic")]}},
         )
         self.assertEqual(response.status_code, 422)
 
     def test_caption_api_rejects_wrong_types_and_unknown_keys(self):
         for payload in (
             {"caption_api": "not-a-dict"},
-            {"caption_api": {"model": 123}},
+            {"caption_api": {"endpoints": "not-a-list"}},
+            {"caption_api": {"endpoints": [self._endpoint(models=[1])]}},
             {"caption_api": {"nope": "x"}},
         ):
             response = self.client.put("/api/v1/settings", json=payload)
             self.assertEqual(response.status_code, 422, f"{payload} 应被拒绝")
 
+    def test_legacy_flat_caption_api_migrates_on_update_and_file_load(self):
+        response = self.client.put(
+            "/api/v1/settings",
+            json={
+                "caption_api": {
+                    "interface": "ollama",
+                    "base_url": "http://127.0.0.1:11434",
+                    "api_key": "",
+                    "model": "qwen3-vl:8b",
+                }
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        caption_api = response.json()["caption_api"]
+        self.assertEqual(caption_api["endpoints"][0]["models"], ["qwen3-vl:8b"])
+        self.assertEqual(caption_api["selected"]["model"], "qwen3-vl:8b")
+        self.assertNotIn("model", caption_api)
+
+        settings_file = self.core.config.database.parent / "settings.json"
+        settings_file.write_text(
+            json.dumps(
+                {
+                    "caption_api": {
+                        "interface": "ollama",
+                        "base_url": "http://127.0.0.1:11434",
+                        "api_key": "",
+                        "model": "qwen3-vl:8b",
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        reloaded = SettingsStore(settings_file).get()["caption_api"]
+        self.assertEqual(reloaded["endpoints"][0]["models"], ["qwen3-vl:8b"])
+        self.assertNotIn("model", reloaded)
+
     def test_caption_api_round_trip_persistence(self):
         response = self.client.put(
             "/api/v1/settings",
-            json={"caption_api": {"model": "qwen3-vl:8b", "prompt": "CUSTOM"}},
+            json={
+                "caption_api": {
+                    "endpoints": [self._endpoint()],
+                    "selected": self._selected(),
+                    "prompt": "CUSTOM",
+                }
+            },
         )
         self.assertEqual(response.status_code, 200)
         settings_file = self.core.config.database.parent / "settings.json"
         reloaded = SettingsStore(settings_file).get()["caption_api"]
-        self.assertEqual(reloaded["model"], "qwen3-vl:8b")
+        self.assertEqual(reloaded["selected"]["model"], "qwen3-vl:8b")
         self.assertEqual(reloaded["prompt"], "CUSTOM")
+
+    def test_selected_only_update_preserves_endpoints(self):
+        # 前端切换默认模型只提交 selected;endpoints 等其余键必须保留
+        self.client.put(
+            "/api/v1/settings",
+            json={"caption_api": {"endpoints": [self._endpoint()]}},
+        )
+        response = self.client.put(
+            "/api/v1/settings",
+            json={"caption_api": {"selected": self._selected()}},
+        )
+        self.assertEqual(response.status_code, 200)
+        caption_api = response.json()["caption_api"]
+        self.assertEqual(caption_api["selected"], self._selected())
+        self.assertEqual(len(caption_api["endpoints"]), 1)
+        self.assertEqual(caption_api["endpoints"][0]["models"], ["qwen3-vl:8b"])
 
 
 class SamplingDefaultsTests(ApiTestCase):

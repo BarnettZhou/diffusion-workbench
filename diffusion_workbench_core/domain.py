@@ -303,6 +303,8 @@ class GenerationSettings:
     model_loader: ModelLoader = ModelLoader.COMPONENTS
     # Krea2 图像编辑专用字段；其他 mode 时保持默认 None / 默认值。
     input_image: Path | None = None
+    # 双图编辑的第二张输入图；仅 edit-krea2 模式可用，单图编辑保持 None。
+    secondary_input_image: Path | None = None
     grounding_px: int = 768
     ref_boost: float = 1.0
     # Krea2 参考图重排专用字段；其他 mode 时保持空 tuple。
@@ -327,8 +329,10 @@ class GenerationSettings:
         if self.mode == Mode.KREA2_EDIT:
             if self.input_image is None:
                 raise ValueError("编辑模式必须提供输入图片")
-            if self.upscale.enabled:
-                raise ValueError("编辑模式暂不支持图片放大")
+            # latent_hires 的二段采样与 in-context patch 冲突（source token 按第一段
+            # 目标网格编码，放大后网格不匹配），编辑模式只放行纯后处理的放大方法。
+            if self.upscale.enabled and self.upscale.method == UpscaleMethod.LATENT_HIRES:
+                raise ValueError("编辑模式仅支持 resize / upscale_model 放大")
             if (
                 not isinstance(self.grounding_px, int)
                 or isinstance(self.grounding_px, bool)
@@ -344,6 +348,8 @@ class GenerationSettings:
                 raise ValueError("ref_boost 必须是 0 到 1000 的有限数值")
         elif self.input_image is not None:
             raise ValueError("仅 edit-krea2 模式支持输入图片编辑")
+        elif self.secondary_input_image is not None:
+            raise ValueError("仅 edit-krea2 模式支持第二输入图片")
         if self.mode == Mode.KREA2_REBALANCE:
             if not 1 <= len(self.reference_images) <= REBALANCE_MAX_REFERENCE_IMAGES:
                 raise ValueError(
@@ -391,6 +397,7 @@ class JobRecord:
     model_loader: ModelLoader = ModelLoader.COMPONENTS
     # Krea2 编辑专用字段；非编辑模式为 None / 默认值。
     input_image_path: Path | None = None
+    secondary_input_image_path: Path | None = None
     grounding_px: int | None = None
     ref_boost: float | None = None
     # Krea2 参考图重排专用字段；非 krea2-rebalance 模式为空 tuple。

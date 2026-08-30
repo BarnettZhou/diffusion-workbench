@@ -347,6 +347,7 @@ qwen3vl 视觉条件共同决定编辑结果。
 | 字段 | 类型 | 默认值 | 校验 |
 |---|---|---|---|
 | `input_image` | `Path \| None` | `None` | 编辑模式必填；其他模式必须为 None |
+| `secondary_input_image` | `Path \| None` | `None` | 双图编辑的第二张输入图（主体）；仅编辑模式可为非 None |
 | `grounding_px` | `int` | `768` | 0 到 4096 的整数；0 表示按原图尺寸 |
 | `ref_boost` | `float` | `1.0` | 0 到 1000 的有限数值 |
 
@@ -356,20 +357,25 @@ qwen3vl 视觉条件共同决定编辑结果。
   `ValueError` / `FileNotFoundError`；
 - `settings.input_image` 文件存在（参照视频提交 input_image 的写法）。
 
-`upscale.enabled` 在编辑模式被禁止（domain validate 即拒绝），因此 Worker
-永远走原始尺寸 VAE 解码 + PNG 保存。
+编辑模式支持 upscale，但仅限纯后处理方法 `resize` / `upscale_model`；
+`latent_hires` 的二段采样与 in-context patch 冲突（source token 按第一段目标
+网格编码，放大后网格不匹配），domain validate 即拒绝。放行方法在解码后与其他
+模式走同一条放大后处理路径，输出 `-upscale.png`。
 
 Worker 流程：
 
 1. 与 Krea2 共享 mode cache（`edit-krea2` 归一化为 `krea2`），不重新加载
    diffusion / clip / vae；
-2. 用 `_load_input_image()` 归一化源图为 RGB tensor；
-3. `VAEEncode(source_image)` 得到 source_latent；`LoraLoaderModelOnly` 以
+2. 用 `_load_input_image()` 归一化源图为 RGB tensor（双图编辑时同样加载
+   `secondary_input_image_path` 为 `source_image_b`）；
+3. `VAEEncode(source_image)` 得到 source_latent（双图时第二图同样先缩放到目标
+   尺寸再编码为 `source_latent_b`）；`LoraLoaderModelOnly` 以
    strength 1 注入 `edit_lora`；`Krea2EditModelPatch` 用 `fit_mode="fit"` +
    `vae + source_image + target_latent` 走 pixel path，缓存层按目标分辨率
-   复用；
+   复用；双图时额外传 `source_latent_b` / `source_image_b`（节点按训练顺序
+   scene first, subject second 注入 RoPE frame=2 的 token 块）；
 4. `Krea2EditGroundedEncode(clip, prompt, image=source_image, grounding_px)`
-   编码正样本；`cfg == 1.0` 复用正样本为负样本；否则按 `negative_prompt` 是否
+   编码正样本（双图时加 `image_b=source_image_b`）；`cfg == 1.0` 复用正样本为负样本；否则按 `negative_prompt` 是否
    存在走 `Krea2EditGroundedEncode`（非空）或 `ConditioningZeroOut(positive)`
    （空，对应原 workflow）；
 5. `_sample(model=patched_model)` 走原 sampler；后续 VAE 解码、PNG 保存与
@@ -395,7 +401,8 @@ ComfyUI-Conditioning-Rebalance 节点包的 `Krea2EncodeRebalance`：把提示�
 | `reference_image_tokens` | `tuple[str, ...]` | `()` | 为空表示全部 `"normal"`；非空时数量必须与参考图一致，档位限 `low`/`normal`/`high`/`max`（域常量 `REBALANCE_TOKEN_TIERS`） |
 
 `WorkbenchCore.submit()` 在重排模式还会校验每张参考图文件存在，缺失抛
-`FileNotFoundError`。与编辑模式不同，重排模式不禁止 upscale。
+`FileNotFoundError`。与编辑模式只放行纯后处理放大（resize / upscale_model）不同，
+重排模式不禁止任何 upscale 方法。
 
 Worker 流程：
 

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api/client";
 import Modal from "./Modal";
+import RemoteModelSelect from "./RemoteModelSelect";
 
 // 与后端 diffusion_workbench_api/llm.py 的 _parse_content 同逻辑:
 // 从模型输出中拆出 Positive/Negative 两段,容忍大小写和 markdown 噪声
@@ -33,7 +34,13 @@ let nextMsgId = 1;
 // 对话式快捷生成提示词弹窗:左 LLM 气泡(思考过程 + 流式输出),右用户气泡,
 // 底部输入栏(语言/风格切换 + 发送)。历史为空即新对话,首条消息才创建 session。
 // 组件常驻不卸载,open 仅控制显隐:关闭再打开仍保留上一次的会话内容。
-export default function PromptAssistModal({ open, onClose, onUse }) {
+export default function PromptAssistModal({
+  open,
+  onClose,
+  onUse,
+  llmSettings,
+  onSelectModel,
+}) {
   const [messages, setMessages] = useState([]);
   const [sessionId, setSessionId] = useState(null);
   const [input, setInput] = useState("");
@@ -59,6 +66,20 @@ export default function PromptAssistModal({ open, onClose, onUse }) {
     if (value === currentValue) return;
     setter(value);
     // 语言或风格属于 system prompt 上下文,切换后从新会话开始。
+    setMessages([]);
+    setSessionId(null);
+  }
+
+  // 切换模型视为上下文变化,与切换语言一样从空对话继续;持久化由调用方 onSelectModel 完成。
+  function handleModelChange(next) {
+    const current = llmSettings?.selected ?? { endpoint_id: "", model: "" };
+    if (
+      next.endpoint_id === current.endpoint_id &&
+      next.model === current.model
+    ) {
+      return;
+    }
+    onSelectModel?.(next);
     setMessages([]);
     setSessionId(null);
   }
@@ -211,31 +232,40 @@ export default function PromptAssistModal({ open, onClose, onUse }) {
           }}
         />
         <div className="chat-input-footer">
-          <div className="chat-prompt-options">
-            <OptionToggle
-              label="输出语言"
-              options={[
-                { value: "en", label: "ENG" },
-                { value: "zh", label: "中文" },
-              ]}
-              value={lang}
+          <div className="chat-input-footer-left">
+            <RemoteModelSelect
+              idPrefix="prompt-assist-model"
+              endpoints={llmSettings?.endpoints ?? []}
+              selected={llmSettings?.selected ?? { endpoint_id: "", model: "" }}
               disabled={sending}
-              idPrefix="prompt-assist-lang"
-              onChange={(value) => changeContext(setLang, value, lang)}
+              onChange={handleModelChange}
             />
-            <OptionToggle
-              label="提示词风格"
-              options={[
-                { value: "sd", label: "SD" },
-                { value: "flux", label: "FLUX" },
-              ]}
-              value={promptStyle}
-              disabled={sending}
-              idPrefix="prompt-assist-style"
-              onChange={(value) =>
-                changeContext(setPromptStyle, value, promptStyle)
-              }
-            />
+            <div className="chat-prompt-options">
+              <OptionToggle
+                label="输出语言"
+                options={[
+                  { value: "en", label: "ENG" },
+                  { value: "zh", label: "中文" },
+                ]}
+                value={lang}
+                disabled={sending}
+                idPrefix="prompt-assist-lang"
+                onChange={(value) => changeContext(setLang, value, lang)}
+              />
+              <OptionToggle
+                label="提示词风格"
+                options={[
+                  { value: "sd", label: "SD" },
+                  { value: "flux", label: "FLUX" },
+                ]}
+                value={promptStyle}
+                disabled={sending}
+                idPrefix="prompt-assist-style"
+                onChange={(value) =>
+                  changeContext(setPromptStyle, value, promptStyle)
+                }
+              />
+            </div>
           </div>
           <button
             id="prompt-assist-send"

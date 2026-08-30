@@ -327,6 +327,11 @@ def submit_edit_jobs(core: WorkbenchCore, payload: CreateEditJobsRequest):
     ).path
     # 输入图只接受受控上传接口的 id,路径解析在服务端完成
     input_image = resolve_video_input_image(core, payload.input_image_id)
+    secondary_input_image = (
+        resolve_video_input_image(core, payload.secondary_input_image_id)
+        if payload.secondary_input_image_id
+        else None
+    )
     fixed = core.config.resources[Mode.KREA2]
     settings = GenerationSettings(
         mode=Mode.KREA2_EDIT,
@@ -338,6 +343,8 @@ def submit_edit_jobs(core: WorkbenchCore, payload: CreateEditJobsRequest):
         prompt=payload.prompt,
         negative_prompt=payload.negative_prompt,
         input_image=input_image,
+        secondary_input_image=secondary_input_image,
+        upscale=build_upscale_settings(core, payload.upscale),
         grounding_px=payload.grounding_px,
         ref_boost=payload.ref_boost,
         width=payload.width,

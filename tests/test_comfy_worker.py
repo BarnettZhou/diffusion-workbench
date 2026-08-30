@@ -352,6 +352,62 @@ class ComfyWorkerTests(unittest.TestCase):
                 self._rebalance_command(mode="krea2")
             )
 
+    def _edit_command(self, **overrides):
+        command = {
+            "mode": "edit-krea2",
+            "width": 1024,
+            "height": 1024,
+            "steps": 8,
+            "cfg": 1,
+            "sampler": "euler",
+            "scheduler": "simple",
+            "input_image_path": "scene.png",
+            "edit_lora_path": "edit.safetensors",
+            "grounding_px": 768,
+            "ref_boost": 1.0,
+        }
+        command.update(overrides)
+        return command
+
+    def test_edit_command_with_secondary_image_is_valid(self):
+        # 双图编辑:secondary_input_image_path 可选,存在时合法
+        ComfyWorker._validate(
+            self._edit_command(secondary_input_image_path="subject.png")
+        )
+        ComfyWorker._validate(self._edit_command())
+
+    def test_non_edit_command_rejects_secondary_input_image(self):
+        with self.assertRaisesRegex(ValueError, "第二输入图片"):
+            ComfyWorker._validate(
+                self._edit_command(
+                    mode="krea2",
+                    input_image_path=None,
+                    edit_lora_path=None,
+                    secondary_input_image_path="s.png",
+                )
+            )
+
+    def test_edit_command_rejects_latent_hires_upscale(self):
+        # latent_hires 二段采样与 in-context patch 冲突,编辑模式拒绝
+        command = self._edit_command(
+            upscale={"enabled": True, "method": "latent_hires", "scale": 2},
+            upscaled_output_path="out-upscale.png",
+        )
+        with self.assertRaisesRegex(ValueError, "放大"):
+            ComfyWorker._validate(command)
+
+    def test_edit_command_allows_postprocess_upscale(self):
+        # resize / upscale_model 是纯后处理,编辑模式放行
+        for method in ("resize", "upscale_model"):
+            upscale = {"enabled": True, "method": method, "scale": 2, "interpolation": "lanczos"}
+            if method == "upscale_model":
+                upscale["model_path"] = "4x.pth"
+            ComfyWorker._validate(
+                self._edit_command(
+                    upscale=upscale, upscaled_output_path="out-upscale.png"
+                )
+            )
+
     def test_sampling_progress_contains_speed_and_eta(self):
         progress = sampling_progress_payload(
             step=2,

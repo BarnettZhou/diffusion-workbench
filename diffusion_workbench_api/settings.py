@@ -5,6 +5,7 @@ import json
 import math
 import threading
 from pathlib import Path
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException
 
@@ -34,6 +35,8 @@ _DEFAULT_VIDEO_SIZE_PRESETS = [
 
 _DEFAULT_SETTINGS = {
     "size_presets": [[576, 576], [768, 768], [1024, 1024], [960, 1280]],
+    # 尺寸卡片「自动计算」模式可选的图片比例([宽, 高] 的最简整数比)
+    "aspect_ratio_presets": [[1, 1], [3, 4], [4, 3], [5, 4], [4, 5], [16, 9], [9, 16]],
     # wan 系列视频模型(16 的倍数)与 MiniMax 系列(32 的倍数)各自的尺寸标签
     "wan_video_size_presets": _DEFAULT_VIDEO_SIZE_PRESETS,
     "minimax_video_size_presets": [],
@@ -45,10 +48,8 @@ _DEFAULT_SETTINGS = {
         for mode in Mode
     },
     "llm": {
-        "interface": "ollama",
-        "base_url": "http://127.0.0.1:11434",
-        "api_key": "",
-        "model": "",
+        "endpoints": [],
+        "selected": {"endpoint_id": "", "model": ""},
         "system_prompt": "",
         "sd_system_prompt": (
             "你是 Stable Diffusion / SDXL 提示词专家。将用户描述改写为适合 SDXL 的"
@@ -69,10 +70,8 @@ _DEFAULT_SETTINGS = {
     # API 反推(图片反推 tab 的「API 反推」):走外部视觉模型接口,不占用本地 GPU。
     # prompt 默认值与本地反推的系统提示词一致
     "caption_api": {
-        "interface": "ollama",
-        "base_url": "http://127.0.0.1:11434",
-        "api_key": "",
-        "model": "",
+        "endpoints": [],
+        "selected": {"endpoint_id": "", "model": ""},
         "prompt": DEFAULT_CAPTION_SYSTEM_PROMPT,
         "think": False,
     },
@@ -113,30 +112,175 @@ _validate_size_presets = _make_size_presets_validator(16)
 _validate_minimax_size_presets = _make_size_presets_validator(32)
 
 
+def _validate_aspect_ratio_presets(value) -> list[list[int]]:
+    """图片比例预设:每项是 [宽, 高] 的正整数比(无倍数要求),自动去重。"""
+    if not isinstance(value, list):
+        raise ValueError("aspect_ratio_presets 必须是 [宽, 高] 比例列表")
+    presets = []
+    seen = set()
+    for item in value:
+        if not isinstance(item, (list, tuple)) or len(item) != 2:
+            raise ValueError("每个比例必须是 [宽, 高] 两项")
+        width, height = item
+        if (
+            not isinstance(width, int)
+            or not isinstance(height, int)
+            or isinstance(width, bool)
+            or isinstance(height, bool)
+            or width <= 0
+            or height <= 0
+        ):
+            raise ValueError("比例的宽和高必须是正整数")
+        key = (width, height)
+        if key not in seen:
+            seen.add(key)
+            presets.append([width, height])
+    return presets
+
+
 # 新设置项在这里注册默认值和校验器。
 _LLM_STRING_KEYS = (
-    "base_url",
-    "api_key",
-    "model",
     "system_prompt",
     "sd_system_prompt",
     "format_prompt",
     "language_prompt",
     "think_effort",
 )
+_LLM_LEGACY_KEYS = ("interface", "base_url", "api_key", "model")
+_LLM_ALLOWED_KEYS = (
+    "endpoints",
+    "selected",
+    "system_prompt",
+    "sd_system_prompt",
+    "format_prompt",
+    "language_prompt",
+    "think",
+    "think_effort",
+    *_LLM_LEGACY_KEYS,
+)
+
+
+def _merge_settings(default: dict) -> dict:
+    merged = dict(default)
+    merged["endpoints"] = list(default["endpoints"])
+    merged["selected"] = dict(default["selected"])
+    return merged
+
+
+def _validate_endpoints(value) -> list[dict]:
+    if not isinstance(value, list):
+        raise ValueError("endpoints 必须是列表")
+    endpoints = []
+    used_ids: set[str] = set()
+    for item in value:
+        if not isinstance(item, dict):
+            raise ValueError("每个端点必须是对象")
+        for key in item:
+            if key not in ("id", "name", "interface", "base_url", "api_key", "models"):
+                raise ValueError(f"端点包含未知键: {key}")
+        endpoint_id = item.get("id")
+        if (
+            not isinstance(endpoint_id, str)
+            or len(endpoint_id) != 8
+            or any(char not in "0123456789abcdefABCDEF" for char in endpoint_id)
+        ):
+            # id 缺失或格式非法(如前端本地新建端点的 local-* 临时 id)时自动生成
+            endpoint_id = uuid4().hex[:8]
+        while endpoint_id in used_ids:
+            endpoint_id = uuid4().hex[:8]
+        used_ids.add(endpoint_id)
+        if not isinstance(item.get("name"), str):
+            raise ValueError("端点 name 必须是字符串")
+        interface = item.get("interface")
+        if interface not in ("ollama", "openai"):
+            raise ValueError("端点 interface 只允许 ollama 或 openai")
+        base_url = item.get("base_url")
+        if not isinstance(base_url, str) or not base_url.strip():
+            raise ValueError("端点 base_url 必须是非空字符串")
+        if not isinstance(item.get("api_key"), str):
+            raise ValueError("端点 api_key 必须是字符串")
+        models = item.get("models")
+        if not isinstance(models, list) or not all(isinstance(model, str) for model in models):
+            raise ValueError("端点 models 必须是字符串列表")
+        model_names = list(dict.fromkeys(model for model in models if model))
+        endpoints.append(
+            {
+                "id": endpoint_id,
+                "name": item["name"],
+                "interface": interface,
+                "base_url": base_url,
+                "api_key": item["api_key"],
+                "models": model_names,
+            }
+        )
+    return endpoints
+
+
+def _validate_selected(value, endpoints) -> dict:
+    if not isinstance(value, dict):
+        raise ValueError("selected 必须是对象")
+    for key in value:
+        if key not in ("endpoint_id", "model"):
+            raise ValueError(f"selected 包含未知键: {key}")
+    endpoint_id = value.get("endpoint_id")
+    model = value.get("model")
+    if not isinstance(endpoint_id, str) or not isinstance(model, str):
+        raise ValueError("selected.endpoint_id 和 selected.model 必须是字符串")
+    if endpoint_id == "" and model == "":
+        return {"endpoint_id": "", "model": ""}
+    if endpoint_id not in {endpoint["id"] for endpoint in endpoints}:
+        raise ValueError("selected.endpoint_id 必须引用已配置的端点")
+    if not model:
+        raise ValueError("selected.model 必须是非空字符串")
+    return {"endpoint_id": endpoint_id, "model": model}
+
+
+def _validate_legacy_values(value, label: str) -> None:
+    interface = value.get("interface")
+    if interface is not None and interface not in ("ollama", "openai"):
+        raise ValueError(f"{label}.interface 只允许 ollama 或 openai")
+    for key in ("base_url", "api_key", "model"):
+        if key not in value:
+            continue
+        item = value[key]
+        if not isinstance(item, str):
+            raise ValueError(f"{label}.{key} 必须是字符串")
+        if key == "base_url" and not item.strip():
+            raise ValueError(f"{label}.base_url 必须是非空字符串")
 
 
 def _validate_llm(value) -> dict:
     if not isinstance(value, dict):
         raise ValueError("llm 必须是对象")
     for key in value:
-        if key != "interface" and key != "think" and key not in _LLM_STRING_KEYS:
+        if key not in _LLM_ALLOWED_KEYS:
             raise ValueError(f"llm 包含未知键: {key}")
-    # 整项替换存储,缺失键用默认值补齐(方便前端局部提交)
-    merged = dict(_DEFAULT_SETTINGS["llm"])
+    _validate_legacy_values(value, "llm")
+    merged = _merge_settings(_DEFAULT_SETTINGS["llm"])
     merged.update(value)
-    if merged["interface"] not in ("ollama", "openai"):
-        raise ValueError("llm.interface 只允许 ollama 或 openai")
+    legacy_keys = [key for key in _LLM_LEGACY_KEYS if key in value]
+    if legacy_keys:
+        # 旧平铺格式迁移:update 时传入值已与已存值合并(可能带 endpoints),
+        # 因此只要出现旧键就按旧值重置为单个端点
+        endpoint = {
+            "id": "",
+            "name": "",
+            "interface": merged.get("interface", "ollama"),
+            "base_url": merged.get("base_url", ""),
+            "api_key": merged.get("api_key", ""),
+            "models": [merged["model"]] if isinstance(merged.get("model"), str) and merged["model"] else [],
+        }
+        merged["endpoints"] = _validate_endpoints([endpoint])
+        merged["selected"] = {
+            "endpoint_id": merged["endpoints"][0]["id"] if merged["model"] else "",
+            "model": merged["model"] if isinstance(merged.get("model"), str) else "",
+        }
+    for key in legacy_keys:
+        merged.pop(key, None)
+    merged["endpoints"] = _validate_endpoints(merged.get("endpoints"))
+    merged["selected"] = _validate_selected(
+        merged.get("selected", {"endpoint_id": "", "model": ""}), merged["endpoints"]
+    )
     for key in _LLM_STRING_KEYS:
         if not isinstance(merged[key], str):
             raise ValueError(f"llm.{key} 必须是字符串")
@@ -145,7 +289,15 @@ def _validate_llm(value) -> dict:
     return merged
 
 
-_CAPTION_API_STRING_KEYS = ("base_url", "api_key", "model", "prompt")
+_CAPTION_API_STRING_KEYS = ("prompt",)
+_CAPTION_API_LEGACY_KEYS = ("interface", "base_url", "api_key", "model")
+_CAPTION_API_ALLOWED_KEYS = (
+    "endpoints",
+    "selected",
+    "prompt",
+    "think",
+    *_CAPTION_API_LEGACY_KEYS,
+)
 
 
 def _validate_caption_api(value) -> dict:
@@ -153,12 +305,33 @@ def _validate_caption_api(value) -> dict:
     if not isinstance(value, dict):
         raise ValueError("caption_api 必须是对象")
     for key in value:
-        if key != "interface" and key != "think" and key not in _CAPTION_API_STRING_KEYS:
+        if key not in _CAPTION_API_ALLOWED_KEYS:
             raise ValueError(f"caption_api 包含未知键: {key}")
-    merged = dict(_DEFAULT_SETTINGS["caption_api"])
+    _validate_legacy_values(value, "caption_api")
+    merged = _merge_settings(_DEFAULT_SETTINGS["caption_api"])
     merged.update(value)
-    if merged["interface"] not in ("ollama", "openai"):
-        raise ValueError("caption_api.interface 只允许 ollama 或 openai")
+    legacy_keys = [key for key in _CAPTION_API_LEGACY_KEYS if key in value]
+    if legacy_keys:
+        # 旧平铺格式迁移:同 _validate_llm,出现旧键即重置为单个端点
+        endpoint = {
+            "id": "",
+            "name": "",
+            "interface": merged.get("interface", "ollama"),
+            "base_url": merged.get("base_url", ""),
+            "api_key": merged.get("api_key", ""),
+            "models": [merged["model"]] if isinstance(merged.get("model"), str) and merged["model"] else [],
+        }
+        merged["endpoints"] = _validate_endpoints([endpoint])
+        merged["selected"] = {
+            "endpoint_id": merged["endpoints"][0]["id"] if merged["model"] else "",
+            "model": merged["model"] if isinstance(merged.get("model"), str) else "",
+        }
+    for key in legacy_keys:
+        merged.pop(key, None)
+    merged["endpoints"] = _validate_endpoints(merged.get("endpoints"))
+    merged["selected"] = _validate_selected(
+        merged.get("selected", {"endpoint_id": "", "model": ""}), merged["endpoints"]
+    )
     for key in _CAPTION_API_STRING_KEYS:
         if not isinstance(merged[key], str):
             raise ValueError(f"caption_api.{key} 必须是字符串")
@@ -261,6 +434,7 @@ def _validate_ref2va_limits(value) -> dict:
 
 _VALIDATORS = {
     "size_presets": _validate_size_presets,
+    "aspect_ratio_presets": _validate_aspect_ratio_presets,
     "ref2va_limits": _validate_ref2va_limits,
     "wan_video_size_presets": _validate_size_presets,
     "minimax_video_size_presets": _validate_minimax_size_presets,
@@ -304,6 +478,11 @@ class SettingsStore:
                 validator = _VALIDATORS.get(key)
                 if validator is None:
                     raise ValueError(f"未知设置项: {key}")
+                current = self._data[key]
+                if isinstance(current, dict) and isinstance(value, dict):
+                    # 部分键提交(如只更新 llm.selected)基于当前已存值合并,
+                    # 不能回退默认值,否则未提交的键(如 endpoints)会被清空
+                    value = {**current, **value}
                 self._data[key] = validator(value)
             self._save()
             return self.get()

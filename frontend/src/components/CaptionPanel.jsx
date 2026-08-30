@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { api } from "../api/client";
 import { normalizeUploadFile } from "./EditParameterForm";
 import { useMessage } from "./Message";
+import RemoteModelSelect from "./RemoteModelSelect";
 
 // 图片反推面板:上传图片 → 后端复用 krea2 的 Qwen3-VL 生成英文描述提示词。
 // 「本地反推」是同步请求,与生成任务共用同一个 GPU Worker 串行执行;正在跑生成任务时会排队等待。
@@ -14,7 +15,7 @@ const CAPTION_TYPES = [
   { key: "remote", label: "API 反推" },
 ];
 
-export default function CaptionPanel({ inputImagePrefill = null }) {
+export default function CaptionPanel({ inputImagePrefill = null, captionApi = null, onSelectModel }) {
   const message = useMessage();
   const [captionType, setCaptionType] = useState("local");
   // 输入图片:{id, previewUrl, name};id 为服务端受控上传返回的 id
@@ -176,6 +177,19 @@ export default function CaptionPanel({ inputImagePrefill = null }) {
               />
             </div>
           </div>
+
+          {captionType === "remote" && (
+            <div className="field" id="field-caption-model">
+              <label htmlFor="caption-remote-model">反推模型</label>
+              <RemoteModelSelect
+                idPrefix="caption-remote-model"
+                endpoints={captionApi?.endpoints ?? []}
+                selected={captionApi?.selected ?? { endpoint_id: "", model: "" }}
+                disabled={submitting}
+                onChange={(next) => onSelectModel?.(next)}
+              />
+            </div>
+          )}
 
           <div className="field" id="field-caption-hint">
             <label htmlFor="caption-hint-input">补充要求(可选)</label>

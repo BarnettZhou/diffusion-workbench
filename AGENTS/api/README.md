@@ -59,6 +59,7 @@ vite preview 的 `preview.proxy` 当前版本不会转发 `/api`，不要用它�
 | `PUT` | `/api/v1/settings` | 更新设置项（部分字段） |
 | `POST` | `/api/v1/prompt-assist` | 大模型提示词生成（FLUX/SD 风格，一次性非流式） |
 | `POST` | `/api/v1/prompt-assist/chat` | 对话式提示词生成（FLUX/SD 风格，SSE 流式） |
+| `POST` | `/api/v1/remote/models` | 按接口类型拉取远端模型列表 |
 | `GET` | `/api/v1/llm/requests` | 大模型请求记录（按时间倒序分页，保留最近 200 条） |
 | `GET` | `/api/v1/models/{mode}` | 模型列表（别名/大小/量化/备注/封面） |
 | `GET` | `/api/v1/models/{mode}/{name}/cover` | 模型封面图片 |
@@ -98,7 +99,6 @@ vite preview 的 `preview.proxy` 当前版本不会转发 `/api`，不要用它�
 | `POST` | `/api/v1/edit/jobs` | 提交 Krea2 图像编辑任务（202） |
 | `POST` | `/api/v1/caption` | 图片反推（同步；输入图复用 `/edit/input-images` 的受控 id） |
 | `POST` | `/api/v1/caption/remote` | API 反推（同步；走 `caption_api` 设置的外部视觉模型接口，不经 GPU Worker） |
-| `POST` | `/api/v1/caption/remote/test` | 反推 API 连通性测试 |
 | `GET` | `/api/v1/caption/remote/requests` | API 反推请求记录（分页，最多保留 200 条） |
 | `GET` | `/api/v1/video-models/{video_model}` | 视频模型卡片列表（量化/备注/封面） |
 | `GET`/`PUT` | `/api/v1/video-models/{video_model}/{name}/cover` | 视频模型封面读取/上传 |

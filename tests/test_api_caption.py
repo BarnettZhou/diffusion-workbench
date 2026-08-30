@@ -1,6 +1,7 @@
 import io
 import unittest
 
+import httpx
 from PIL import Image
 
 from test_api_jobs import ApiTestCase
@@ -77,7 +78,7 @@ class CaptionTests(ApiTestCase):
 
 
 class RemoteCaptionTests(ApiTestCase):
-    """API 反推路由:monkeypatch call_remote_caption / fetch_remote_models,不触网。"""
+    """API 反推路由:monkeypatch call_remote_caption,不触网。"""
 
     def setUp(self):
         super().setUp()
@@ -94,20 +95,30 @@ class RemoteCaptionTests(ApiTestCase):
                 "cached_tokens": None,
             }
 
-        async def fake_fetch(**kwargs):
-            self.captured = kwargs
-            return ["qwen3-vl:8b", "llava:latest"]
-
         self._orig_call = caption_module.call_remote_caption
-        self._orig_fetch = caption_module.fetch_remote_models
         caption_module.call_remote_caption = fake_call
-        caption_module.fetch_remote_models = fake_fetch
         self.addCleanup(setattr, caption_module, "call_remote_caption", self._orig_call)
-        self.addCleanup(setattr, caption_module, "fetch_remote_models", self._orig_fetch)
         # 配置好 caption_api 设置项
         response = self.client.put(
             "/api/v1/settings",
-            json={"caption_api": {"base_url": "http://127.0.0.1:11434", "model": "qwen3-vl:8b"}},
+            json={
+                "caption_api": {
+                    "endpoints": [
+                        {
+                            "id": "cc33dd44",
+                            "name": "视觉",
+                            "interface": "ollama",
+                            "base_url": "http://127.0.0.1:11434",
+                            "api_key": "",
+                            "models": ["qwen3-vl:8b"],
+                        }
+                    ],
+                    "selected": {
+                        "endpoint_id": "cc33dd44",
+                        "model": "qwen3-vl:8b",
+                    },
+                }
+            },
         )
         self.assertEqual(response.status_code, 200)
 
@@ -142,10 +153,28 @@ class RemoteCaptionTests(ApiTestCase):
         self.assertIn("Additional user instructions: focus on lighting", self.captured["prompt"])
 
     def test_remote_caption_uses_custom_prompt_from_settings(self):
-        # 设置项是整项替换存储,局部提交需带上 model
+        # 设置项是整项替换存储,局部提交需带上端点和选择
         self.client.put(
             "/api/v1/settings",
-            json={"caption_api": {"model": "qwen3-vl:8b", "prompt": "CUSTOM_PROMPT"}},
+            json={
+                "caption_api": {
+                    "endpoints": [
+                        {
+                            "id": "cc33dd44",
+                            "name": "视觉",
+                            "interface": "ollama",
+                            "base_url": "http://127.0.0.1:11434",
+                            "api_key": "",
+                            "models": ["qwen3-vl:8b"],
+                        }
+                    ],
+                    "selected": {
+                        "endpoint_id": "cc33dd44",
+                        "model": "qwen3-vl:8b",
+                    },
+                    "prompt": "CUSTOM_PROMPT",
+                }
+            },
         )
         image_id = self._upload_image()
         response = self.client.post(
@@ -155,7 +184,10 @@ class RemoteCaptionTests(ApiTestCase):
         self.assertTrue(self.captured["prompt"].startswith("CUSTOM_PROMPT"))
 
     def test_remote_caption_not_configured_returns_400(self):
-        self.client.put("/api/v1/settings", json={"caption_api": {"model": ""}})
+        self.client.put(
+            "/api/v1/settings",
+            json={"caption_api": {"endpoints": [], "selected": {"endpoint_id": "", "model": ""}}},
+        )
         image_id = self._upload_image()
         response = self.client.post(
             "/api/v1/caption/remote", json={"image_id": image_id}
@@ -182,41 +214,71 @@ class RemoteCaptionTests(ApiTestCase):
         self.assertEqual(response.status_code, 502)
         self.assertIn("无法连接到反推 API 服务", response.json()["detail"])
 
-    def test_remote_test_endpoint_success(self):
+    def test_remote_models_endpoint_success_and_failure(self):
+        from diffusion_workbench_api import llm as llm_module
+
+        async def fake_fetch(**kwargs):
+            self.captured = kwargs
+            return ["qwen3:8b", "llava:latest"]
+
+        original = llm_module.fetch_remote_models
+        llm_module.fetch_remote_models = fake_fetch
+        self.addCleanup(setattr, llm_module, "fetch_remote_models", original)
         response = self.client.post(
-            "/api/v1/caption/remote/test",
-            json={"base_url": "http://127.0.0.1:11434", "model": "qwen3-vl:8b"},
+            "/api/v1/remote/models",
+            json={"interface": "ollama", "base_url": " http://127.0.0.1:11434 "},
         )
         self.assertEqual(response.status_code, 200)
-        self.assertIs(response.json()["ok"], True)
-
-    def test_remote_test_endpoint_ollama_latest_suffix(self):
-        # Ollama 允许省略 :latest 后缀
-        response = self.client.post(
-            "/api/v1/caption/remote/test",
-            json={"base_url": "http://127.0.0.1:11434", "model": "llava"},
-        )
-        self.assertEqual(response.status_code, 200)
-
-    def test_remote_test_endpoint_model_not_found(self):
-        response = self.client.post(
-            "/api/v1/caption/remote/test",
-            json={"base_url": "http://127.0.0.1:11434", "model": "nope"},
-        )
-        self.assertEqual(response.status_code, 400)
-        self.assertIn("不存在", response.json()["detail"])
-
-    def test_remote_test_endpoint_falls_back_to_saved_settings(self):
-        response = self.client.post("/api/v1/caption/remote/test", json={})
-        self.assertEqual(response.status_code, 200)
-        # 留空时回退到已保存设置里的 base_url(model 同理,模型命中说明已回退)
+        self.assertEqual(response.json()["models"], ["qwen3:8b", "llava:latest"])
         self.assertEqual(self.captured["base_url"], "http://127.0.0.1:11434")
 
-    def test_remote_test_endpoint_not_configured_returns_400(self):
-        self.client.put("/api/v1/settings", json={"caption_api": {"model": ""}})
-        response = self.client.post("/api/v1/caption/remote/test", json={})
-        self.assertEqual(response.status_code, 400)
+        async def failing_fetch(**kwargs):
+            raise httpx.ConnectError("connection refused")
 
+        llm_module.fetch_remote_models = failing_fetch
+        response = self.client.post(
+            "/api/v1/remote/models",
+            json={"base_url": "http://127.0.0.1:1"},
+        )
+        self.assertEqual(response.status_code, 502)
+        self.assertIn("无法连接到大模型服务", response.json()["detail"])
+
+    def test_fetch_remote_models_rejects_unexpected_shape(self):
+        # LM Studio 对未知路径也回 200 + {"error": ...}(如 OpenAI 接口漏填 /v1),
+        # 必须报错提示,而不是静默返回空列表
+        import asyncio
+
+        from diffusion_workbench_api import llm as llm_module
+
+        class _FakeResponse:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {"error": "Unexpected endpoint or method. (GET /models)"}
+
+        class _FakeClient:
+            def __init__(self, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+            async def get(self, url, headers=None):
+                return _FakeResponse()
+
+        original_client = llm_module.httpx.AsyncClient
+        llm_module.httpx.AsyncClient = _FakeClient
+        self.addCleanup(setattr, llm_module.httpx, "AsyncClient", original_client)
+        with self.assertRaisesRegex(ValueError, "响应格式不符合预期"):
+            asyncio.run(
+                llm_module.fetch_remote_models(
+                    interface="openai", base_url="http://192.168.31.157:1234"
+                )
+            )
 
     def test_remote_caption_writes_request_record(self):
         image_id = self._upload_image()

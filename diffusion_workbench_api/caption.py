@@ -5,7 +5,6 @@ import base64
 import json
 import time
 from datetime import datetime
-from typing import Literal
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -14,15 +13,14 @@ from pydantic import BaseModel, Field
 from diffusion_workbench_core.caption import DEFAULT_CAPTION_SYSTEM_PROMPT
 
 from .dependencies import get_caption_record_store, get_core, get_settings_store
-from .llm import LLMRecordStore
+from .llm import LLMRecordStore, fetch_remote_models
 from .service import resolve_video_input_image
 from .settings import SettingsStore
 
 router = APIRouter(prefix="/api/v1")
 
-# API 反推走外部视觉模型,生成可能较慢;连通性测试用短超时
+# API 反推走外部视觉模型,生成可能较慢
 _REMOTE_TIMEOUT = 300.0
-_REMOTE_TEST_TIMEOUT = 10.0
 
 
 class CaptionRequest(BaseModel):
@@ -32,15 +30,6 @@ class CaptionRequest(BaseModel):
     hint: str = Field(default="", max_length=2000)
     max_length: int = Field(default=2048, ge=64, le=2048)
     seed: int = -1
-
-
-class CaptionRemoteTestRequest(BaseModel):
-    """连通性测试请求;留空的字段回退到已保存的 caption_api 设置。"""
-
-    interface: Literal["ollama", "openai"] = "ollama"
-    base_url: str = ""
-    api_key: str = ""
-    model: str = ""
 
 
 def _build_remote_request(
@@ -150,24 +139,6 @@ async def call_remote_caption(
     return data["choices"][0]["message"]["content"], usage
 
 
-async def fetch_remote_models(*, interface: str, base_url: str, api_key: str) -> list[str]:
-    """拉取远端可用模型名列表(Ollama /api/tags,OpenAI 兼容 /models)。"""
-    base = base_url.rstrip("/")
-    if interface == "ollama":
-        url = f"{base}/api/tags"
-        headers = {}
-    else:
-        url = f"{base}/models"
-        headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
-    async with httpx.AsyncClient(timeout=_REMOTE_TEST_TIMEOUT) as client:
-        response = await client.get(url, headers=headers)
-        response.raise_for_status()
-    data = response.json()
-    if interface == "ollama":
-        return [m.get("name", "") for m in data.get("models", [])]
-    return [m.get("id", "") for m in data.get("data", [])]
-
-
 def _remote_error_detail(exc: Exception) -> str:
     """把 httpx/解析异常映射为面向用户的错误描述(与 HTTP 502 detail 一致)。"""
     if isinstance(exc, httpx.ConnectError):
@@ -186,9 +157,23 @@ _MIME_BY_SUFFIX = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jp
 
 def _resolve_remote_config(store: SettingsStore) -> dict:
     config = store.get().get("caption_api", {})
-    if not config.get("model") or not config.get("base_url"):
-        raise HTTPException(status_code=400, detail="请先在设置中配置图片反推 API")
-    return config
+    selected = config.get("selected", {})
+    endpoint_id = selected.get("endpoint_id", "") if isinstance(selected, dict) else ""
+    model = selected.get("model", "") if isinstance(selected, dict) else ""
+    endpoint = next(
+        (item for item in config.get("endpoints", []) if item.get("id") == endpoint_id),
+        None,
+    )
+    if endpoint is None or not model:
+        raise HTTPException(
+            status_code=400,
+            detail="请先在设置中配置图片反推 API 并选择模型",
+        )
+    resolved = dict(endpoint)
+    resolved["model"] = model
+    resolved["prompt"] = config.get("prompt", DEFAULT_CAPTION_SYSTEM_PROMPT)
+    resolved["think"] = config.get("think", False)
+    return resolved
 
 
 @router.post("/caption")
@@ -254,6 +239,7 @@ async def create_caption_remote(
         "timestamp": datetime.now().isoformat(timespec="seconds"),
         "base_url": config["base_url"],
         "model": config["model"],
+        "endpoint_name": config.get("name", ""),
         "request": json.dumps(
             {
                 "prompt": prompt,
@@ -298,45 +284,6 @@ async def create_caption_remote(
         "load_seconds": 0.0,
         "infer_seconds": time.monotonic() - started,
     }
-
-
-@router.post("/caption/remote/test")
-async def test_caption_remote(
-    payload: CaptionRemoteTestRequest,
-    store: SettingsStore = Depends(get_settings_store),
-):
-    """测试反推 API 连通性:拉取远端模型列表并确认目标模型存在。
-
-    请求字段留空时回退到已保存的 caption_api 设置,前端可直接用表单当前值测试。
-    """
-    saved = store.get().get("caption_api", {})
-    interface = payload.interface
-    base_url = payload.base_url.strip() or saved.get("base_url", "")
-    api_key = payload.api_key or saved.get("api_key", "")
-    model = payload.model.strip() or saved.get("model", "")
-    if not base_url or not model:
-        raise HTTPException(
-            status_code=400, detail="请先填写反推 API 的 Base URL 和模型 ID"
-        )
-    try:
-        models = await fetch_remote_models(
-            interface=interface, base_url=base_url, api_key=api_key
-        )
-    except _REMOTE_CALL_ERRORS as exc:
-        raise HTTPException(
-            status_code=502, detail=_remote_error_detail(exc)
-        ) from exc
-    # Ollama 允许省略 :latest 后缀;OpenAI 兼容接口要求精确匹配
-    found = model in models or (
-        interface == "ollama" and f"{model}:latest" in models
-    )
-    if not found:
-        preview = ", ".join(models[:10]) or "(空)"
-        raise HTTPException(
-            status_code=400,
-            detail=f"连接成功,但模型 {model} 不存在;可用模型: {preview}",
-        )
-    return {"ok": True, "detail": f"连接成功,模型 {model} 可用"}
 
 
 @router.get("/caption/remote/requests")

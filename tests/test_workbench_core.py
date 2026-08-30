@@ -448,6 +448,34 @@ class JobStoreTests(unittest.TestCase):
             self.assertEqual(persisted_again.grounding_px, 512)
             self.assertEqual(persisted_again.ref_boost, 2.5)
 
+    def test_edit_krea2_jobs_persist_secondary_input_image(self):
+        # 双图编辑:第二张输入图随任务落库并可回读
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            store = JobStore(root / "jobs.sqlite3", root / "output")
+            input_image = root / "scene.png"
+            input_image.write_bytes(b"scene")
+            secondary_image = root / "subject.png"
+            secondary_image.write_bytes(b"subject")
+            settings = GenerationSettings(
+                mode=Mode.KREA2_EDIT,
+                model=ResourceItem(1, root / "krea2.safetensors"),
+                vae=ResourceItem(1, root / "vae.safetensors"),
+                text_encoder=root / "te.safetensors",
+                clip_type="krea2",
+                prompt="把主体放进场景",
+                input_image=input_image,
+                secondary_input_image=secondary_image,
+            )
+
+            jobs = store.create_jobs(settings, 1)
+            persisted = store.get_job(jobs[0].id)
+
+            self.assertEqual(persisted.input_image_path, input_image.resolve())
+            self.assertEqual(
+                persisted.secondary_input_image_path, secondary_image.resolve()
+            )
+
     def test_non_edit_jobs_persist_edit_fields_as_null(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -465,6 +493,7 @@ class JobStoreTests(unittest.TestCase):
             persisted = store.get_job(jobs[0].id)
 
             self.assertIsNone(persisted.input_image_path)
+            self.assertIsNone(persisted.secondary_input_image_path)
             self.assertIsNone(persisted.grounding_px)
             self.assertIsNone(persisted.ref_boost)
 
@@ -481,7 +510,8 @@ class JobStoreTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "输入图片"):
             settings.validate()
 
-    def test_edit_krea2_validate_rejects_upscale(self):
+    def test_edit_krea2_validate_rejects_latent_hires_upscale(self):
+        # latent_hires 的二段采样与 in-context patch 冲突,编辑模式仍然拒绝
         settings = GenerationSettings(
             mode=Mode.KREA2_EDIT,
             model=ResourceItem(1, Path("m")),
@@ -495,6 +525,61 @@ class JobStoreTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "放大"):
             settings.validate()
+
+    def test_edit_krea2_validate_allows_postprocess_upscale(self):
+        # resize / upscale_model 是纯后处理,编辑模式放行
+        for method in (UpscaleMethod.RESIZE, UpscaleMethod.UPSCALE_MODEL):
+            upscale = UpscaleSettings(
+                enabled=True, method=method, interpolation="lanczos"
+            )
+            if method == UpscaleMethod.UPSCALE_MODEL:
+                upscale = UpscaleSettings(
+                    enabled=True,
+                    method=method,
+                    interpolation="lanczos",
+                    model=ResourceItem(1, Path("4x.pth")),
+                )
+            settings = GenerationSettings(
+                mode=Mode.KREA2_EDIT,
+                model=ResourceItem(1, Path("m")),
+                vae=ResourceItem(1, Path("v")),
+                text_encoder=Path("t"),
+                clip_type="krea2",
+                prompt="p",
+                input_image=Path("i"),
+                upscale=upscale,
+            )
+
+            settings.validate()
+
+    def test_edit_krea2_jobs_persist_upscale_output_path(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            store = JobStore(root / "jobs.sqlite3", root / "output")
+            input_image = root / "source.png"
+            input_image.write_bytes(b"source")
+            settings = GenerationSettings(
+                mode=Mode.KREA2_EDIT,
+                model=ResourceItem(1, root / "krea2.safetensors"),
+                vae=ResourceItem(1, root / "vae.safetensors"),
+                text_encoder=root / "te.safetensors",
+                clip_type="krea2",
+                prompt="p",
+                input_image=input_image,
+                upscale=UpscaleSettings(
+                    enabled=True, method=UpscaleMethod.RESIZE, interpolation="lanczos"
+                ),
+            )
+
+            jobs = store.create_jobs(settings, 1)
+            persisted = store.get_job(jobs[0].id)
+
+            self.assertEqual(
+                persisted.upscaled_output_path,
+                jobs[0].output_path.with_name(f"{jobs[0].output_path.stem}-upscale.png"),
+            )
+            self.assertTrue(persisted.upscale.enabled)
+            self.assertEqual(persisted.upscale.method, UpscaleMethod.RESIZE)
 
     def test_edit_krea2_validate_rejects_out_of_range_grounding_px(self):
         for bad in (-1, 4097, "768", 1.5):
@@ -540,6 +625,34 @@ class JobStoreTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "edit-krea2"):
                 settings.validate()
 
+    def test_edit_krea2_validate_accepts_secondary_input_image(self):
+        settings = GenerationSettings(
+            mode=Mode.KREA2_EDIT,
+            model=ResourceItem(1, Path("m")),
+            vae=ResourceItem(1, Path("v")),
+            text_encoder=Path("t"),
+            clip_type="krea2",
+            prompt="p",
+            input_image=Path("i"),
+            secondary_input_image=Path("i2"),
+        )
+
+        settings.validate()
+
+    def test_non_edit_validate_rejects_secondary_input_image(self):
+        for mode in (Mode.ZIT, Mode.KREA2, Mode.ZIB, Mode.SDXL):
+            settings = GenerationSettings(
+                mode=mode,
+                model=ResourceItem(1, Path("m")),
+                vae=ResourceItem(1, Path("v")),
+                text_encoder=Path("t"),
+                clip_type="krea2",
+                prompt="p",
+                secondary_input_image=Path("i2"),
+            )
+            with self.assertRaisesRegex(ValueError, "第二输入图片"):
+                settings.validate()
+
     def test_rebalance_jobs_persist_reference_metadata(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -573,6 +686,7 @@ class JobStoreTests(unittest.TestCase):
             self.assertEqual(persisted.reference_image_tokens, ("low", "max"))
             # 编辑字段对 rebalance 任务保持 None
             self.assertIsNone(persisted.input_image_path)
+            self.assertIsNone(persisted.secondary_input_image_path)
             self.assertIsNone(persisted.grounding_px)
             self.assertIsNone(persisted.ref_boost)
 

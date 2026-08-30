@@ -45,26 +45,64 @@ export default function ResultGallery({ jobs, onSendToVideo = null, onSendToEdit
 function BatchGroup({ group, onSendToVideo = null, onSendToEdit = null, onSendToCaption = null }) {
   const [selectedId, setSelectedId] = useState(null);
   const [lightbox, setLightbox] = useState(false);
+  // 原图 / 放大后 查看切换;默认展示放大后(有放大图时)
+  const [viewMode, setViewMode] = useState("upscaled");
 
   const completed = group.jobs.filter((job) => job.status === "completed");
   const selected =
     completed.find((job) => job.id === selectedId) ??
     completed[completed.length - 1] ??
     null;
+  // 放大图可用时按切换项展示;不可用(未启用放大或放大失败)回退原图
+  const hasUpscaled = Boolean(selected?.upscaled_image_url);
+  const displayImageUrl = selected
+    ? viewMode === "upscaled" && selected.upscaled_image_url
+      ? selected.upscaled_image_url
+      : selected.image_url
+    : null;
+  const displayMetadataUrl = selected
+    ? viewMode === "upscaled" && selected.upscaled_image_url
+      ? `/api/v1/images/${selected.id}/upscaled/metadata`
+      : `/api/v1/images/${selected.id}/metadata`
+    : null;
+
 
   return (
     <section className="batch-group" id={`batch-${group.key}`}>
       {group.isBatch && <h3 className="batch-title">批次 {group.jobs.length} 张</h3>}
 
       <div className="batch-main" id={`batch-main-${group.key}`}>
-        {selected ? (
-          <img
-            id={`main-image-${group.key}`}
-            src={api.imageUrl(selected.id)}
-            alt={selected.prompt}
-            onClick={() => setLightbox(true)}
-          />
-        ) : (
+        {selected && (
+          <>
+            {hasUpscaled && (
+              <div className="view-switch" role="group" aria-label="图片查看">
+                <button
+                  type="button"
+                  className={viewMode === "original" ? "active" : ""}
+                  aria-pressed={viewMode === "original"}
+                  onClick={() => setViewMode("original")}
+                >
+                  原图
+                </button>
+                <button
+                  type="button"
+                  className={viewMode === "upscaled" ? "active" : ""}
+                  aria-pressed={viewMode === "upscaled"}
+                  onClick={() => setViewMode("upscaled")}
+                >
+                  放大后
+                </button>
+              </div>
+            )}
+            <img
+              id={`main-image-${group.key}`}
+              src={displayImageUrl}
+              alt={selected.prompt}
+              onClick={() => setLightbox(true)}
+            />
+          </>
+        )}
+        {!selected && (
           <div className="batch-main-placeholder">
             <StatusChip status={group.jobs[group.jobs.length - 1].status} />
           </div>
@@ -95,8 +133,8 @@ function BatchGroup({ group, onSendToVideo = null, onSendToEdit = null, onSendTo
 
       {lightbox && selected && (
         <Lightbox
-          imageUrl={api.imageUrl(selected.id)}
-          metadataUrl={`/api/v1/images/${selected.id}/metadata`}
+          imageUrl={displayImageUrl}
+          metadataUrl={displayMetadataUrl}
           fallback={selected}
           onClose={() => setLightbox(false)}
           onSendToVideo={
@@ -110,8 +148,8 @@ function BatchGroup({ group, onSendToVideo = null, onSendToEdit = null, onSendTo
           }
           onSendToEdit={
             onSendToEdit
-              ? async () => {
-                  await onSendToEdit(selected);
+              ? async (slot) => {
+                  await onSendToEdit(selected, slot);
                   setLightbox(false);
                 }
               : null

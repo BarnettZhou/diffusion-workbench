@@ -143,11 +143,12 @@ export default function AlbumPage({ onSendToWorkbench, onSendToVideo, onSendToEd
     onSendToVideo?.({ id: saved.id, url: saved.url, name: image.name });
   }
 
-  // 抽屉"发送到图片编辑":图片在服务端本地复制为编辑输入图片,再切 tab 预填表单
-  async function handleSendToEdit(image) {
+  // 抽屉"发送到图片编辑":图片在服务端本地复制为编辑输入图片,再切 tab 预填表单;
+  // slot 指定目标槽位(单图编辑 / 多图编辑-场景 / 多图编辑-主体)
+  async function handleSendToEdit(image, slot) {
     const saved = await api.importEditInputFromAlbum(image.id, activeDir);
     setSelected(null);
-    onSendToEdit?.({ id: saved.id, url: saved.url, name: image.name });
+    onSendToEdit?.(slot, { id: saved.id, url: saved.url, name: image.name });
   }
 
   // 抽屉"发送到图片反推":反推复用编辑输入图通道,服务端本地复制后切 tab 预填
@@ -628,7 +629,7 @@ export default function AlbumPage({ onSendToWorkbench, onSendToVideo, onSendToEd
           onSendToEdit={
             // 「发送到图片编辑」同样仅对图片(作为编辑输入图)开放
             selected.kind !== "video" && onSendToEdit
-              ? () => handleSendToEdit(selected)
+              ? (slot) => handleSendToEdit(selected, slot)
               : null
           }
           onSendToCaption={

@@ -13,9 +13,17 @@ class PromptAssistTests(ApiTestCase):
             "/api/v1/settings",
             json={
                 "llm": {
-                    "interface": "ollama",
-                    "base_url": "http://127.0.0.1:11434",
-                    "model": "qwen3",
+                    "endpoints": [
+                        {
+                            "id": "aa11bb22",
+                            "name": "本地",
+                            "interface": "ollama",
+                            "base_url": "http://127.0.0.1:11434",
+                            "api_key": "",
+                            "models": ["qwen3"],
+                        }
+                    ],
+                    "selected": {"endpoint_id": "aa11bb22", "model": "qwen3"},
                 }
             },
         )
@@ -78,7 +86,10 @@ class PromptAssistTests(ApiTestCase):
         self.assertEqual(body["negative"], "")
 
     def test_missing_model_returns_400(self):
-        self.client.put("/api/v1/settings", json={"llm": {"model": ""}})
+        self.client.put(
+            "/api/v1/settings",
+            json={"llm": {"endpoints": [], "selected": {"endpoint_id": "", "model": ""}}},
+        )
         response = self.client.post(
             "/api/v1/prompt-assist",
             json={"instruction": "test", "language": "en"},
@@ -110,9 +121,17 @@ class PromptAssistTests(ApiTestCase):
             "/api/v1/settings",
             json={
                 "llm": {
-                    "interface": "ollama",
-                    "base_url": "http://127.0.0.1:11434",
-                    "model": "qwen3",
+                    "endpoints": [
+                        {
+                            "id": "aa11bb22",
+                            "name": "本地",
+                            "interface": "ollama",
+                            "base_url": "http://127.0.0.1:11434",
+                            "api_key": "",
+                            "models": ["qwen3"],
+                        }
+                    ],
+                    "selected": {"endpoint_id": "aa11bb22", "model": "qwen3"},
                     "system_prompt": "FLUX_CUSTOM",
                     "sd_system_prompt": "SD_CUSTOM",
                 }
@@ -174,7 +193,23 @@ class PromptAssistTests(ApiTestCase):
     def test_think_setting_is_passed_through(self):
         self.client.put(
             "/api/v1/settings",
-            json={"llm": {"model": "qwen3", "think": True, "think_effort": "high"}},
+            json={
+                "llm": {
+                    "endpoints": [
+                        {
+                            "id": "aa11bb22",
+                            "name": "本地",
+                            "interface": "ollama",
+                            "base_url": "http://127.0.0.1:11434",
+                            "api_key": "",
+                            "models": ["qwen3"],
+                        }
+                    ],
+                    "selected": {"endpoint_id": "aa11bb22", "model": "qwen3"},
+                    "think": True,
+                    "think_effort": "high",
+                }
+            },
         )
         response = self.client.post(
             "/api/v1/prompt-assist",

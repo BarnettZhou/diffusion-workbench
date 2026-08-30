@@ -228,12 +228,12 @@ export const api = {
   // API 反推:走设置页配置的外部视觉模型接口(Ollama / OpenAI 兼容),不占用本地 GPU
   captionRemote: (payload) =>
     request("/api/v1/caption/remote", { method: "POST", body: JSON.stringify(payload) }),
-  // 反推 API 连通性测试;payload 为表单当前值 {interface, base_url, api_key, model}
-  captionRemoteTest: (payload) =>
-    request("/api/v1/caption/remote/test", { method: "POST", body: JSON.stringify(payload) }),
   // API 反推请求记录(分页)
   captionRemoteRequests: (page, pageSize = 10) =>
     request(`/api/v1/caption/remote/requests?page=${page}&page_size=${pageSize}`),
+  // 远端模型发现:body {interface, base_url, api_key} → {"models": [str]}
+  remoteModels: (payload) =>
+    request("/api/v1/remote/models", { method: "POST", body: JSON.stringify(payload) }),
   // ---------- 设置页:视频模型卡片(镜像图片 models 端点,不支持 alias) ----------
   videoModelCards: (videoModel) =>
     request(`/api/v1/video-models/${encodeURIComponent(videoModel)}`),

@@ -4,6 +4,7 @@ import CaptionRecords from "./CaptionRecords";
 import ModelSettings from "./ModelSettings";
 import VideoModelSettings from "./VideoModelSettings";
 import PromptPresets from "./PromptPresets";
+import RemoteModelSelect from "./RemoteModelSelect";
 import { useMessage } from "./Message";
 import { api } from "../api/client";
 
@@ -20,6 +21,13 @@ const SETTINGS_TABS = [
 
 export default function SettingsPage({ settings, modes, onUpdate, onResourcesChanged }) {
   const [active, setActive] = useState("general");
+  // 子页首次激活才挂载,之后保持挂载:避免打开设置页时全部面板并发拉取,
+  // 同时保住已访问子页未保存的表单内容
+  const [mounted, setMounted] = useState(["general"]);
+  useEffect(() => {
+    setMounted((prev) => (prev.includes(active) ? prev : [...prev, active]));
+  }, [active]);
+  const panelClass = (key) => (active === key ? "tab-contents" : "tab-hidden");
 
   return (
     <main id="settings-page">
@@ -37,27 +45,43 @@ export default function SettingsPage({ settings, modes, onUpdate, onResourcesCha
         ))}
       </nav>
       <section id="settings-content">
-        {active === "general" && (
-          <GeneralSettings settings={settings} modes={modes} onUpdate={onUpdate} />
+        {mounted.includes("general") && (
+          <div className={panelClass("general")}>
+            <GeneralSettings settings={settings} modes={modes} onUpdate={onUpdate} />
+          </div>
         )}
-        {active === "models" && (
-          <ModelSettings modes={modes} onResourcesChanged={onResourcesChanged} />
+        {mounted.includes("models") && (
+          <div className={panelClass("models")}>
+            <ModelSettings modes={modes} onResourcesChanged={onResourcesChanged} />
+          </div>
         )}
-        {active === "video" && (
-          <VideoSettings settings={settings} onUpdate={onUpdate} />
+        {mounted.includes("video") && (
+          <div className={panelClass("video")}>
+            <VideoSettings settings={settings} onUpdate={onUpdate} />
+          </div>
         )}
-        {active === "videoModels" && <VideoModelSettings />}
-        {active === "llm" && (
-          <LLMTab settings={settings} onUpdate={onUpdate} />
+        {mounted.includes("videoModels") && (
+          <div className={panelClass("videoModels")}>
+            <VideoModelSettings />
+          </div>
         )}
-        {active === "caption" && (
-          <CaptionApiTab settings={settings} onUpdate={onUpdate} />
+        {mounted.includes("llm") && (
+          <div className={panelClass("llm")}>
+            <LLMTab settings={settings} onUpdate={onUpdate} />
+          </div>
         )}
-        {active === "prompts" && (
-          <PromptPresets
-            presets={settings?.prompt_presets ?? []}
-            onUpdate={onUpdate}
-          />
+        {mounted.includes("caption") && (
+          <div className={panelClass("caption")}>
+            <CaptionApiTab settings={settings} onUpdate={onUpdate} />
+          </div>
+        )}
+        {mounted.includes("prompts") && (
+          <div className={panelClass("prompts")}>
+            <PromptPresets
+              presets={settings?.prompt_presets ?? []}
+              onUpdate={onUpdate}
+            />
+          </div>
         )}
       </section>
     </main>
@@ -99,12 +123,11 @@ function LLMTab({ settings, onUpdate }) {
   );
 }
 
-// 后端 settings.llm 缺失或缺键时的前端兜底(服务端保存时也会补齐默认值)
+// 后端 settings.llm 缺失或缺键时的前端兜底(服务端保存时也会补齐默认值)。
+// 多端点结构:共享字段(系统提示词 / 思考等)+ endpoints 列表 + selected 指针。
 const LLM_DEFAULTS = {
-  interface: "ollama",
-  base_url: "http://127.0.0.1:11434",
-  api_key: "",
-  model: "",
+  endpoints: [],
+  selected: { endpoint_id: "", model: "" },
   system_prompt: "",
   sd_system_prompt: "",
   format_prompt: "",
@@ -112,6 +135,242 @@ const LLM_DEFAULTS = {
   think: false,
   think_effort: "",
 };
+
+// 端点卡片编辑器:渲染一组端点(name/interface/base_url/api_key/models),
+// 「获取模型列表」按钮调 api.remoteModels 拉取该端点支持的模型列表;
+// onChange 回传新的 endpoints 数组。
+function EndpointListEditor({ endpoints, onChange, idPrefix }) {
+  const message = useMessage();
+  const list = Array.isArray(endpoints) ? endpoints : [];
+  // 每张卡片的「获取模型」loading 状态:key=端点 id,true 时按钮 disabled
+  const [loading, setLoading] = useState({});
+  // 模型输入框(手动添加)的草稿:key=端点 id
+  const [modelDraft, setModelDraft] = useState({});
+
+  function update(next) {
+    onChange?.(next);
+  }
+
+  function addEndpoint() {
+    const localId = `local-${Date.now()}`;
+    update([
+      ...list,
+      {
+        id: localId,
+        name: "",
+        interface: "ollama",
+        base_url: "http://127.0.0.1:11434",
+        api_key: "",
+        models: [],
+      },
+    ]);
+  }
+
+  function removeEndpoint(id) {
+    update(list.filter((item) => item.id !== id));
+  }
+
+  function patchEndpoint(id, patch) {
+    update(list.map((item) => (item.id === id ? { ...item, ...patch } : item)));
+  }
+
+  async function fetchModels(endpoint) {
+    if (!endpoint.base_url?.trim()) {
+      message.warning("请先填写 Base URL");
+      return;
+    }
+    setLoading((prev) => ({ ...prev, [endpoint.id]: true }));
+    try {
+      const result = await api.remoteModels({
+        interface: endpoint.interface,
+        base_url: endpoint.base_url,
+        api_key: endpoint.api_key,
+      });
+      const models = Array.isArray(result.models) ? result.models : [];
+      patchEndpoint(endpoint.id, { models });
+      if (models.length === 0) {
+        message.warning("连接成功,但服务返回了 0 个模型");
+      } else {
+        message.success(`获取到 ${models.length} 个模型`);
+      }
+    } catch (err) {
+      message.error(`获取模型失败:${err.message}`);
+    } finally {
+      setLoading((prev) => ({ ...prev, [endpoint.id]: false }));
+    }
+  }
+
+  function addModelManual(endpoint) {
+    const draft = (modelDraft[endpoint.id] ?? "").trim();
+    if (!draft) return;
+    const exists = (endpoint.models ?? []).some((m) => m === draft);
+    if (exists) {
+      message.warning("该模型已在列表里");
+      return;
+    }
+    patchEndpoint(endpoint.id, { models: [...(endpoint.models ?? []), draft] });
+    setModelDraft((prev) => ({ ...prev, [endpoint.id]: "" }));
+  }
+
+  function removeModel(endpoint, modelName) {
+    const next = (endpoint.models ?? []).filter((m) => m !== modelName);
+    patchEndpoint(endpoint.id, { models: next });
+  }
+
+  return (
+    <div className="endpoint-list-editor" id={`${idPrefix}-endpoint-list`}>
+      {list.map((endpoint, index) => {
+        const models = Array.isArray(endpoint.models) ? endpoint.models : [];
+        const isFetching = Boolean(loading[endpoint.id]);
+        const draft = modelDraft[endpoint.id] ?? "";
+        const cardId = `${idPrefix}-endpoint-${index}`;
+        return (
+          <div className="endpoint-card" id={cardId} key={endpoint.id}>
+            <div className="endpoint-card-head">
+              <span className="endpoint-card-title">
+                端点 #{index + 1}
+                {endpoint.name?.trim() ? `·${endpoint.name.trim()}` : ""}
+              </span>
+              <button
+                id={`${cardId}-delete`}
+                type="button"
+                className="chip endpoint-delete-btn"
+                title="删除该端点"
+                aria-label="删除该端点"
+                onClick={() => removeEndpoint(endpoint.id)}
+              >
+                删除端点
+              </button>
+            </div>
+            <div className="endpoint-card-body">
+              <div className="settings-item" id={`${cardId}-name`}>
+                <label className="settings-item-label" htmlFor={`${cardId}-name-input`}>
+                  名称(可选)
+                </label>
+                <input
+                  id={`${cardId}-name-input`}
+                  type="text"
+                  value={endpoint.name ?? ""}
+                  placeholder="留空时显示 Base URL"
+                  onChange={(e) => patchEndpoint(endpoint.id, { name: e.target.value })}
+                />
+              </div>
+              <div className="settings-item" id={`${cardId}-interface`}>
+                <label className="settings-item-label" htmlFor={`${cardId}-interface-input`}>
+                  接口类型
+                </label>
+                <select
+                  id={`${cardId}-interface-input`}
+                  value={endpoint.interface ?? "ollama"}
+                  onChange={(e) => patchEndpoint(endpoint.id, { interface: e.target.value })}
+                >
+                  <option value="ollama">Ollama</option>
+                  <option value="openai">OpenAI 兼容</option>
+                </select>
+              </div>
+              <div className="settings-item" id={`${cardId}-base-url`}>
+                <label className="settings-item-label" htmlFor={`${cardId}-base-url-input`}>
+                  Base URL
+                </label>
+                <input
+                  id={`${cardId}-base-url-input`}
+                  type="text"
+                  value={endpoint.base_url ?? ""}
+                  placeholder={
+                    endpoint.interface === "openai"
+                      ? "http://host:port/v1"
+                      : "http://127.0.0.1:11434"
+                  }
+                  onChange={(e) => patchEndpoint(endpoint.id, { base_url: e.target.value })}
+                />
+              </div>
+              <div className="settings-item" id={`${cardId}-api-key`}>
+                <label className="settings-item-label" htmlFor={`${cardId}-api-key-input`}>
+                  API Key
+                </label>
+                <input
+                  id={`${cardId}-api-key-input`}
+                  type="password"
+                  value={endpoint.api_key ?? ""}
+                  autoComplete="off"
+                  placeholder="OpenAI 兼容接口需要;Ollama 可留空"
+                  onChange={(e) => patchEndpoint(endpoint.id, { api_key: e.target.value })}
+                />
+              </div>
+              <div className="settings-item" id={`${cardId}-models`}>
+                <span className="settings-item-label">模型列表</span>
+                <div className="settings-item-row">
+                  <button
+                    id={`${cardId}-fetch-models`}
+                    type="button"
+                    className="chip"
+                    disabled={isFetching}
+                    onClick={() => fetchModels(endpoint)}
+                  >
+                    {isFetching ? "获取中……" : "获取模型列表"}
+                  </button>
+                </div>
+                <div className="preset-editor-tags endpoint-model-tags">
+                  {models.map((name) => (
+                    <span
+                      className="preset-tag"
+                      id={`${cardId}-model-${name}`}
+                      key={name}
+                    >
+                      {name}
+                      <button
+                        id={`${cardId}-delete-model-${name}`}
+                        type="button"
+                        className="preset-tag-delete"
+                        aria-label={`删除模型 ${name}`}
+                        onClick={() => removeModel(endpoint, name)}
+                      >
+                        ×
+                      </button>
+                    </span>
+                  ))}
+                  <span className="endpoint-model-add">
+                    <input
+                      id={`${cardId}-model-input`}
+                      type="text"
+                      value={draft}
+                      placeholder="手动添加模型"
+                      onChange={(e) =>
+                        setModelDraft((prev) => ({ ...prev, [endpoint.id]: e.target.value }))
+                      }
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && !e.nativeEvent.isComposing) {
+                          e.preventDefault();
+                          addModelManual(endpoint);
+                        }
+                      }}
+                    />
+                    <button
+                      id={`${cardId}-add-model`}
+                      type="button"
+                      className="chip"
+                      onClick={() => addModelManual(endpoint)}
+                    >
+                      添加
+                    </button>
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })}
+      <button
+        id={`${idPrefix}-add-endpoint`}
+        type="button"
+        className="chip endpoint-add-btn"
+        onClick={addEndpoint}
+      >
+        + 添加端点
+      </button>
+    </div>
+  );
+}
 
 function LLMSettings({ settings, onUpdate }) {
   const llm = settings?.llm ?? null;
@@ -158,49 +417,29 @@ function LLMSettings({ settings, onUpdate }) {
           </span>
         )}
       </h2>
-      <div className="settings-item" id="settings-item-llm-interface">
-        <label className="settings-item-label" htmlFor="llm-interface">接口类型</label>
+      <div className="settings-item" id="settings-item-llm-endpoints">
+        <span className="settings-item-label">大模型端点</span>
         <p className="settings-item-desc">
-          提示词快捷生成使用的大模型接口:Ollama 本地服务或 OpenAI 兼容接口。
+          支持配置多个 Ollama / OpenAI 兼容端点;默认模型下拉里的选项来自这里。
         </p>
-        <select
-          id="llm-interface"
-          value={form.interface}
-          onChange={(e) => setField("interface", e.target.value)}
-        >
-          <option value="ollama">Ollama</option>
-          <option value="openai">OpenAI 兼容</option>
-        </select>
-      </div>
-      <div className="settings-item" id="settings-item-llm-base-url">
-        <label className="settings-item-label" htmlFor="llm-base-url">Base URL</label>
-        <input
-          id="llm-base-url"
-          type="text"
-          value={form.base_url}
-          placeholder="http://127.0.0.1:11434"
-          onChange={(e) => setField("base_url", e.target.value)}
+        <EndpointListEditor
+          endpoints={form.endpoints}
+          onChange={(next) => setField("endpoints", next)}
+          idPrefix="llm"
         />
       </div>
-      <div className="settings-item" id="settings-item-llm-api-key">
-        <label className="settings-item-label" htmlFor="llm-api-key">API Key</label>
-        <p className="settings-item-desc">OpenAI 兼容接口需要;Ollama 可留空。</p>
-        <input
-          id="llm-api-key"
-          type="password"
-          value={form.api_key}
-          autoComplete="off"
-          onChange={(e) => setField("api_key", e.target.value)}
-        />
-      </div>
-      <div className="settings-item" id="settings-item-llm-model">
-        <label className="settings-item-label" htmlFor="llm-model">模型 ID</label>
-        <input
-          id="llm-model"
-          type="text"
-          value={form.model}
-          placeholder="例如 qwen2.5:7b 或 gpt-4o-mini"
-          onChange={(e) => setField("model", e.target.value)}
+      <div className="settings-item" id="settings-item-llm-selected">
+        <label className="settings-item-label" htmlFor="llm-selected-model">
+          默认模型
+        </label>
+        <p className="settings-item-desc">
+          快捷生成提示词使用的默认模型,可在弹窗里临时切换;保存后端会自动规范化端点 id。
+        </p>
+        <RemoteModelSelect
+          idPrefix="llm-selected-model"
+          endpoints={form.endpoints}
+          selected={form.selected}
+          onChange={(next) => setField("selected", next)}
         />
       </div>
       <div className="settings-item" id="settings-item-llm-think">
@@ -331,16 +570,14 @@ function CaptionApiTab({ settings, onUpdate }) {
 // 后端 settings.caption_api 缺失或缺键时的前端兜底(服务端保存时也会补齐默认值;
 // prompt 默认值与本地反推的系统提示词一致,由服务端补齐)
 const CAPTION_API_DEFAULTS = {
-  interface: "ollama",
-  base_url: "http://127.0.0.1:11434",
-  api_key: "",
-  model: "",
+  endpoints: [],
+  selected: { endpoint_id: "", model: "" },
   prompt: "",
   think: false,
 };
 
 // 图片反推 API 设置:图片反推 tab 的「API 反推」使用的外部视觉模型接口配置。
-// 结构与 LLMSettings 一致:本地表单 + 「未保存」标记,保存后以后端返回值为准。
+// 结构与 LLMSettings 一致:多端点 + 共享字段;不再有「测试连通性」按钮,改用端点上的「获取模型列表」。
 function CaptionApiSettings({ settings, onUpdate }) {
   const captionApi = settings?.caption_api ?? null;
   const message = useMessage();
@@ -349,7 +586,6 @@ function CaptionApiSettings({ settings, onUpdate }) {
     ...(captionApi ?? {}),
   }));
   const [saving, setSaving] = useState(false);
-  const [testing, setTesting] = useState(false);
 
   // 已保存快照:与表单对比得出「未保存」状态
   const savedSnapshot = useMemo(
@@ -380,24 +616,6 @@ function CaptionApiSettings({ settings, onUpdate }) {
     }
   }
 
-  // 连通性测试直接用表单当前值,不要求先保存
-  async function testConnection() {
-    setTesting(true);
-    try {
-      const result = await api.captionRemoteTest({
-        interface: form.interface,
-        base_url: form.base_url,
-        api_key: form.api_key,
-        model: form.model,
-      });
-      message.success(result.detail || "连接成功");
-    } catch (err) {
-      message.error(`测试失败:${err.message}`);
-    } finally {
-      setTesting(false);
-    }
-  }
-
   return (
     <div id="settings-caption-api" className="panel">
       <h2>
@@ -408,50 +626,29 @@ function CaptionApiSettings({ settings, onUpdate }) {
           </span>
         )}
       </h2>
-      <div className="settings-item" id="settings-item-caption-api-interface">
-        <label className="settings-item-label" htmlFor="caption-api-interface">接口类型</label>
+      <div className="settings-item" id="settings-item-caption-api-endpoints">
+        <span className="settings-item-label">视觉模型端点</span>
         <p className="settings-item-desc">
-          「API 反推」使用的视觉模型接口:Ollama 本地服务或 OpenAI 兼容接口。
+          支持配置多个 Ollama / OpenAI 兼容端点,每个端点可手动添加或「获取模型列表」拉取。
         </p>
-        <select
-          id="caption-api-interface"
-          value={form.interface}
-          onChange={(e) => setField("interface", e.target.value)}
-        >
-          <option value="ollama">Ollama</option>
-          <option value="openai">OpenAI 兼容</option>
-        </select>
-      </div>
-      <div className="settings-item" id="settings-item-caption-api-base-url">
-        <label className="settings-item-label" htmlFor="caption-api-base-url">Base URL</label>
-        <input
-          id="caption-api-base-url"
-          type="text"
-          value={form.base_url}
-          placeholder="http://127.0.0.1:11434"
-          onChange={(e) => setField("base_url", e.target.value)}
+        <EndpointListEditor
+          endpoints={form.endpoints}
+          onChange={(next) => setField("endpoints", next)}
+          idPrefix="caption-api"
         />
       </div>
-      <div className="settings-item" id="settings-item-caption-api-api-key">
-        <label className="settings-item-label" htmlFor="caption-api-api-key">API Key</label>
-        <p className="settings-item-desc">OpenAI 兼容接口需要;Ollama 可留空。</p>
-        <input
-          id="caption-api-api-key"
-          type="password"
-          value={form.api_key}
-          autoComplete="off"
-          onChange={(e) => setField("api_key", e.target.value)}
-        />
-      </div>
-      <div className="settings-item" id="settings-item-caption-api-model">
-        <label className="settings-item-label" htmlFor="caption-api-model">模型 ID</label>
-        <p className="settings-item-desc">需要支持图片输入的视觉模型。</p>
-        <input
-          id="caption-api-model"
-          type="text"
-          value={form.model}
-          placeholder="例如 qwen3-vl:8b 或 gpt-4o-mini"
-          onChange={(e) => setField("model", e.target.value)}
+      <div className="settings-item" id="settings-item-caption-api-selected">
+        <label className="settings-item-label" htmlFor="caption-api-selected-model">
+          默认模型
+        </label>
+        <p className="settings-item-desc">
+          「API 反推」使用的默认模型,需为支持图片输入的视觉模型。
+        </p>
+        <RemoteModelSelect
+          idPrefix="caption-api-selected-model"
+          endpoints={form.endpoints}
+          selected={form.selected}
+          onChange={(next) => setField("selected", next)}
         />
       </div>
       <div className="settings-item" id="settings-item-caption-api-think">
@@ -483,26 +680,15 @@ function CaptionApiSettings({ settings, onUpdate }) {
         />
       </div>
       <div className="settings-item" id="settings-item-caption-api-actions">
-        <div className="settings-actions-row">
-          <button
-            id="caption-api-test-btn"
-            type="button"
-            className="chip"
-            disabled={testing}
-            onClick={testConnection}
-          >
-            {testing ? "测试中……" : "测试连通性"}
-          </button>
-          <button
-            id="caption-api-save-btn"
-            type="button"
-            className="chip"
-            disabled={saving}
-            onClick={save}
-          >
-            {saving ? "保存中……" : "保存"}
-          </button>
-        </div>
+        <button
+          id="caption-api-save-btn"
+          type="button"
+          className="chip"
+          disabled={saving}
+          onClick={save}
+        >
+          {saving ? "保存中……" : "保存"}
+        </button>
       </div>
     </div>
   );
@@ -519,6 +705,20 @@ function GeneralSettings({ settings, modes, onUpdate }) {
         </p>
         <SizePresetEditor
           presets={settings?.size_presets ?? []}
+          onUpdate={onUpdate}
+        />
+      </div>
+      <div className="settings-item" id="settings-item-aspect-ratio-presets">
+        <label className="settings-item-label">图片比例预设</label>
+        <p className="settings-item-desc">
+          尺寸卡片「自动计算」模式中可选的图片比例(宽:高),配合目标像素自动算出宽高。
+        </p>
+        <SizePresetEditor
+          presets={settings?.aspect_ratio_presets ?? []}
+          field="aspect_ratio_presets"
+          idPrefix="aspect-ratio-"
+          multiple={1}
+          display="ratio"
           onUpdate={onUpdate}
         />
       </div>
@@ -610,12 +810,17 @@ function Ref2vaLimitsEditor({ limits, onUpdate }) {
 }
 
 // field 指定写入的设置项键名;idPrefix 用于区分图片/视频多处编辑器的 DOM id;
-// multiple 是该系列模型要求的宽高倍数(wan 为 16,MiniMax 为 32)
-function SizePresetEditor({ presets, onUpdate, field = "size_presets", idPrefix = "", multiple = 16 }) {
+// multiple 是该系列模型要求的宽高倍数(wan 为 16,MiniMax 为 32,比例为 1);
+// display="ratio" 时按宽高比展示(3:4),否则按尺寸展示(576×768)
+function SizePresetEditor({ presets, onUpdate, field = "size_presets", idPrefix = "", multiple = 16, display = "size" }) {
   const [adding, setAdding] = useState(false);
   const [width, setWidth] = useState(576);
   const [height, setHeight] = useState(576);
   const [error, setError] = useState(null);
+
+  const formatTag = (w, h) =>
+    display === "ratio" ? `${w}:${h}` : w === h ? `${w}²` : `${w}×${h}`;
+  const separator = display === "ratio" ? ":" : "×";
 
   function removePreset(target) {
     onUpdate({
@@ -628,12 +833,16 @@ function SizePresetEditor({ presets, onUpdate, field = "size_presets", idPrefix 
   function savePreset() {
     for (const [label, value] of [["宽度", width], ["高度", height]]) {
       if (!Number.isInteger(value) || value <= 0 || value % multiple) {
-        setError(`${label}必须是正整数且为 ${multiple} 的倍数`);
+        setError(
+          multiple > 1
+            ? `${label}必须是正整数且为 ${multiple} 的倍数`
+            : `${label}必须是正整数`,
+        );
         return;
       }
     }
     if (presets.some(([w, h]) => w === width && h === height)) {
-      setError("该尺寸标签已存在");
+      setError(display === "ratio" ? "该比例已存在" : "该尺寸标签已存在");
       return;
     }
     setError(null);
@@ -646,12 +855,12 @@ function SizePresetEditor({ presets, onUpdate, field = "size_presets", idPrefix 
       <div className="preset-editor-tags">
         {presets.map(([w, h]) => (
           <span className="preset-tag" key={`${w}x${h}`} id={`${idPrefix}size-tag-${w}x${h}`}>
-            {w === h ? `${w}²` : `${w}×${h}`}
+            {formatTag(w, h)}
             <button
               id={`${idPrefix}delete-tag-${w}x${h}`}
               type="button"
               className="preset-tag-delete"
-              aria-label={`删除 ${w}×${h}`}
+              aria-label={`删除 ${formatTag(w, h)}`}
               onClick={() => removePreset([w, h])}
             >
               ×
@@ -684,7 +893,7 @@ function SizePresetEditor({ presets, onUpdate, field = "size_presets", idPrefix 
             onChange={(e) => setWidth(Number(e.target.value))}
             placeholder="宽度"
           />
-          <span className="preset-add-x">×</span>
+          <span className="preset-add-x">{separator}</span>
           <input
             id={`${idPrefix}preset-height-input`}
             type="number"

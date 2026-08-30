@@ -75,7 +75,7 @@ class CreateEditJobsRequest(BaseModel):
 
     编辑模式复用 Krea2 的 diffusion/VAE/text encoder/clip_type 资源,
     客户端不能提交任何服务器路径;`input_image_id` 引用受控上传接口落盘的图片。
-    编辑模式禁用 upscale(由 core domain 校验),此处不暴露 upscale 字段。
+    编辑模式仅支持 resize / upscale_model 放大(latent_hires 由 core domain 拒绝)。
     """
 
     model_index: int = Field(ge=1)
@@ -85,6 +85,8 @@ class CreateEditJobsRequest(BaseModel):
     prompt: str = Field(min_length=1, max_length=16_000)
     negative_prompt: str = Field(default="", max_length=16_000)
     input_image_id: str = Field(min_length=1, max_length=64)
+    # 双图编辑的第二张输入图;缺省为 None 表示单图编辑
+    secondary_input_image_id: str | None = Field(default=None, min_length=1, max_length=64)
     width: int = 576
     height: int = 576
     steps: int = Field(default=8, ge=1, le=100)
@@ -96,6 +98,7 @@ class CreateEditJobsRequest(BaseModel):
     # 编辑专属参数;0 表示按原图尺寸,ref_boost=1.0 表示不强化。
     grounding_px: int = Field(default=768, ge=0, le=4096)
     ref_boost: float = Field(default=1.0, ge=0, le=1000, allow_inf_nan=False)
+    upscale: UpscaleRequest | None = None
 
     # 合法值以 core domain 的 SAMPLERS/SCHEDULERS 为唯一事实来源
     @field_validator("sampler")
@@ -206,6 +209,7 @@ class JobResponse(BaseModel):
     # Krea2 图像编辑字段;非编辑任务保持 None。input_image_url 在编辑任务有输入图时
     # 指向 /api/v1/edit/input-images/{name},便于前端复用受控 URL。
     input_image_url: str | None = None
+    secondary_input_image_url: str | None = None
     grounding_px: int | None = None
     ref_boost: float | None = None
     # Krea2 参考图重排字段;非 krea2-rebalance 任务保持空列表。URL 同样指向受控上传目录。
@@ -252,6 +256,11 @@ def job_to_response(job: JobRecord) -> JobResponse:
         if job.input_image_path is not None
         else None
     )
+    secondary_input_image_url = (
+        f"/api/v1/edit/input-images/{job.secondary_input_image_path.name}"
+        if job.secondary_input_image_path is not None
+        else None
+    )
     return JobResponse(
         id=job.id,
         batch_id=job.batch_id,
@@ -282,6 +291,7 @@ def job_to_response(job: JobRecord) -> JobResponse:
         upscaled_output_name=upscaled_path.name if upscaled_path is not None else None,
         upscaled_image_url=upscaled_image_url,
         input_image_url=input_image_url,
+        secondary_input_image_url=secondary_input_image_url,
         grounding_px=job.grounding_px,
         ref_boost=job.ref_boost,
         reference_image_urls=[

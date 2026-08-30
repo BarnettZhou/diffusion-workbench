@@ -512,13 +512,18 @@ class ComfyWorker:
         if is_edit:
             # 编辑模式不走纯文本编码：用 Krea2EditGroundedEncode 把指令与源图一起
             # 经 Qwen3-VL 编码，得到 image-grounded 的 conditioning。
+            # 双图编辑时第二张图经 image_b 传入，由节点内部拼入 grounded prompt。
             source_image = self._load_input_image(command.get("input_image_path"))
+            source_image_b = self._load_input_image(
+                command.get("secondary_input_image_path")
+            )
             edit_module = self._ensure_krea2edit_nodes()
             grounded = edit_module.NODE_CLASS_MAPPINGS["Krea2EditGroundedEncode"]()
             positive = grounded.encode(
                 self.clip,
                 command["prompt"],
                 image=source_image,
+                image_b=source_image_b,
                 grounding_px=int(command.get("grounding_px", 768)),
                 system_prompt="",
             )[0]
@@ -534,6 +539,7 @@ class ComfyWorker:
                     self.clip,
                     negative_prompt,
                     image=source_image,
+                    image_b=source_image_b,
                     grounding_px=int(command.get("grounding_px", 768)),
                     system_prompt="",
                 )[0]
@@ -604,6 +610,15 @@ class ComfyWorker:
             edit_module = self._ensure_krea2edit_nodes()
             encode_image = self._downscale_image_to_target(source_image, width, height)
             source_latent = self.nodes.VAEEncode().encode(self.vae, encode_image)[0]
+            # 双图编辑：第二图同样先缩放到输出尺寸再编码，避免全分辨率 VAEEncode。
+            source_latent_b = None
+            if source_image_b is not None:
+                encode_image_b = self._downscale_image_to_target(
+                    source_image_b, width, height
+                )
+                source_latent_b = self.nodes.VAEEncode().encode(
+                    self.vae, encode_image_b
+                )[0]
             edit_lora_path = Path(command["edit_lora_path"]).resolve()
             lora_name = self._register_exact("loras", edit_lora_path)
             lora_model = self.nodes.LoraLoaderModelOnly().load_lora_model_only(
@@ -616,11 +631,13 @@ class ComfyWorker:
             sampling_model = patcher.patch(
                 lora_model,
                 source_latent,
+                source_latent_b=source_latent_b,
                 ref_boost=float(command.get("ref_boost", 1.0)),
                 ref_boost_a=1.0,
                 fit_mode="fit",
                 vae=self.vae,
                 source_image=source_image,
+                source_image_b=source_image_b,
                 target_latent=latent,
             )[0]
 
@@ -2268,10 +2285,12 @@ class ComfyWorker:
             import math as _math
             if not _math.isfinite(float(ref_boost)) or not 0 <= float(ref_boost) <= 1000:
                 raise ValueError("edit-krea2 ref_boost 必须是 0 到 1000 的有限数值")
-            if upscale.enabled:
-                raise ValueError("edit-krea2 模式暂不支持图片放大")
+            if upscale.enabled and upscale.method == UpscaleMethod.LATENT_HIRES:
+                raise ValueError("edit-krea2 模式仅支持 resize / upscale_model 放大")
         elif command.get("input_image_path") is not None:
             raise ValueError("仅 edit-krea2 模式支持输入图片编辑")
+        elif command.get("secondary_input_image_path") is not None:
+            raise ValueError("仅 edit-krea2 模式支持第二输入图片")
         if command.get("mode") == "krea2-rebalance":
             reference_paths = command.get("reference_image_paths") or []
             if not 1 <= len(reference_paths) <= REBALANCE_MAX_REFERENCE_IMAGES:

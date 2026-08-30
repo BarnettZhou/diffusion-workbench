@@ -2,7 +2,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api/client";
 import PromptAssistModal from "./PromptAssistModal";
 import PromptPresetPicker from "./PromptPresetPicker";
-import UpscaleCard from "./UpscaleCard";
+import UpscaleCard, { DEFAULT_UPSCALE, validateUpscaleValue, buildUpscalePayload } from "./UpscaleCard";
+import SizeInputCard from "./SizeInputCard";
 
 // 采样器/调度器选项从 /api/v1/sampling-options 拉取,接口不可用时用兜底列表
 const FALLBACK_SAMPLERS = ["euler", "dpmpp_2m_sde"];
@@ -11,27 +12,9 @@ const LIMITS = {
   steps: { min: 1, max: 100 },
   count: { min: 1, max: 32 },
   size: { min: 256, max: 4096, multiple: 16 },
-  upscaleScale: { min: 1, max: 4 },
-  upscaleTile: { min: 128, max: 1024, multiple: 32 },
-};
-const DEFAULT_UPSCALE = {
-  method: "none", // none / resize / upscale_model / latent_hires
-  scale: "2",
-  interpolationImage: "lanczos",
-  interpolationLatent: "bislerp",
-  modelIndex: null,
-  tile: "512",
-  overlap: "32",
-  steps: "9",
-  startStep: "4",
-  cfg: "", // 空字符串表示继承首次采样
-  sampler: "",
-  scheduler: "",
-  seed: "", // 空字符串表示继承任务 seed
 };
 
-// mode 由 App 作为工作台全局状态下发;onModeChange 用于相册预填等场景回写
-export default function ParameterForm({ mode, onModeChange, resources, sizePresets, promptPresets, prefill, samplingDefaults, onSubmit }) {
+export default function ParameterForm({ mode, onModeChange, resources, sizePresets, ratioPresets = [], promptPresets, prefill, samplingDefaults, llmSettings, onSelectLlmModel, onSubmit }) {
   // 模型/VAE 选择按 mode 分开保存,切换 tab 恢复各 mode 上次选中项
   const [selections, setSelections] = useState({});
   const [prompt, setPrompt] = useState("");
@@ -271,76 +254,7 @@ export default function ParameterForm({ mode, onModeChange, resources, sizePrese
     if (!Number.isFinite(Number(cfg)) || Number(cfg) <= 0) return "CFG 必须是大于 0 的数值";
     const seedNum = Number(seed);
     if (!Number.isInteger(seedNum) || seedNum < -1) return "seed 必须是 -1(随机)或非负整数";
-    return validateUpscale();
-  }
-
-  function validateUpscale() {
-    if (upscale.method === "none") return null;
-    const scale = Number(upscale.scale);
-    if (
-      !Number.isFinite(scale) ||
-      scale <= LIMITS.upscaleScale.min ||
-      scale > LIMITS.upscaleScale.max
-    ) {
-      return `放大倍数必须大于 ${LIMITS.upscaleScale.min} 且不超过 ${LIMITS.upscaleScale.max}`;
-    }
-    if (upscale.method === "upscale_model") {
-      if (upscale.modelIndex === null) return "请选择放大模型";
-      const { min, max, multiple } = LIMITS.upscaleTile;
-      const tile = Number(upscale.tile);
-      if (!Number.isInteger(tile) || tile < min || tile > max || tile % multiple) {
-        return `分块大小必须在 ${min}-${max} 之间且是 ${multiple} 的倍数`;
-      }
-      const overlap = Number(upscale.overlap);
-      if (!Number.isInteger(overlap) || overlap < 0 || overlap >= tile / 2) {
-        return "分块重叠必须大于等于 0 且小于分块大小的一半";
-      }
-    }
-    if (upscale.method === "latent_hires") {
-      const upscaleSteps = Number(upscale.steps);
-      if (!Number.isInteger(upscaleSteps) || upscaleSteps < LIMITS.steps.min || upscaleSteps > LIMITS.steps.max) {
-        return `总步数必须在 ${LIMITS.steps.min} 到 ${LIMITS.steps.max} 之间`;
-      }
-      const startStep = Number(upscale.startStep);
-      if (!Number.isInteger(startStep) || startStep < 0 || startStep >= upscaleSteps) {
-        return "开始步数必须大于等于 0 且小于总步数";
-      }
-      if (upscale.cfg !== "" && (!Number.isFinite(Number(upscale.cfg)) || Number(upscale.cfg) <= 0)) {
-        return "放大 CFG 必须留空(继承)或大于 0";
-      }
-      if (upscale.seed !== "" && (!Number.isInteger(Number(upscale.seed)) || Number(upscale.seed) < 0)) {
-        return "放大 seed 必须留空(继承)或为非负整数";
-      }
-    }
-    return null;
-  }
-
-  // 把放大卡片状态映射为提交参数;不放大时返回 undefined(等价 enabled=false)
-  function buildUpscalePayload() {
-    if (upscale.method === "none") return undefined;
-    const payload = {
-      enabled: true,
-      method: upscale.method,
-      scale: Number(upscale.scale),
-      interpolation:
-        upscale.method === "latent_hires"
-          ? upscale.interpolationLatent
-          : upscale.interpolationImage,
-    };
-    if (upscale.method === "upscale_model") {
-      payload.model_index = upscale.modelIndex;
-      payload.tile = Number(upscale.tile);
-      payload.overlap = Number(upscale.overlap);
-    }
-    if (upscale.method === "latent_hires") {
-      payload.steps = Number(upscale.steps);
-      payload.start_step = Number(upscale.startStep);
-      payload.cfg = upscale.cfg === "" ? null : Number(upscale.cfg);
-      payload.sampler = upscale.sampler || null;
-      payload.scheduler = upscale.scheduler || null;
-      payload.seed = upscale.seed === "" ? null : Number(upscale.seed);
-    }
-    return payload;
+    return validateUpscaleValue(upscale);
   }
 
   async function handleSubmit(event) {
@@ -364,7 +278,7 @@ export default function ParameterForm({ mode, onModeChange, resources, sizePrese
         cfg: Number(cfg),
         sampler,
         scheduler,
-        upscale: buildUpscalePayload(),
+        upscale: buildUpscalePayload(upscale),
       });
     } catch (err) {
       setError(err.message);
@@ -584,40 +498,17 @@ export default function ParameterForm({ mode, onModeChange, resources, sizePrese
         </select>
       </div>}
 
-      <div className="row" id="size-row">
-        <div className="field" id="field-width">
-          <label htmlFor="width-input">宽度 (px)</label>
-          <input
-            id="width-input" type="number" step={LIMITS.size.multiple}
-            min={LIMITS.size.min} max={LIMITS.size.max}
-            value={width} onChange={(e) => setWidth(e.target.value)}
-          />
-        </div>
-        <div className="field" id="field-height">
-          <label htmlFor="height-input">高度 (px)</label>
-          <input
-            id="height-input" type="number" step={LIMITS.size.multiple}
-            min={LIMITS.size.min} max={LIMITS.size.max}
-            value={height} onChange={(e) => setHeight(e.target.value)}
-          />
-        </div>
-      </div>
-
-      <div className="preset-row" id="size-presets">
-        {(sizePresets ?? []).map(([presetWidth, presetHeight]) => (
-          <button
-            key={`${presetWidth}x${presetHeight}`}
-            id={`preset-${presetWidth}x${presetHeight}`}
-            type="button"
-            className="chip"
-            onClick={() => { setWidth(String(presetWidth)); setHeight(String(presetHeight)); }}
-          >
-            {presetWidth === presetHeight
-              ? `${presetWidth}²`
-              : `${presetWidth}×${presetHeight}`}
-          </button>
-        ))}
-      </div>
+      <SizeInputCard
+        idPrefix="size"
+        embedded
+        width={width}
+        height={height}
+        onWidthChange={setWidth}
+        onHeightChange={setHeight}
+        sizePresets={sizePresets ?? []}
+        ratioPresets={ratioPresets ?? []}
+        limits={LIMITS.size}
+      />
 
       <div className="row" id="steps-count-row">
         <div className="field" id="field-steps">
@@ -689,6 +580,8 @@ export default function ParameterForm({ mode, onModeChange, resources, sizePrese
         open={assistOpen}
         onClose={() => setAssistOpen(false)}
         onUse={handleAssistUse}
+        llmSettings={llmSettings}
+        onSelectModel={onSelectLlmModel}
       />
       {presetTarget && (
         <PromptPresetPicker

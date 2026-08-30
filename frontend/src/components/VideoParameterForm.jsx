@@ -17,9 +17,11 @@ const LIMITS = {
 };
 
 // 视频生成参数表单。结构与 ParameterForm 一致(卡片 + field/row 布局),
-// videoModel 与 resources 由 App 下发;切 tab 只隐藏不卸载,表单现场保留。
+// videoModel 与 resources 由 App 下发;每个视频模型一个实例,切模型只隐藏不卸载,
+// 表单现场保留;active 表示本实例是否为当前选中的模型,预填只在激活时应用。
 export default function VideoParameterForm({
   videoModel,
+  active = true,
   modelInfo,
   resources,
   inputImagePrefill,
@@ -220,9 +222,10 @@ export default function VideoParameterForm({
   }, [videoModel]);
 
   // 相册视频抽屉"发送到工作台"带过来的生成参数预填;
-  // 模型/VAE 按文件名匹配当前分类的资源,匹配不到保留默认选中
+  // 模型/VAE 按文件名匹配当前分类的资源,匹配不到保留默认选中;
+  // 多实例常驻,只在当前激活的模型实例上应用
   useEffect(() => {
-    if (!paramsPrefill) return;
+    if (!active || !paramsPrefill) return;
     setPrompt(paramsPrefill.prompt ?? "");
     setNegativePrompt(paramsPrefill.negative_prompt ?? "");
     if (Number.isInteger(paramsPrefill.width)) setWidth(String(paramsPrefill.width));
@@ -256,11 +259,12 @@ export default function VideoParameterForm({
       (item) => item.name === paramsPrefill.text_encoder_name,
     );
     if (textEncoder) setTextEncoderIndex(textEncoder.index);
-  }, [paramsPrefill, resources]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [active, paramsPrefill, resources]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // 相册"发送到视频生成"带过来的输入图片:直接引用受控 URL,不走本地上传
+  // 相册"发送到视频生成"带过来的输入图片:直接引用受控 URL,不走本地上传;
+  // 多实例常驻,只在当前激活的模型实例上应用
   useEffect(() => {
-    if (!inputImagePrefill || isRef2va) return;
+    if (!active || !inputImagePrefill || isRef2va) return;
     setInputImage((prev) => {
       if (prev?.previewUrl?.startsWith("blob:")) URL.revokeObjectURL(prev.previewUrl);
       return {
@@ -269,7 +273,7 @@ export default function VideoParameterForm({
         name: inputImagePrefill.name,
       };
     });
-  }, [inputImagePrefill, isRef2va]);
+  }, [inputImagePrefill, isRef2va, active]);
 
   // 选择文件后立即上传,本地用 object URL 预览;清除时仅移除引用,服务端文件保留
   async function handleInputImageSelect(file) {
@@ -526,7 +530,7 @@ export default function VideoParameterForm({
   }
 
   return (
-    <form id="video-parameter-form" className="form-stack" onSubmit={handleSubmit}>
+    <form id={`video-parameter-form-${videoModel}`} className="form-stack" onSubmit={handleSubmit}>
       <div id="video-basic-params-card" className="panel form">
         <div className="card-header">
           <h2>基础参数</h2>

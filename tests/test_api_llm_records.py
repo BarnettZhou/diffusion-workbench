@@ -13,9 +13,17 @@ class LLMRecordTests(ApiTestCase):
             "/api/v1/settings",
             json={
                 "llm": {
-                    "interface": "openai",
-                    "base_url": "http://127.0.0.1:8000/v1",
-                    "model": "qwen3",
+                    "endpoints": [
+                        {
+                            "id": "dd44ee55",
+                            "name": "记录端点",
+                            "interface": "openai",
+                            "base_url": "http://127.0.0.1:8000/v1",
+                            "api_key": "",
+                            "models": ["qwen3"],
+                        }
+                    ],
+                    "selected": {"endpoint_id": "dd44ee55", "model": "qwen3"},
                 }
             },
         )
@@ -46,6 +54,7 @@ class LLMRecordTests(ApiTestCase):
         self.assertEqual(item["session_id"], session_id)
         self.assertEqual(item["base_url"], "http://127.0.0.1:8000/v1")
         self.assertEqual(item["model"], "qwen3")
+        self.assertEqual(item["endpoint_name"], "记录端点")
         self.assertIn("一只猫", item["request"])
         self.assertEqual(item["response"], "Positive: a cat\nNegative: blurry")
         self.assertEqual(item["error"], "")

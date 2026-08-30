@@ -59,6 +59,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     upscale_json TEXT NOT NULL DEFAULT '{}',
     job_kind TEXT NOT NULL DEFAULT 'image',
     input_image TEXT,
+    secondary_input_image TEXT,
     grounding_px INTEGER,
     ref_boost REAL,
     reference_image TEXT,
@@ -117,6 +118,8 @@ class JobStore:
                 # Krea2 图像编辑专用列；旧库通过 ALTER TABLE 增量添加。
                 "grounding_px": "INTEGER",
                 "ref_boost": "REAL",
+                # 双图编辑的第二张输入图；仅 edit-krea2 任务非空。
+                "secondary_input_image": "TEXT",
             }
             for name, declaration in migrations.items():
                 if name not in columns:
@@ -242,6 +245,11 @@ class JobStore:
                     if settings.input_image is not None
                     else None
                 )
+                secondary_input_image_value = (
+                    str(settings.secondary_input_image.resolve())
+                    if settings.secondary_input_image is not None
+                    else None
+                )
                 # 仅编辑模式写入实际值；其他 mode 落 NULL，避免误传 768/1.0 默认值。
                 grounding_px_value = int(settings.grounding_px) if is_edit else None
                 ref_boost_value = float(settings.ref_boost) if is_edit else None
@@ -281,6 +289,7 @@ class JobStore:
                     ),
                     "image",
                     input_image_value,
+                    secondary_input_image_value,
                     grounding_px_value,
                     ref_boost_value,
                     reference_inputs_value,
@@ -291,8 +300,8 @@ class JobStore:
                         id, batch_id, status, submitted_at, output_path, upscaled_output_path, output_date,
                         daily_index, mode, prompt, negative_prompt, model, vae, text_encoder, sampler,
                         scheduler, width, height, steps, seed, cfg, model_loader, upscale_json,
-                        job_kind, input_image, grounding_px, ref_boost, reference_inputs
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        job_kind, input_image, secondary_input_image, grounding_px, ref_boost, reference_inputs
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     values,
                 )
@@ -590,6 +599,11 @@ class JobStore:
             model_loader=ModelLoader(row["model_loader"]),
             input_image_path=(
                 Path(row["input_image"]) if row["input_image"] else None
+            ),
+            secondary_input_image_path=(
+                Path(row["secondary_input_image"])
+                if row["secondary_input_image"]
+                else None
             ),
             grounding_px=(
                 int(row["grounding_px"]) if row["grounding_px"] is not None else None

@@ -27,9 +27,17 @@ class PromptAssistChatTests(ApiTestCase):
             "/api/v1/settings",
             json={
                 "llm": {
-                    "interface": "ollama",
-                    "base_url": "http://127.0.0.1:11434",
-                    "model": "qwen3",
+                    "endpoints": [
+                        {
+                            "id": "bb22cc33",
+                            "name": "本地",
+                            "interface": "ollama",
+                            "base_url": "http://127.0.0.1:11434",
+                            "api_key": "",
+                            "models": ["qwen3"],
+                        }
+                    ],
+                    "selected": {"endpoint_id": "bb22cc33", "model": "qwen3"},
                 }
             },
         )
@@ -134,9 +142,17 @@ class PromptAssistChatTests(ApiTestCase):
             "/api/v1/settings",
             json={
                 "llm": {
-                    "interface": "ollama",
-                    "base_url": "http://127.0.0.1:11434",
-                    "model": "qwen3",
+                    "endpoints": [
+                        {
+                            "id": "bb22cc33",
+                            "name": "本地",
+                            "interface": "ollama",
+                            "base_url": "http://127.0.0.1:11434",
+                            "api_key": "",
+                            "models": ["qwen3"],
+                        }
+                    ],
+                    "selected": {"endpoint_id": "bb22cc33", "model": "qwen3"},
                     "system_prompt": "FLUX_CUSTOM",
                     "sd_system_prompt": "SD_CUSTOM",
                 }
@@ -194,7 +210,10 @@ class PromptAssistChatTests(ApiTestCase):
         return gen()
 
     def test_unconfigured_llm_returns_400_json(self):
-        self.client.put("/api/v1/settings", json={"llm": {"model": ""}})
+        self.client.put(
+            "/api/v1/settings",
+            json={"llm": {"endpoints": [], "selected": {"endpoint_id": "", "model": ""}}},
+        )
         response = self._chat()
         self.assertEqual(response.status_code, 400)
         self.assertIn("请先在设置中配置大模型", response.json()["detail"])

@@ -3,6 +3,7 @@ import { api, eventsUrl } from "./api/client";
 import AlbumPage from "./components/AlbumPage";
 import CaptionPanel from "./components/CaptionPanel";
 import EditParameterForm from "./components/EditParameterForm";
+import DualEditParameterForm from "./components/DualEditParameterForm";
 import RebalanceParameterForm from "./components/RebalanceParameterForm";
 import ParameterForm from "./components/ParameterForm";
 import ProgressPanel from "./components/ProgressPanel";
@@ -13,7 +14,7 @@ import VideoParameterForm from "./components/VideoParameterForm";
 import VideoResultGallery from "./components/VideoResultGallery";
 import Modal from "./components/Modal";
 
-const MODE_LABELS = { zit: "ZIT", zib: "ZIB", krea2: "Krea2", sdxl: "SDXL", "edit-krea2": "Krea2 编辑", "krea2-rebalance": "Krea2 参考重排" };
+const MODE_LABELS = { zit: "ZIT", zib: "ZIB", krea2: "Krea2", sdxl: "SDXL", "edit-krea2": "Krea2 编辑", "edit-krea2-dual": "双图编辑", "krea2-rebalance": "Krea2 参考重排" };
 // 视频模型分类显示名(设置页「视频模型」tab 同款映射)
 const VIDEO_MODEL_LABELS = {
   "wan2.2-ti2v-5b": "Wan 2.2 TI2V-5B",
@@ -26,6 +27,11 @@ const VIDEO_MODEL_LABELS = {
 
 export default function App() {
   const [tab, setTab] = useState("workbench");
+  // 设置页首次进入才挂载(其子页再按需挂载),之后切 tab 仅隐藏不卸载
+  const [settingsMounted, setSettingsMounted] = useState(false);
+  useEffect(() => {
+    if (tab === "settings") setSettingsMounted(true);
+  }, [tab]);
   const [resources, setResources] = useState(null);
   const [settings, setSettings] = useState(null);
   const [jobs, setJobs] = useState({});
@@ -347,6 +353,21 @@ export default function App() {
     setSettings(updated);
   }, []);
 
+  // 提示词助手/反推面板切换默认模型时持久化到 settings.selected。
+  // 只提交 selected 字段,后端基于已存值合并其余键;UI 组件各自保证 selected 的结构合法。
+  const handleSelectLlmModel = useCallback(
+    (selected) => {
+      updateSettings({ llm: { selected } }).catch((err) => message.error(`切换大模型失败:${err.message}`));
+    },
+    [updateSettings, message],
+  );
+  const handleSelectCaptionModel = useCallback(
+    (selected) => {
+      updateSettings({ caption_api: { selected } }).catch((err) => message.error(`切换反推模型失败:${err.message}`));
+    },
+    [updateSettings, message],
+  );
+
   async function handleSubmit(payload) {
     setSubmitting(true);
     try {
@@ -448,9 +469,11 @@ export default function App() {
     setTab("video");
   }, []);
 
-  // 相册"发送到图片编辑":切到图像编辑 tab,把导入好的输入图片预填进表单
-  const handleSendToEdit = useCallback((inputImage) => {
-    setEditPrefill(inputImage);
+  // 相册/结果"发送到图片编辑":按 slot 切到对应编辑子模式,并把导入好的输入图片预填进表单。
+  // slot: single=单图编辑, scene/subject=多图编辑的场景(图片 1)/主体(图片 2)槽位。
+  const handleSendToEdit = useCallback((slot, inputImage) => {
+    setEditMode(slot === "single" ? "edit-krea2" : "edit-krea2-dual");
+    setEditPrefill({ slot, image: inputImage });
     setTab("edit");
   }, []);
 
@@ -470,9 +493,9 @@ export default function App() {
   );
 
   const handleJobSendToEdit = useCallback(
-    async (job) => {
+    async (job, slot) => {
       const saved = await api.importEditInputFromJob(job.id);
-      handleSendToEdit({ id: saved.id, url: saved.url, name: job.output_name });
+      handleSendToEdit(slot, { id: saved.id, url: saved.url, name: job.output_name });
     },
     [handleSendToEdit],
   );
@@ -610,13 +633,19 @@ export default function App() {
           onSendVideoMeta={handleSendVideoMeta}
         />
       </div>
-      {tab === "settings" && (
-          <SettingsPage
-            settings={settings}
-            modes={Object.keys(resources ?? {})}
-            onUpdate={updateSettings}
+      {/* 设置页首次进入才挂载,之后切 tab 仅隐藏,保住各设置项未保存的表单内容 */}
+      {settingsMounted && (
+        <div
+          id="settings-tab-wrapper"
+          className={tab === "settings" ? "tab-contents" : "tab-hidden"}
+        >
+        <SettingsPage
+          settings={settings}
+          modes={Object.keys(resources ?? {})}
+          onUpdate={updateSettings}
           onResourcesChanged={refreshResources}
         />
+        </div>
       )}
       {/* 工作台始终挂载,切 tab 仅隐藏,保住表单与结果现场 */}
       <main id="app-main" className={tab === "workbench" ? undefined : "tab-hidden"}>
@@ -646,8 +675,11 @@ export default function App() {
             onModeChange={setMode}
             resources={resources}
             sizePresets={settings?.size_presets ?? []}
+            ratioPresets={settings?.aspect_ratio_presets ?? []}
             samplingDefaults={settings?.sampling_defaults}
             promptPresets={settings?.prompt_presets ?? []}
+            llmSettings={settings?.llm ?? null}
+            onSelectLlmModel={handleSelectLlmModel}
             prefill={prefill}
             onSubmit={handleSubmit}
           />
@@ -701,7 +733,7 @@ export default function App() {
       <main id="edit-main" className={tab === "edit" ? undefined : "tab-hidden"}>
         <div id="edit-mode-bar">
           <div id="edit-mode-switch" className="mode-switch" role="tablist" aria-label="图像编辑">
-            {["edit-krea2", "krea2-rebalance"].map((key) => (
+            {["edit-krea2", "edit-krea2-dual", "krea2-rebalance"].map((key) => (
               <button
                 key={key}
                 id={`edit-mode-${key}`}
@@ -718,8 +750,58 @@ export default function App() {
         </div>
         <div id="edit-body">
           <aside id="edit-controls-panel" className="controls">
-            {editMode === "krea2-rebalance" ? (
-              editInfo?.rebalance?.enabled === false ? (
+            {/* 两种编辑类型的表单始终挂载,切类型仅隐藏,各自暂存表单内容 */}
+            <div
+              id="edit-form-edit-krea2"
+              className={editMode === "edit-krea2" ? "tab-contents" : "tab-hidden"}
+            >
+              {editInfo?.enabled === false ? (
+                <div id="edit-disabled" className="panel form-error">
+                  服务端未配置 krea2 图像编辑（resources.krea2.edit_lora）
+                </div>
+              ) : (
+                <EditParameterForm
+                  resources={resources?.krea2}
+                  defaults={editInfo?.defaults ?? null}
+                  sizePresets={settings?.size_presets ?? []}
+                  ratioPresets={settings?.aspect_ratio_presets ?? []}
+                  samplingDefaults={settings?.sampling_defaults}
+                  promptPresets={settings?.prompt_presets ?? []}
+                  inputImagePrefill={editPrefill?.slot === "single" ? editPrefill.image : null}
+                  onSubmit={handleEditSubmit}
+                />
+              )}
+            </div>
+            <div
+              id="edit-form-edit-krea2-dual"
+              className={editMode === "edit-krea2-dual" ? "tab-contents" : "tab-hidden"}
+            >
+              {editInfo?.enabled === false ? (
+                <div id="dual-edit-disabled" className="panel form-error">
+                  服务端未配置 krea2 图像编辑（resources.krea2.edit_lora）
+                </div>
+              ) : (
+                <DualEditParameterForm
+                  resources={resources?.krea2}
+                  defaults={editInfo?.defaults ?? null}
+                  sizePresets={settings?.size_presets ?? []}
+                  ratioPresets={settings?.aspect_ratio_presets ?? []}
+                  samplingDefaults={settings?.sampling_defaults}
+                  promptPresets={settings?.prompt_presets ?? []}
+                  inputImagePrefill={
+                    editPrefill?.slot === "scene" || editPrefill?.slot === "subject"
+                      ? editPrefill
+                      : null
+                  }
+                  onSubmit={handleEditSubmit}
+                />
+              )}
+            </div>
+            <div
+              id="edit-form-krea2-rebalance"
+              className={editMode === "krea2-rebalance" ? "tab-contents" : "tab-hidden"}
+            >
+              {editInfo?.rebalance?.enabled === false ? (
                 <div id="rebalance-disabled" className="panel form-error">
                   服务端未配置 krea2 资源（resources.krea2）
                 </div>
@@ -732,29 +814,21 @@ export default function App() {
                   promptPresets={settings?.prompt_presets ?? []}
                   onSubmit={handleRebalanceSubmit}
                 />
-              )
-            ) : editInfo?.enabled === false ? (
-              <div id="edit-disabled" className="panel form-error">
-                服务端未配置 krea2 图像编辑（resources.krea2.edit_lora）
-              </div>
-            ) : (
-              <EditParameterForm
-                resources={resources?.krea2}
-                defaults={editInfo?.defaults ?? null}
-                sizePresets={settings?.size_presets ?? []}
-                samplingDefaults={settings?.sampling_defaults}
-                promptPresets={settings?.prompt_presets ?? []}
-                inputImagePrefill={editPrefill}
-                onSubmit={handleEditSubmit}
-              />
-            )}
+              )}
+            </div>
           </aside>
           <section id="edit-results-panel" className="results">
             <div id="edit-action-bar">
               <button
                 id="edit-submit-btn"
                 type="submit"
-                form={editMode === "krea2-rebalance" ? "rebalance-parameter-form" : "edit-parameter-form"}
+                form={
+                  editMode === "krea2-rebalance"
+                    ? "rebalance-parameter-form"
+                    : editMode === "edit-krea2-dual"
+                      ? "dual-edit-parameter-form"
+                      : "edit-parameter-form"
+                }
                 className="primary"
                 disabled={
                   editSubmitting ||
@@ -800,7 +874,11 @@ export default function App() {
       </main>
       {/* 图片反推页:同步请求,无任务队列/进度事件;同样始终挂载,切 tab 仅隐藏 */}
       <main id="caption-main" className={tab === "caption" ? undefined : "tab-hidden"}>
-        <CaptionPanel inputImagePrefill={captionPrefill} />
+        <CaptionPanel
+          inputImagePrefill={captionPrefill}
+          captionApi={settings?.caption_api ?? null}
+          onSelectModel={handleSelectCaptionModel}
+        />
       </main>
       {/* 视频生成页同样始终挂载,切 tab 仅隐藏,保住表单与结果现场 */}
       <main id="video-main" className={tab === "video" ? undefined : "tab-hidden"}>
@@ -823,21 +901,29 @@ export default function App() {
         </div>
         <div id="video-body">
         <aside id="video-controls-panel" className="controls">
-          {videoModel && (
-            <VideoParameterForm
-              videoModel={videoModel}
-              modelInfo={videoModelInfo[videoModel]}
-              resources={videoResources[videoModel]}
-              inputImagePrefill={videoPrefill}
-              paramsPrefill={videoParamsPrefill}
-              promptPresets={settings?.prompt_presets ?? []}
-              sizePresets={videoModel?.startsWith("minimax")
-                ? (settings?.minimax_video_size_presets ?? [])
-                : (settings?.wan_video_size_presets ?? [])}
-              ref2vaLimits={settings?.ref2va_limits}
-              onSubmit={handleVideoSubmit}
-            />
-          )}
+          {/* 每个视频模型一个表单实例,始终挂载、切模型仅隐藏,各自暂存表单内容 */}
+          {videoModels.map((key) => (
+            <div
+              key={key}
+              id={`video-form-${key}`}
+              className={videoModel === key ? "tab-contents" : "tab-hidden"}
+            >
+              <VideoParameterForm
+                videoModel={key}
+                active={videoModel === key}
+                modelInfo={videoModelInfo[key]}
+                resources={videoResources[key]}
+                inputImagePrefill={videoPrefill}
+                paramsPrefill={videoParamsPrefill}
+                promptPresets={settings?.prompt_presets ?? []}
+                sizePresets={key.startsWith("minimax")
+                  ? (settings?.minimax_video_size_presets ?? [])
+                  : (settings?.wan_video_size_presets ?? [])}
+                ref2vaLimits={settings?.ref2va_limits}
+                onSubmit={handleVideoSubmit}
+              />
+            </div>
+          ))}
         </aside>
         <section id="video-results-panel" className="results">
           {/* 生成/跳过/停止放在结果区顶部;提交按钮通过 form 属性关联左侧表单 */}
@@ -845,7 +931,7 @@ export default function App() {
             <button
               id="video-submit-btn"
               type="submit"
-              form="video-parameter-form"
+              form={`video-parameter-form-${videoModel}`}
               className="primary"
               disabled={videoSubmitting || !videoModel}
             >

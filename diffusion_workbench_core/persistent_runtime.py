@@ -288,6 +288,11 @@ class PersistentComfyRuntime:
                 if job.input_image_path is not None
                 else None
             ),
+            "secondary_input_image_path": (
+                str(job.secondary_input_image_path.resolve())
+                if job.secondary_input_image_path is not None
+                else None
+            ),
             "grounding_px": (
                 int(job.grounding_px) if job.grounding_px is not None else None
             ),

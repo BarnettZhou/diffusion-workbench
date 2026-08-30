@@ -3,7 +3,7 @@ import unittest
 
 from PIL import Image
 
-from diffusion_workbench_core.domain import Mode
+from diffusion_workbench_core.domain import Mode, UpscaleMethod
 from test_api_jobs import ApiTestCase
 
 
@@ -250,6 +250,72 @@ class EditJobsTests(ApiTestCase):
         self.assertTrue(str(settings.input_image).endswith(image_id))
         self.assertEqual(settings.grounding_px, 768)
         self.assertEqual(settings.ref_boost, 1.0)
+
+    def test_dual_submit_maps_secondary_image(self):
+        # 双图编辑:secondary_input_image_id 透传到 settings 并回显受控 URL
+        secondary_id = self._upload_image()
+        response = self.client.post(
+            "/api/v1/edit/jobs",
+            json=self._payload(secondary_input_image_id=secondary_id),
+        )
+        self.assertEqual(response.status_code, 202)
+        job = response.json()["jobs"][0]
+        self.assertEqual(job["mode"], "edit-krea2")
+        self.assertTrue(job["secondary_input_image_url"].endswith(secondary_id))
+
+        settings, _ = self.core.submitted[-1]
+        self.assertEqual(settings.mode, Mode.KREA2_EDIT)
+        self.assertIsNotNone(settings.secondary_input_image)
+        self.assertTrue(str(settings.secondary_input_image).endswith(secondary_id))
+
+    def test_submit_without_secondary_image_keeps_field_null(self):
+        response = self.client.post("/api/v1/edit/jobs", json=self._payload())
+        self.assertEqual(response.status_code, 202)
+        job = response.json()["jobs"][0]
+        self.assertIsNone(job["secondary_input_image_url"])
+        settings, _ = self.core.submitted[-1]
+        self.assertIsNone(settings.secondary_input_image)
+
+    def test_unknown_secondary_input_image_id_returns_404(self):
+        response = self.client.post(
+            "/api/v1/edit/jobs",
+            json=self._payload(secondary_input_image_id="f" * 32 + ".png"),
+        )
+        self.assertEqual(response.status_code, 404)
+
+    def test_edit_submit_with_upscale_model(self):
+        # 编辑模式支持纯后处理放大:upscale_model 透传到 settings 并回显
+        response = self.client.post(
+            "/api/v1/edit/jobs",
+            json=self._payload(
+                upscale={
+                    "enabled": True,
+                    "method": "upscale_model",
+                    "scale": 2,
+                    "interpolation": "lanczos",
+                    "model_index": 1,
+                }
+            ),
+        )
+        self.assertEqual(response.status_code, 202)
+        job = response.json()["jobs"][0]
+        self.assertTrue(job["upscale"]["enabled"])
+        self.assertEqual(job["upscale"]["method"], "upscale_model")
+        self.assertEqual(job["upscale"]["model_name"], "4x-UltraSharp.pth")
+
+        settings, _ = self.core.submitted[-1]
+        self.assertTrue(settings.upscale.enabled)
+        self.assertEqual(settings.upscale.method, UpscaleMethod.UPSCALE_MODEL)
+
+    def test_edit_submit_rejects_latent_hires_upscale(self):
+        # latent_hires 与 in-context patch 冲突,domain 校验拒绝
+        response = self.client.post(
+            "/api/v1/edit/jobs",
+            json=self._payload(
+                upscale={"enabled": True, "method": "latent_hires", "scale": 2}
+            ),
+        )
+        self.assertEqual(response.status_code, 422)
 
     def test_single_job_has_no_batch_id(self):
         response = self.client.post("/api/v1/edit/jobs", json=self._payload())
