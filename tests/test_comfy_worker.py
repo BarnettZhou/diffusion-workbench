@@ -31,6 +31,24 @@ class FakeTorch:
         return FakeInferenceMode(self)
 
 
+class FakeModelManagement:
+    """generate() 按单回收所需的最小 model_management 替身(可记录调用顺序)。"""
+
+    def __init__(self, calls=None):
+        self.calls = calls
+
+    def cleanup_models_gc(self):
+        if self.calls is not None:
+            self.calls.append("cleanup_models_gc")
+
+    def cleanup_models(self):
+        if self.calls is not None:
+            self.calls.append("cleanup_models")
+
+    def soft_empty_cache(self, force=False):
+        if self.calls is not None:
+            self.calls.append("soft_empty_cache")
+
 class ComfyWorkerTests(unittest.TestCase):
     def test_gguf_diffusion_uses_installed_custom_loader(self):
         calls = []
@@ -441,6 +459,7 @@ class ComfyWorkerTests(unittest.TestCase):
         worker.torch = FakeTorch()
         worker._validate = lambda _command: None
         worker._comfy_execution_cleanup = lambda: None
+        worker.model_management = FakeModelManagement()
         worker.available_samplers = {"euler"}
         worker.available_schedulers = {"simple"}
 
@@ -464,6 +483,7 @@ class ComfyWorkerTests(unittest.TestCase):
         worker.available_schedulers = {"simple"}
         calls = []
         worker._comfy_execution_cleanup = lambda: calls.append("cleanup")
+        worker.model_management = FakeModelManagement(calls)
 
         worker._generate = lambda _command: {"type": "result"}
         worker.generate({"sampler": "euler", "scheduler": "simple"})
@@ -475,7 +495,9 @@ class ComfyWorkerTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             worker.generate({"sampler": "euler", "scheduler": "simple"})
 
-        self.assertEqual(calls, ["cleanup", "cleanup"])
+        # 每次 generate(成功或失败)都按序执行:全局收尾 -> 孤儿模型回收
+        expected = ["cleanup", "cleanup_models_gc", "cleanup_models", "soft_empty_cache"]
+        self.assertEqual(calls, expected + expected)
 
     def test_release_runs_comfy_execution_cleanup(self):
         calls = []

@@ -397,6 +397,13 @@ class ComfyWorker:
                 return self._generate(command)
             finally:
                 self._comfy_execution_cleanup()
+                # 按单回收孤儿显存：只清掉本单已死的 patched 克隆(编辑 lora、source latent
+                # 等临时对象)，不 unload self.model/clip/vae 等可复用模型。复用 release()
+                # 的回收配方，但去掉 unload_all_models()，避免下一单重复加载。
+                gc.collect()
+                self.model_management.cleanup_models_gc()
+                self.model_management.cleanup_models()
+                self.model_management.soft_empty_cache(force=True)
 
     def describe_image(self, command: dict) -> dict:
         """图片反推：复用 krea2 的 Qwen3-VL clip，把图片与系统提示词转成英文描述文本。
