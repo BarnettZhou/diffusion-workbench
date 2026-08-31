@@ -121,3 +121,8 @@ remote_encoder:
   request_timeout_seconds: 60
   # Krea2/edit-krea2 默认建议关闭 fallback，避免远端失败后本地显存 OOM。
   fallback_to_local: false
+  # 远端服务可用的 encoder id；仅用于前端下拉框展示。
+  encoder_ids:
+    - qwen3vl_4b_fp8.safetensors
+    - qwen3vl_4b_abliterated.safetensors
+    - qwen3_4b.safetensors
