@@ -21,6 +21,11 @@ from io import BytesIO
 from pathlib import Path
 
 try:
+    from .remote_encoder_client import RemoteEncoderClient, RemoteEncoderError
+except ImportError:
+    from remote_encoder_client import RemoteEncoderClient, RemoteEncoderError
+
+try:
     from .domain import (
         SAMPLERS,
         SCHEDULERS,
@@ -353,6 +358,9 @@ class ComfyWorker:
         self.clip = None
         self.clip_path: Path | None = None
         self.clip_type: str | None = None
+        self.remote_encoder = None
+        self.remote_encoder_enabled = False
+        self.remote_encoder_fallback = False
         # 仅缓存不含图像/视频条件的文本 conditioning，避免重复执行昂贵的文本编码。
         self._conditioning_cache: dict[tuple, tuple] = {}
         # 输入图片解码缓存：键为 (绝对路径, 文件大小, mtime_ns)，值为归一化
@@ -479,6 +487,7 @@ class ComfyWorker:
             else None
         )
         clip_type = command["clip_type"]
+        self._configure_remote_encoder(command)
         load_started = time.perf_counter()
         stage_total = int(command["steps"])
         emit(
@@ -525,31 +534,36 @@ class ComfyWorker:
                 command.get("secondary_input_image_path")
             )
             edit_module = self._ensure_krea2edit_nodes()
-            grounded = edit_module.NODE_CLASS_MAPPINGS["Krea2EditGroundedEncode"]()
-            positive = grounded.encode(
-                self.clip,
-                command["prompt"],
-                image=source_image,
-                image_b=source_image_b,
-                grounding_px=int(command.get("grounding_px", 768)),
-                system_prompt="",
-            )[0]
             negative_prompt = command.get("negative_prompt", "")
-            if cfg_value == 1.0:
-                # CFG 1 复用 positive，与普通图任务的 reuse_negative_at_cfg_one 一致
-                negative = positive
-            elif not negative_prompt:
-                # 对应原 workflow：negative 端用 ConditioningZeroOut(conditioning=positive)
-                negative = self.nodes.ConditioningZeroOut().zero_out(positive)[0]
+            if self.remote_encoder_enabled:
+                try:
+                    positive, negative, remote_stats = self.remote_encoder.encode_grounded(
+                        command["prompt"], negative_prompt, source_image, source_image_b,
+                        grounding_px=int(command.get("grounding_px", 768)),
+                        cfg=cfg_value, reuse_negative_at_cfg_one=True,
+                    )
+                except RemoteEncoderError:
+                    if not self.remote_encoder_fallback:
+                        raise
+                    self.remote_encoder_enabled = False
+                    self._ensure_clip_local(text_encoder_path, clip_type)
+                    grounded = edit_module.NODE_CLASS_MAPPINGS["Krea2EditGroundedEncode"]()
+                    positive = grounded.encode(self.clip, command["prompt"], image=source_image, image_b=source_image_b, grounding_px=int(command.get("grounding_px", 768)), system_prompt="")[0]
+                    if cfg_value == 1.0:
+                        negative = positive
+                    elif not negative_prompt:
+                        negative = self.nodes.ConditioningZeroOut().zero_out(positive)[0]
+                    else:
+                        negative = grounded.encode(self.clip, negative_prompt, image=source_image, image_b=source_image_b, grounding_px=int(command.get("grounding_px", 768)), system_prompt="")[0]
             else:
-                negative = grounded.encode(
-                    self.clip,
-                    negative_prompt,
-                    image=source_image,
-                    image_b=source_image_b,
-                    grounding_px=int(command.get("grounding_px", 768)),
-                    system_prompt="",
-                )[0]
+                grounded = edit_module.NODE_CLASS_MAPPINGS["Krea2EditGroundedEncode"]()
+                positive = grounded.encode(self.clip, command["prompt"], image=source_image, image_b=source_image_b, grounding_px=int(command.get("grounding_px", 768)), system_prompt="")[0]
+                if cfg_value == 1.0:
+                    negative = positive
+                elif not negative_prompt:
+                    negative = self.nodes.ConditioningZeroOut().zero_out(positive)[0]
+                else:
+                    negative = grounded.encode(self.clip, negative_prompt, image=source_image, image_b=source_image_b, grounding_px=int(command.get("grounding_px", 768)), system_prompt="")[0]
         elif is_rebalance:
             # 参考图重排不走 Krea2Edit 节点：用 Krea2EncodeRebalance 把提示词与
             # 1-4 张参考图一起经 Qwen3-VL 编码为 conditioning，模型与采样流程不变。
@@ -2114,6 +2128,18 @@ class ComfyWorker:
         )
 
     def _ensure_clip(self, path: Path, clip_type: str) -> bool:
+        if getattr(self, "remote_encoder_enabled", False):
+            if self.clip_path == path and self.clip_type == clip_type and self.clip is None:
+                return False
+            self._clear_conditioning_caches()
+            self.remote_encoder.load_clip(path.name, clip_type)
+            self.clip = None
+            self.clip_path = path
+            self.clip_type = clip_type
+            return True
+        return self._ensure_clip_local(path, clip_type)
+
+    def _ensure_clip_local(self, path: Path, clip_type: str) -> bool:
         if self.clip is not None and self.clip_path == path and self.clip_type == clip_type:
             return False
         self._unload_gpu()
@@ -2127,6 +2153,24 @@ class ComfyWorker:
         self.clip_path = path
         self.clip_type = clip_type
         return True
+
+    def _configure_remote_encoder(self, command: dict) -> None:
+        settings = command.get("remote_encoder") or {}
+        enabled = bool(settings.get("enabled", False)) and command.get("mode") in {
+            "zit", "krea2", "zib", "edit-krea2"
+        }
+        self.remote_encoder_enabled = enabled
+        self.remote_encoder_fallback = bool(settings.get("fallback_to_local", False))
+        if not enabled:
+            self.remote_encoder = None
+            return
+        if self.remote_encoder is None:
+            self.remote_encoder = RemoteEncoderClient(
+                settings.get("host", "127.0.0.1"), settings.get("port", 50051),
+                connect_timeout=settings.get("connect_timeout_seconds", 5),
+                request_timeout=settings.get("request_timeout_seconds", 60),
+                torch=self.torch,
+            )
 
     def _ensure_vae(self, path: Path) -> bool:
         if self.vae is not None and self.vae_path == path:
@@ -2167,6 +2211,20 @@ class ComfyWorker:
         cached = cache.get(key)
         if cached is not None:
             return cached
+
+        if getattr(self, "remote_encoder_enabled", False):
+            try:
+                positive, negative, _ = self.remote_encoder.encode_text(
+                    prompt, negative_prompt, cfg=cfg,
+                    reuse_negative_at_cfg_one=reuse_negative_at_cfg_one,
+                    cache_scope=cache_scope,
+                )
+                cache[key] = (positive, negative)
+                return positive, negative
+            except RemoteEncoderError:
+                if not self.remote_encoder_fallback:
+                    raise
+                self.remote_encoder_enabled = False
 
         encoder = self.nodes.CLIPTextEncode()
         positive = encoder.encode(self.clip, prompt)[0]
@@ -2215,6 +2273,13 @@ class ComfyWorker:
         self.model_management.interrupt_current_processing()
 
     def release(self) -> None:
+        if getattr(self, "remote_encoder", None) is not None:
+            try:
+                self.remote_encoder.release()
+            except Exception:
+                pass
+            self.remote_encoder = None
+            self.remote_encoder_enabled = False
         self._unload_gpu()
         self.model = None
         self.model_high = None

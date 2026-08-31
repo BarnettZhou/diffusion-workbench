@@ -13,6 +13,16 @@ class ComfyConfig:
 
 
 @dataclass(frozen=True)
+class RemoteEncoderConfig:
+    enabled: bool = False
+    host: str = "127.0.0.1"
+    port: int = 50051
+    connect_timeout_seconds: float = 5.0
+    request_timeout_seconds: float = 60.0
+    fallback_to_local: bool = False
+
+
+@dataclass(frozen=True)
 class ModeResources:
     diffusion: tuple[Path, ...]
     vae: tuple[Path, ...]
@@ -54,6 +64,7 @@ class WorkbenchConfig:
     upscaling: UpscalingConfig = field(default_factory=UpscalingConfig)
     video_resources: dict[VideoModel, VideoResources] = field(default_factory=dict)
     video_worker_timeout_seconds: float = 3600
+    remote_encoder: RemoteEncoderConfig = field(default_factory=RemoteEncoderConfig)
 
 
 def _resolve(value: str, base: Path) -> Path:
@@ -145,6 +156,21 @@ def load_config(path: str | Path) -> WorkbenchConfig:
         )
     if not resources and not video_resources:
         raise ValueError("resources 或 video_resources 至少必须配置一种生成模式")
+    remote_raw = raw.get("remote_encoder") or {}
+    if not isinstance(remote_raw, dict):
+        raise ValueError("remote_encoder 必须是映射")
+    remote_encoder = RemoteEncoderConfig(
+        enabled=bool(remote_raw.get("enabled", False)),
+        host=str(remote_raw.get("host", "127.0.0.1")),
+        port=int(remote_raw.get("port", 50051)),
+        connect_timeout_seconds=float(remote_raw.get("connect_timeout_seconds", 5)),
+        request_timeout_seconds=float(remote_raw.get("request_timeout_seconds", 60)),
+        fallback_to_local=bool(remote_raw.get("fallback_to_local", False)),
+    )
+    if not (1 <= remote_encoder.port <= 65535):
+        raise ValueError("remote_encoder.port 必须在 1 到 65535 之间")
+    if remote_encoder.connect_timeout_seconds <= 0 or remote_encoder.request_timeout_seconds <= 0:
+        raise ValueError("remote_encoder 超时必须大于 0")
     upscaling_raw = raw.get("upscaling") or {}
     if not isinstance(upscaling_raw, dict):
         raise ValueError("upscaling 必须是映射")
@@ -166,4 +192,5 @@ def load_config(path: str | Path) -> WorkbenchConfig:
         ),
         video_resources=video_resources,
         video_worker_timeout_seconds=video_timeout,
+        remote_encoder=remote_encoder,
     )

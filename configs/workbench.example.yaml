@@ -111,3 +111,13 @@ database: .cache\diffusion_workbench.sqlite3
 worker_timeout_seconds: 3600
 # 视频任务通常比图片耗时更长，单独设置超时(秒)
 video_worker_timeout_seconds: 3600
+
+# 远端 text encoder（Mac 源码版 ComfyUI 服务）；默认关闭。
+remote_encoder:
+  enabled: false
+  host: 127.0.0.1
+  port: 50051
+  connect_timeout_seconds: 5
+  request_timeout_seconds: 60
+  # Krea2/edit-krea2 默认建议关闭 fallback，避免远端失败后本地显存 OOM。
+  fallback_to_local: false

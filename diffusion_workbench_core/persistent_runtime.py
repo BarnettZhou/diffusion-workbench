@@ -305,6 +305,14 @@ class PersistentComfyRuntime:
                 str(path.resolve()) for path in job.reference_image_paths
             ],
             "reference_image_tokens": list(job.reference_image_tokens),
+            "remote_encoder": {
+                "enabled": self.config.remote_encoder.enabled,
+                "host": self.config.remote_encoder.host,
+                "port": self.config.remote_encoder.port,
+                "connect_timeout_seconds": self.config.remote_encoder.connect_timeout_seconds,
+                "request_timeout_seconds": self.config.remote_encoder.request_timeout_seconds,
+                "fallback_to_local": self.config.remote_encoder.fallback_to_local,
+            },
         }
 
     def _video_command(self, job: VideoJobRecord) -> dict:
