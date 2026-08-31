@@ -2314,6 +2314,9 @@ class ComfyWorker:
             "text_encoder": str(self.clip_path) if self.clip_path else None,
             "audio_vae": str(self.audio_vae_path) if self.audio_vae_path else None,
             "clip_type": self.clip_type,
+            "text_encoder_source": "remote" if getattr(self, "remote_encoder_enabled", False) else "local",
+            "remote_text_encoder_id": getattr(self, "remote_encoder_id", None),
+            "local_clip_loaded": self.clip is not None,
         }
 
     @staticmethod
