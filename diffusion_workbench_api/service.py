@@ -296,6 +296,8 @@ def submit_jobs(core: WorkbenchCore, payload: CreateJobsRequest):
         sampler=payload.sampler,
         scheduler=payload.scheduler,
         upscale=upscale,
+        text_encoder_source=payload.text_encoder_source,
+        remote_text_encoder_id=payload.remote_text_encoder_id,
     )
     return core.submit(settings, payload.count)
 
@@ -354,6 +356,8 @@ def submit_edit_jobs(core: WorkbenchCore, payload: CreateEditJobsRequest):
         cfg=payload.cfg,
         sampler=payload.sampler,
         scheduler=payload.scheduler,
+        text_encoder_source=payload.text_encoder_source,
+        remote_text_encoder_id=payload.remote_text_encoder_id,
     )
     return core.submit(settings, payload.count)
 
@@ -408,6 +412,8 @@ def submit_rebalance_jobs(core: WorkbenchCore, payload: CreateRebalanceJobsReque
         cfg=payload.cfg,
         sampler=payload.sampler,
         scheduler=payload.scheduler,
+        text_encoder_source=payload.text_encoder_source,
+        remote_text_encoder_id=payload.remote_text_encoder_id,
     )
     return core.submit(settings, payload.count)
 

@@ -4,6 +4,7 @@ import PromptAssistModal from "./PromptAssistModal";
 import PromptPresetPicker from "./PromptPresetPicker";
 import UpscaleCard, { DEFAULT_UPSCALE, validateUpscaleValue, buildUpscalePayload } from "./UpscaleCard";
 import SizeInputCard from "./SizeInputCard";
+import TextEncoderSelector from "./TextEncoderSelector";
 
 // 采样器/调度器选项从 /api/v1/sampling-options 拉取,接口不可用时用兜底列表
 const FALLBACK_SAMPLERS = ["euler", "dpmpp_2m_sde"];
@@ -14,11 +15,14 @@ const LIMITS = {
   size: { min: 256, max: 4096, multiple: 16 },
 };
 
-export default function ParameterForm({ mode, onModeChange, resources, sizePresets, ratioPresets = [], promptPresets, prefill, samplingDefaults, llmSettings, onSelectLlmModel, onSubmit }) {
+export default function ParameterForm({ mode, onModeChange, resources, sizePresets, ratioPresets = [], promptPresets, prefill, samplingDefaults, llmSettings, onSelectLlmModel, onSubmit, remoteEncoderIds = [] }) {
   // 模型/VAE 选择按 mode 分开保存,切换 tab 恢复各 mode 上次选中项
   const [selections, setSelections] = useState({});
   const [prompt, setPrompt] = useState("");
   const [negativePrompt, setNegativePrompt] = useState("");
+  const [textEncoderSource, setTextEncoderSource] = useState("local");
+  const [remoteTextEncoderId, setRemoteTextEncoderId] = useState(remoteEncoderIds[0] ?? "");
+  useEffect(() => { if (!remoteTextEncoderId && remoteEncoderIds.length) setRemoteTextEncoderId(remoteEncoderIds[0]); }, [remoteEncoderIds, remoteTextEncoderId]);
   // 数字输入框一律存原始字符串:允许删空和 "-1" 这类中间态,提交时才校验/转换
   const [width, setWidth] = useState("576");
   const [height, setHeight] = useState("576");
@@ -278,6 +282,8 @@ export default function ParameterForm({ mode, onModeChange, resources, sizePrese
         cfg: Number(cfg),
         sampler,
         scheduler,
+        text_encoder_source: textEncoderSource,
+        remote_text_encoder_id: textEncoderSource === "remote" ? remoteTextEncoderId : undefined,
         upscale: buildUpscalePayload(upscale),
       });
     } catch (err) {
@@ -482,21 +488,7 @@ export default function ParameterForm({ mode, onModeChange, resources, sizePrese
         </select>
       </div>}
 
-      {!usesCheckpointVae && <div className="field" id="field-text-encoder">
-        <label htmlFor="text-encoder-select">文本编码器 Text Encoder</label>
-        <select
-          id="text-encoder-select"
-          value={textEncoderIndex ?? ""}
-          disabled={!textEncoders.length}
-          onChange={(e) => setTextEncoderIndex(Number(e.target.value))}
-        >
-          {textEncoders.map((item) => (
-            <option key={item.index} value={item.index}>
-              {item.display_name}
-            </option>
-          ))}
-        </select>
-      </div>}
+      {!usesCheckpointVae && <TextEncoderSelector idPrefix="" localEncoders={textEncoders} localIndex={textEncoderIndex} onLocalIndexChange={setTextEncoderIndex} remoteIds={remoteEncoderIds} source={textEncoderSource} onSourceChange={setTextEncoderSource} remoteId={remoteTextEncoderId} onRemoteIdChange={setRemoteTextEncoderId} />}
 
       <SizeInputCard
         idPrefix="size"

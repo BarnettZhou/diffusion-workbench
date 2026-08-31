@@ -33,6 +33,7 @@ export default function App() {
     if (tab === "settings") setSettingsMounted(true);
   }, [tab]);
   const [resources, setResources] = useState(null);
+  const [remoteEncoderIds, setRemoteEncoderIds] = useState([]);
   const [settings, setSettings] = useState(null);
   const [jobs, setJobs] = useState({});
   // 视频任务与图片任务分开存放;事件按 job_id 命中哪张表就更新哪张
@@ -159,12 +160,14 @@ export default function App() {
   useEffect(() => {
     (async () => {
       try {
-        const [status, loadedSettings] = await Promise.all([
+        const [status, loadedSettings, remoteEncoders] = await Promise.all([
           api.status(),
           api.settings(),
+          api.remoteEncoders(),
           refreshResources(),
         ]);
         setSettings(loadedSettings);
+        setRemoteEncoderIds(remoteEncoders?.encoder_ids ?? []);
         setQueueState({ queued: status.queue, running: status.running });
       } catch (err) {
         setFatalError(`后端连接失败:${err.message}。请确认 API 服务已启动(当前访问端口 ${location.port})。`);
@@ -682,6 +685,7 @@ export default function App() {
             onSelectLlmModel={handleSelectLlmModel}
             prefill={prefill}
             onSubmit={handleSubmit}
+            remoteEncoderIds={remoteEncoderIds}
           />
         </aside>
         <section id="results-panel" className="results">
@@ -769,6 +773,7 @@ export default function App() {
                   promptPresets={settings?.prompt_presets ?? []}
                   inputImagePrefill={editPrefill?.slot === "single" ? editPrefill.image : null}
                   onSubmit={handleEditSubmit}
+                  remoteEncoderIds={remoteEncoderIds}
                 />
               )}
             </div>
@@ -794,6 +799,7 @@ export default function App() {
                       : null
                   }
                   onSubmit={handleEditSubmit}
+                  remoteEncoderIds={remoteEncoderIds}
                 />
               )}
             </div>
@@ -813,6 +819,7 @@ export default function App() {
                   samplingDefaults={settings?.sampling_defaults}
                   promptPresets={settings?.prompt_presets ?? []}
                   onSubmit={handleRebalanceSubmit}
+                  remoteEncoderIds={remoteEncoderIds}
                 />
               )}
             </div>

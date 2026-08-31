@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api/client";
 import EditImageField from "./EditImageField";
 import SizeInputCard from "./SizeInputCard";
+import TextEncoderSelector from "./TextEncoderSelector";
 import UpscaleCard, { DEFAULT_UPSCALE, validateUpscaleValue, buildUpscalePayload } from "./UpscaleCard";
 import { useMessage } from "./Message";
 import PromptPresetPicker from "./PromptPresetPicker";
@@ -28,6 +29,7 @@ export default function DualEditParameterForm({
   promptPresets,
   inputImagePrefill = null,
   onSubmit,
+  remoteEncoderIds = [],
 }) {
   const message = useMessage();
   const [prompt, setPrompt] = useState("");
@@ -35,6 +37,9 @@ export default function DualEditParameterForm({
   const [modelIndex, setModelIndex] = useState(null);
   const [vaeIndex, setVaeIndex] = useState(null);
   const [textEncoderIndex, setTextEncoderIndex] = useState(null);
+  const [textEncoderSource, setTextEncoderSource] = useState("local");
+  const [remoteTextEncoderId, setRemoteTextEncoderId] = useState("");
+  useEffect(() => { if (!remoteTextEncoderId && remoteEncoderIds.length) setRemoteTextEncoderId(remoteEncoderIds[0]); }, [remoteEncoderIds, remoteTextEncoderId]);
   // 数字输入框一律存原始字符串:允许删空和 "-1" 这类中间态,提交时才校验/转换
   const [width, setWidth] = useState("576");
   const [height, setHeight] = useState("576");
@@ -268,6 +273,8 @@ export default function DualEditParameterForm({
         model_index: modelIndex,
         vae_index: usesCheckpointVae ? undefined : vaeIndex,
         text_encoder_index: textEncoderIndex,
+        text_encoder_source: textEncoderSource,
+        remote_text_encoder_id: textEncoderSource === "remote" ? remoteTextEncoderId : undefined,
         prompt: prompt.trim(),
         negative_prompt: negativePrompt,
         input_image_id: (primaryImage.edited ?? primaryImage.original).id,
@@ -501,21 +508,7 @@ export default function DualEditParameterForm({
         )}
 
         {!usesCheckpointVae && (
-          <div className="field" id="field-dual-edit-text-encoder">
-            <label htmlFor="dual-edit-text-encoder-select">文本编码器 Text Encoder</label>
-            <select
-              id="dual-edit-text-encoder-select"
-              value={textEncoderIndex ?? ""}
-              disabled={!textEncoders.length}
-              onChange={(e) => setTextEncoderIndex(Number(e.target.value))}
-            >
-              {textEncoders.map((item) => (
-                <option key={item.index} value={item.index}>
-                  {item.display_name}
-                </option>
-              ))}
-            </select>
-          </div>
+          <TextEncoderSelector idPrefix="dual-edit" localEncoders={textEncoders} localIndex={textEncoderIndex} onLocalIndexChange={setTextEncoderIndex} remoteIds={remoteEncoderIds} source={textEncoderSource} onSourceChange={setTextEncoderSource} remoteId={remoteTextEncoderId} onRemoteIdChange={setRemoteTextEncoderId} />
         )}
 
         <SizeInputCard

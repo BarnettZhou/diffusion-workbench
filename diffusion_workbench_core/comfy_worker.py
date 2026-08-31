@@ -361,6 +361,7 @@ class ComfyWorker:
         self.remote_encoder = None
         self.remote_encoder_enabled = False
         self.remote_encoder_fallback = False
+        self.remote_encoder_id = None
         # 仅缓存不含图像/视频条件的文本 conditioning，避免重复执行昂贵的文本编码。
         self._conditioning_cache: dict[tuple, tuple] = {}
         # 输入图片解码缓存：键为 (绝对路径, 文件大小, mtime_ns)，值为归一化
@@ -2132,7 +2133,7 @@ class ComfyWorker:
             if self.clip_path == path and self.clip_type == clip_type and self.clip is None:
                 return False
             self._clear_conditioning_caches()
-            self.remote_encoder.load_clip(path.name, clip_type)
+            self.remote_encoder.load_clip(self.remote_encoder_id or path.name, clip_type)
             self.clip = None
             self.clip_path = path
             self.clip_type = clip_type
@@ -2161,6 +2162,7 @@ class ComfyWorker:
         }
         self.remote_encoder_enabled = enabled
         self.remote_encoder_fallback = bool(settings.get("fallback_to_local", False))
+        self.remote_encoder_id = settings.get("encoder_id")
         if not enabled:
             self.remote_encoder = None
             return

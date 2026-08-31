@@ -42,6 +42,8 @@ class CreateJobsRequest(BaseModel):
     vae_index: int | None = Field(default=None, ge=1)
     # components 模式必传,checkpoint 模式必须为空(文本编码器已内嵌)
     text_encoder_index: int | None = Field(default=None, ge=1)
+    text_encoder_source: Literal["local", "remote"] = "local"
+    remote_text_encoder_id: str | None = Field(default=None, min_length=1, max_length=255)
     prompt: str = Field(min_length=1, max_length=16_000)
     negative_prompt: str = Field(default="", max_length=16_000)
     width: int = 576
@@ -82,6 +84,8 @@ class CreateEditJobsRequest(BaseModel):
     vae_index: int = Field(ge=1)
     # 文本编码器同样按 index 从 Krea2 配置的 text_encoder 目录/文件列表选择
     text_encoder_index: int = Field(ge=1)
+    text_encoder_source: Literal["local", "remote"] = "local"
+    remote_text_encoder_id: str | None = Field(default=None, min_length=1, max_length=255)
     prompt: str = Field(min_length=1, max_length=16_000)
     negative_prompt: str = Field(default="", max_length=16_000)
     input_image_id: str = Field(min_length=1, max_length=64)
@@ -128,6 +132,8 @@ class CreateRebalanceJobsRequest(BaseModel):
     vae_index: int = Field(ge=1)
     # 文本编码器同样按 index 从 Krea2 配置的 text_encoder 目录/文件列表选择
     text_encoder_index: int = Field(ge=1)
+    text_encoder_source: Literal["local", "remote"] = "local"
+    remote_text_encoder_id: str | None = Field(default=None, min_length=1, max_length=255)
     prompt: str = Field(min_length=1, max_length=16_000)
     negative_prompt: str = Field(default="", max_length=16_000)
     reference_image_ids: list[str] = Field(min_length=1, max_length=4)

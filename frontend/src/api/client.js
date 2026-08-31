@@ -30,6 +30,7 @@ export const api = {
   status: () => request("/api/v1/status"),
   modes: () => request("/api/v1/modes"),
   samplingOptions: () => request("/api/v1/sampling-options"),
+  remoteEncoders: () => request("/api/v1/remote-encoders"),
   upscaleOptions: () => request("/api/v1/upscale-options"),
   upscaleModels: () => request("/api/v1/upscale-models"),
   resources: (mode, kind) => request(`/api/v1/resources/${mode}/${kind}`),

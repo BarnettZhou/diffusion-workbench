@@ -306,12 +306,13 @@ class PersistentComfyRuntime:
             ],
             "reference_image_tokens": list(job.reference_image_tokens),
             "remote_encoder": {
-                "enabled": self.config.remote_encoder.enabled,
+                "enabled": self.config.remote_encoder.enabled and job.text_encoder_source == "remote",
                 "host": self.config.remote_encoder.host,
                 "port": self.config.remote_encoder.port,
                 "connect_timeout_seconds": self.config.remote_encoder.connect_timeout_seconds,
                 "request_timeout_seconds": self.config.remote_encoder.request_timeout_seconds,
                 "fallback_to_local": self.config.remote_encoder.fallback_to_local,
+                "encoder_id": job.remote_text_encoder_id,
             },
         }
 

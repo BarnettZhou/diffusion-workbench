@@ -3,6 +3,7 @@ import { api } from "../api/client";
 import { normalizeUploadFile } from "./EditParameterForm";
 import { useMessage } from "./Message";
 import PromptPresetPicker from "./PromptPresetPicker";
+import TextEncoderSelector from "./TextEncoderSelector";
 
 // 采样器/调度器选项从 /api/v1/sampling-options 拉取,接口不可用时用兜底列表
 const FALLBACK_SAMPLERS = ["euler", "dpmpp_2m_sde"];
@@ -25,6 +26,7 @@ export default function RebalanceParameterForm({
   samplingDefaults,
   promptPresets,
   onSubmit,
+  remoteEncoderIds = [],
 }) {
   const message = useMessage();
   const [prompt, setPrompt] = useState("");
@@ -32,6 +34,9 @@ export default function RebalanceParameterForm({
   const [modelIndex, setModelIndex] = useState(null);
   const [vaeIndex, setVaeIndex] = useState(null);
   const [textEncoderIndex, setTextEncoderIndex] = useState(null);
+  const [textEncoderSource, setTextEncoderSource] = useState("local");
+  const [remoteTextEncoderId, setRemoteTextEncoderId] = useState("");
+  useEffect(() => { if (!remoteTextEncoderId && remoteEncoderIds.length) setRemoteTextEncoderId(remoteEncoderIds[0]); }, [remoteEncoderIds, remoteTextEncoderId]);
   // 数字输入框一律存原始字符串:允许删空和 "-1" 这类中间态,提交时才校验/转换
   const [width, setWidth] = useState("576");
   const [height, setHeight] = useState("576");
@@ -253,6 +258,8 @@ export default function RebalanceParameterForm({
         model_index: modelIndex,
         vae_index: usesCheckpointVae ? undefined : vaeIndex,
         text_encoder_index: textEncoderIndex,
+        text_encoder_source: textEncoderSource,
+        remote_text_encoder_id: textEncoderSource === "remote" ? remoteTextEncoderId : undefined,
         prompt: prompt.trim(),
         negative_prompt: negativePrompt,
         reference_image_ids: references.map((item) => item.id),
@@ -556,21 +563,7 @@ export default function RebalanceParameterForm({
         )}
 
         {!usesCheckpointVae && (
-          <div className="field" id="field-rebalance-text-encoder">
-            <label htmlFor="rebalance-text-encoder-select">文本编码器 Text Encoder</label>
-            <select
-              id="rebalance-text-encoder-select"
-              value={textEncoderIndex ?? ""}
-              disabled={!textEncoders.length}
-              onChange={(e) => setTextEncoderIndex(Number(e.target.value))}
-            >
-              {textEncoders.map((item) => (
-                <option key={item.index} value={item.index}>
-                  {item.display_name}
-                </option>
-              ))}
-            </select>
-          </div>
+          <TextEncoderSelector idPrefix="rebalance" localEncoders={textEncoders} localIndex={textEncoderIndex} onLocalIndexChange={setTextEncoderIndex} remoteIds={remoteEncoderIds} source={textEncoderSource} onSourceChange={setTextEncoderSource} remoteId={remoteTextEncoderId} onRemoteIdChange={setRemoteTextEncoderId} />
         )}
 
         <div className="row" id="rebalance-size-row">

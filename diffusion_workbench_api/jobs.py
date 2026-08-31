@@ -62,6 +62,11 @@ async def list_modes(core=Depends(get_core)):
         ]
     }
 
+@router.get("/remote-encoders")
+async def remote_encoders(core=Depends(get_core)):
+    config = getattr(core.config, "remote_encoder", None)
+    return {"enabled": bool(config and config.enabled), "encoder_ids": list(getattr(config, "encoder_ids", ())), "host": getattr(config, "host", None)}
+
 
 @router.get("/upscale-options")
 async def upscale_options():

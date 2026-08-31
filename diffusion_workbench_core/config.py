@@ -20,6 +20,7 @@ class RemoteEncoderConfig:
     connect_timeout_seconds: float = 5.0
     request_timeout_seconds: float = 60.0
     fallback_to_local: bool = False
+    encoder_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -166,6 +167,7 @@ def load_config(path: str | Path) -> WorkbenchConfig:
         connect_timeout_seconds=float(remote_raw.get("connect_timeout_seconds", 5)),
         request_timeout_seconds=float(remote_raw.get("request_timeout_seconds", 60)),
         fallback_to_local=bool(remote_raw.get("fallback_to_local", False)),
+        encoder_ids=tuple(str(item) for item in (remote_raw.get("encoder_ids") or ())),
     )
     if not (1 <= remote_encoder.port <= 65535):
         raise ValueError("remote_encoder.port 必须在 1 到 65535 之间")

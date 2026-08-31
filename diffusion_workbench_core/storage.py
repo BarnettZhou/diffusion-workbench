@@ -120,6 +120,8 @@ class JobStore:
                 "ref_boost": "REAL",
                 # 双图编辑的第二张输入图；仅 edit-krea2 任务非空。
                 "secondary_input_image": "TEXT",
+                "text_encoder_source": "TEXT NOT NULL DEFAULT 'local'",
+                "remote_text_encoder_id": "TEXT",
             }
             for name, declaration in migrations.items():
                 if name not in columns:
@@ -293,6 +295,8 @@ class JobStore:
                     grounding_px_value,
                     ref_boost_value,
                     reference_inputs_value,
+                    settings.text_encoder_source,
+                    settings.remote_text_encoder_id,
                 )
                 connection.execute(
                     """
@@ -300,8 +304,9 @@ class JobStore:
                         id, batch_id, status, submitted_at, output_path, upscaled_output_path, output_date,
                         daily_index, mode, prompt, negative_prompt, model, vae, text_encoder, sampler,
                         scheduler, width, height, steps, seed, cfg, model_loader, upscale_json,
-                        job_kind, input_image, secondary_input_image, grounding_px, ref_boost, reference_inputs
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        job_kind, input_image, secondary_input_image, grounding_px, ref_boost, reference_inputs,
+                        text_encoder_source, remote_text_encoder_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     values,
                 )
@@ -587,6 +592,8 @@ class JobStore:
             model_path=Path(row["model"]),
             vae_path=Path(row["vae"]) if row["vae"] else None,
             text_encoder_path=(Path(row["text_encoder"]) if row["text_encoder"] else None),
+            text_encoder_source=row["text_encoder_source"] if "text_encoder_source" in row.keys() else "local",
+            remote_text_encoder_id=row["remote_text_encoder_id"] if "remote_text_encoder_id" in row.keys() else None,
             sampler=row["sampler"],
             scheduler=row["scheduler"],
             width=row["width"],

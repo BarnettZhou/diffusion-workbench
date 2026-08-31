@@ -311,8 +311,14 @@ class GenerationSettings:
     # reference_image_tokens 为空时按全部 "normal" 处理。
     reference_images: tuple[Path, ...] = ()
     reference_image_tokens: tuple[str, ...] = ()
+    text_encoder_source: str = "local"
+    remote_text_encoder_id: str | None = None
 
     def validate(self) -> None:
+        if self.text_encoder_source not in {"local", "remote"}:
+            raise ValueError("text_encoder_source 必须是 local 或 remote")
+        if self.text_encoder_source == "remote" and not self.remote_text_encoder_id:
+            raise ValueError("远端 text encoder 必须提供 remote_text_encoder_id")
         if not self.prompt.strip():
             raise ValueError("prompt 不能为空")
         if self.model_loader == ModelLoader.COMPONENTS:
@@ -403,6 +409,8 @@ class JobRecord:
     # Krea2 参考图重排专用字段；非 krea2-rebalance 模式为空 tuple。
     reference_image_paths: tuple[Path, ...] = ()
     reference_image_tokens: tuple[str, ...] = ()
+    text_encoder_source: str = "local"
+    remote_text_encoder_id: str | None = None
 
 
 @dataclass(frozen=True)
