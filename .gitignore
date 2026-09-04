@@ -54,3 +54,6 @@ archive/
 # Local subprojects (not part of the core product)
 comfyui-remote-text-encoder/
 rfcs/
+
+# Demo scripts (local-only research runners)
+demo/
