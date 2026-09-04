@@ -50,3 +50,7 @@ archive/
 .env
 .env.local
 *.log
+
+# Local subprojects (not part of the core product)
+comfyui-remote-text-encoder/
+rfcs/
