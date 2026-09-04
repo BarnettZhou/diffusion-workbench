@@ -35,7 +35,7 @@ vite preview 的 `preview.proxy` 当前版本不会转发 `/api`，不要用它�
 - 无单任务取消：`POST /api/v1/control/stop` 是全局停止（清空整个队列并终止当前任务）。
 - 资源用 index 引用；目录内容变化后 index 会重新排序，不是永久 ID。
 - WebSocket 事件不持久化、不重放；断线后通过 `GET /api/v1/jobs/{id}` 恢复状态。
-- 客户端不能提交任何服务器路径；模型/VAE/text encoder 按 index 引用服务端配置的
+- 客户端不能提交任何服务器路径；模型/VAE/text encoder/LoRA 按 index 引用服务端配置的
   资源列表（图片模式的 text encoder 为目录/文件列表，可挑选），clip type 由配置固定。
 
 ## API 概览
@@ -47,9 +47,9 @@ vite preview 的 `preview.proxy` 当前版本不会转发 `/api`，不要用它�
 | `GET` | `/api/v1/sampling-options` | 全部可用采样器/调度器及默认值 |
 | `GET` | `/api/v1/upscale-options` | 图片放大方法/插值/采样选项及默认值 |
 | `GET` | `/api/v1/upscale-models` | 放大模型列表（不含路径） |
-| `GET` | `/api/v1/resources/{mode}/{kind}` | 模型或 VAE 列表 |
+| `GET` | `/api/v1/resources/{mode}/{kind}` | 模型/VAE/text encoder/LoRA 列表（kind ∈ diffusion/vae/text_encoder/loras） |
 | `PUT` | `/api/v1/resources/{mode}/{kind}/{index}/alias` | 设置资源别名 |
-| `POST` | `/api/v1/jobs` | 提交一张或一批任务（202） |
+| `POST` | `/api/v1/jobs` | 提交一张或一批任务（202；krea2 模式可带 `loras`，按 index 引用、最多 3 个） |
 | `GET` | `/api/v1/jobs` | 历史任务分页 |
 | `GET` | `/api/v1/jobs/{job_id}` | 读取单个任务持久化状态 |
 | `POST` | `/api/v1/control/stop` | 全局停止并清空队列 |
@@ -75,6 +75,7 @@ vite preview 的 `preview.proxy` 当前版本不会转发 `/api`，不要用它�
 | `PUT` | `/api/v1/album/dirs/{dir_id}` | 相册目录改名 |
 | `DELETE` | `/api/v1/album/dirs/{dir_id}` | 移除相册目录（不动磁盘文件） |
 | `GET` | `/api/v1/album/image/{path}` | 按相对路径读取图片 |
+| `GET` | `/api/v1/album/image/{path}/thumbnail` | 图片缩略图(按面积等比缩放到总像素 ≤ 160_000,JPEG,首访懒生成,网格用) |
 | `DELETE` | `/api/v1/album/image/{path}` | 从本机删除该图片 |
 | `POST` | `/api/v1/album/batch-delete` | 批量删除图片/视频（单个失败不影响其余） |
 | `GET` | `/api/v1/album/image/{path}/metadata` | 按相对路径读取 PNG 元数据（mp4 返回 404） |

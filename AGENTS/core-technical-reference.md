@@ -241,6 +241,7 @@ Mode.SDXL        # "sdxl"
 
 ResourceKind.DIFFUSION  # "diffusion"
 ResourceKind.VAE        # "vae"
+ResourceKind.LORA       # "loras"（仅 krea2 模式使用，可选）
 ```
 
 视频类型由 `VideoModel` 表示，当前支持 `VideoModel.WAN22_TI2V_5B`（值为
@@ -329,10 +330,27 @@ settings = GenerationSettings(
 - model 必须来自该 mode 配置的 diffusion 目录或文件；
 - `components` loader 的 text encoder 和 VAE 必须来自该 mode 配置的目录/文件列表
   （text encoder 按 `text_encoder` 资源列表校验成员资格），clip type 固定为配置值；
-- `checkpoint` loader 不接受外置 VAE、text encoder 或 clip type。
+- `checkpoint` loader 不接受外置 VAE、text encoder 或 clip type；
+- `loras` 非空时每个 LoRA 必须来自 `resources.krea2.loras` 配置目录/文件列表
+  （按 `loras` 资源列表校验成员资格）且文件存在。
 
 调用端不得接受客户端传来的任意绝对路径后自行构造 `ResourceItem`。必须从
 `list_resources()` 返回值中选择，避免越权读取服务器文件。
+
+### 5.3.0 krea2 可选 LoRA
+
+`Mode.KREA2` 支持可选 LoRA 列表（`GenerationSettings.loras`，`LoraSpec(path, strength)`）：
+仅 krea2 模式可用、最多 `KREA2_MAX_LORAS`（3）个，`strength` 为 0 到
+`KREA2_LORA_MAX_STRENGTH`（2.0）的有限数值，缺省 1.0；其他 mode 提交非空 `loras`
+会被 `validate()` 拒绝。候选文件来自 `resources.krea2.loras` 配置（目录/文件列表，
+与 diffusion/vae 同规则扫描，按 index 选择）。
+
+Worker 端在 `_ensure_model` 之后用 ComfyUI 原生 `LoraLoaderModelOnly` 把 LoRA 逐个
+链式 patch 到**本次采样使用的模型副本**上，不污染缓存的基础模型；释放时随 `release()`
+全量卸载，切换基础模型时随 `_unload_component()` 的 `unload_model_and_clones`
+（按 clone_base_uuid 匹配克隆）一并卸载，无独立 LoRA 状态。SQLite 任务行以
+`loras_json` 列持久化（`[{"path","strength"}]`），PNG 元数据在 `resources.loras`
+下记录每个 LoRA 的指纹与 strength。
 
 ### 5.3.1 Krea2 图像编辑模式（`Mode.KREA2_EDIT`）
 
@@ -518,7 +536,9 @@ Worker 是长生命周期子进程：
 
 - 第一次任务惰性启动；
 - 同路径 diffusion/text encoder/VAE 或 SDXL checkpoint 复用已加载 Python 对象；
-- 同 mode 切换 diffusion 时释放 GPU 已加载模型，再载入新 checkpoint；
+- 同 mode 切换单个组件（diffusion/text encoder/VAE/checkpoint）时只定向卸载被替换的
+  组件（`unload_model_and_clones`，按 clone_base_uuid 连同其 LoRA 克隆），其余组件
+  保持显存驻留，不再全量 `unload_all_models()`；
 - 跨 mode 时调用完整 `release()`；
 - 每个任务结束（无论成败）执行与 ComfyUI `execution.py` 对齐的全局收尾
   （`reset_cast_buffers()` + `cleanup_prefetch_queues()` + vbar 水位重置）；

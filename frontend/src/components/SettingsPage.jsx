@@ -19,7 +19,7 @@ const SETTINGS_TABS = [
   { key: "prompts", label: "提示词" },
 ];
 
-export default function SettingsPage({ settings, modes, onUpdate, onResourcesChanged }) {
+export default function SettingsPage({ settings, modes, onUpdate, onResourcesChanged, privacyMode = false }) {
   const [active, setActive] = useState("general");
   // 子页首次激活才挂载,之后保持挂载:避免打开设置页时全部面板并发拉取,
   // 同时保住已访问子页未保存的表单内容
@@ -52,7 +52,11 @@ export default function SettingsPage({ settings, modes, onUpdate, onResourcesCha
         )}
         {mounted.includes("models") && (
           <div className={panelClass("models")}>
-            <ModelSettings modes={modes} onResourcesChanged={onResourcesChanged} />
+            <ModelSettings
+              modes={modes}
+              onResourcesChanged={onResourcesChanged}
+              privacyMode={privacyMode}
+            />
           </div>
         )}
         {mounted.includes("video") && (
@@ -62,7 +66,7 @@ export default function SettingsPage({ settings, modes, onUpdate, onResourcesCha
         )}
         {mounted.includes("videoModels") && (
           <div className={panelClass("videoModels")}>
-            <VideoModelSettings />
+            <VideoModelSettings privacyMode={privacyMode} />
           </div>
         )}
         {mounted.includes("llm") && (

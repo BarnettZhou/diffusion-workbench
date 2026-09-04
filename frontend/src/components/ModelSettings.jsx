@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api/client";
 import Modal from "./Modal";
+import { COVER_SPACER } from "./modelCover";
 
 const MODE_LABELS = {
   zit: "Z-Image-Turbo",
@@ -30,7 +31,7 @@ function formatSize(bytes) {
   return `${(bytes / 1024 ** 2).toFixed(1)} MiB`;
 }
 
-export default function ModelSettings({ modes, onResourcesChanged }) {
+export default function ModelSettings({ modes, onResourcesChanged, privacyMode = false }) {
   const [mode, setMode] = useState("zit");
   const [models, setModels] = useState([]);
   const [filter, setFilter] = useState("");
@@ -113,10 +114,18 @@ export default function ModelSettings({ modes, onResourcesChanged }) {
             onKeyDown={(e) => e.key === "Enter" && setEditing(model)}
           >
             <div className="model-cover">
-              {model.has_cover ? (
+              {privacyMode ? (
+                <div className="model-cover-privacy" aria-label="隐私模式">
+                  <img className="model-cover-spacer" src={COVER_SPACER} alt="" />
+                  <span>隐私模式</span>
+                </div>
+              ) : model.has_cover ? (
                 <img src={model.cover_url} alt={model.name} loading="lazy" />
               ) : (
-                <div className="model-cover-empty">暂无封面</div>
+                <div className="model-cover-empty">
+                  <img className="model-cover-spacer" src={COVER_SPACER} alt="" />
+                  <span>暂无封面</span>
+                </div>
               )}
             </div>
             <div className="model-info">
@@ -219,7 +228,10 @@ function ModelEditor({ model, onClose, onSaved }) {
           {coverUrl ? (
             <img src={coverUrl} alt={model.name} />
           ) : (
-            <div className="model-cover-empty">暂无封面<br />点击上传</div>
+            <div className="model-cover-empty">
+              <img className="model-cover-spacer" src={COVER_SPACER} alt="" />
+              <span>暂无封面<br />点击上传</span>
+            </div>
           )}
           <input
             ref={fileInputRef}

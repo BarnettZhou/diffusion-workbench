@@ -144,6 +144,18 @@ class WorkbenchCore:
                 raise ValueError(f"VAE 不属于 {settings.mode.value} 配置的 vae 目录")
         elif settings.vae is not None or settings.text_encoder is not None:
             raise ValueError(f"{settings.mode.value} checkpoint 已内嵌 VAE 和文本编码器")
+        if settings.loras:
+            lora_paths = {
+                item.path.resolve()
+                for item in self.catalog.list(lookup_mode, ResourceKind.LORA)
+            }
+            for spec in settings.loras:
+                if spec.path.resolve() not in lora_paths:
+                    raise ValueError(
+                        f"LoRA 不属于 {settings.mode.value} 配置的 loras 目录或文件路径"
+                    )
+                if not spec.path.is_file():
+                    raise FileNotFoundError(f"找不到 LoRA: {spec.path}")
         if settings.upscale.enabled and settings.upscale.method == UpscaleMethod.UPSCALE_MODEL:
             upscale_model_paths = {
                 item.path.resolve() for item in self.catalog.list_upscale_models()

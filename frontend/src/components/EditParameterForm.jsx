@@ -6,6 +6,7 @@ import TextEncoderSelector from "./TextEncoderSelector";
 import UpscaleCard, { DEFAULT_UPSCALE, validateUpscaleValue, buildUpscalePayload } from "./UpscaleCard";
 import { useMessage } from "./Message";
 import PromptPresetPicker from "./PromptPresetPicker";
+import { COVER_SPACER } from "./modelCover";
 
 // normalizeUploadFile 已移至 EditImageField,这里再导出保持原有 import 路径不变
 export { normalizeUploadFile } from "./EditImageField";
@@ -450,7 +451,10 @@ export default function EditParameterForm({
                     {cover ? (
                       <img src={cover} alt={item.name} loading="lazy" />
                     ) : (
-                      <div className="model-cover-empty">暂无封面</div>
+                      <div className="model-cover-empty">
+                        <img className="model-cover-spacer" src={COVER_SPACER} alt="" />
+                        <span>暂无封面</span>
+                      </div>
                     )}
                   </div>
                   <div className="model-info">

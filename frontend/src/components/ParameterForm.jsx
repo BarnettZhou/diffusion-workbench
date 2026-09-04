@@ -5,6 +5,8 @@ import PromptPresetPicker from "./PromptPresetPicker";
 import UpscaleCard, { DEFAULT_UPSCALE, validateUpscaleValue, buildUpscalePayload } from "./UpscaleCard";
 import SizeInputCard from "./SizeInputCard";
 import TextEncoderSelector from "./TextEncoderSelector";
+import LoraCard from "./LoraCard";
+import { COVER_SPACER } from "./modelCover";
 
 // 采样器/调度器选项从 /api/v1/sampling-options 拉取,接口不可用时用兜底列表
 const FALLBACK_SAMPLERS = ["euler", "dpmpp_2m_sde"];
@@ -15,7 +17,7 @@ const LIMITS = {
   size: { min: 256, max: 4096, multiple: 16 },
 };
 
-export default function ParameterForm({ mode, onModeChange, resources, sizePresets, ratioPresets = [], promptPresets, prefill, samplingDefaults, llmSettings, onSelectLlmModel, onSubmit, remoteEncoderIds = [] }) {
+export default function ParameterForm({ mode, onModeChange, resources, sizePresets, ratioPresets = [], promptPresets, prefill, samplingDefaults, llmSettings, onSelectLlmModel, onSubmit, remoteEncoderIds = [], privacyMode = false }) {
   // 模型/VAE 选择按 mode 分开保存,切换 tab 恢复各 mode 上次选中项
   const [selections, setSelections] = useState({});
   const [prompt, setPrompt] = useState("");
@@ -38,6 +40,9 @@ export default function ParameterForm({ mode, onModeChange, resources, sizePrese
   // 采样器/调度器选项是否已拉取完成(首次应用模式默认参数的前置条件)
   const [optionsReady, setOptionsReady] = useState(false);
   const [upscale, setUpscale] = useState(DEFAULT_UPSCALE);
+  // krea2 模式可选 LoRA:默认关闭;loras 每项为 {index, strength 字符串}
+  const [loraEnabled, setLoraEnabled] = useState(false);
+  const [loras, setLoras] = useState([]);
   const [error, setError] = useState(null);
   // 模型封面选择器:label 右侧按钮展开/收起,封面视图 4 列
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
@@ -54,7 +59,9 @@ export default function ParameterForm({ mode, onModeChange, resources, sizePrese
   const models = resources?.[mode]?.models ?? [];
   const vaes = resources?.[mode]?.vaes ?? [];
   const textEncoders = resources?.[mode]?.textEncoders ?? [];
-  // 模型封面选择器排序:先按别名,再按模型文件名;无别名的模型按文件名参与排序
+  const loraOptions = resources?.[mode]?.loras ?? [];
+  // 模型下拉(#model-select)与封面选择器共用的排序:先按别名(重命名后的名称),
+  // 再按模型文件名;无别名的模型按文件名参与排序
   const pickerModels = useMemo(() => {
     const compare = (a, b) => {
       const key = (item) => item.alias ?? item.name;
@@ -258,6 +265,15 @@ export default function ParameterForm({ mode, onModeChange, resources, sizePrese
     if (!Number.isFinite(Number(cfg)) || Number(cfg) <= 0) return "CFG 必须是大于 0 的数值";
     const seedNum = Number(seed);
     if (!Number.isInteger(seedNum) || seedNum < -1) return "seed 必须是 -1(随机)或非负整数";
+    if (mode === "krea2" && loraEnabled) {
+      for (const [slot, item] of loras.entries()) {
+        if (item.index === null) return `请选择 LoRA ${slot + 1} 的模型`;
+        const strength = Number(item.strength);
+        if (!Number.isFinite(strength) || strength < 0 || strength > 2) {
+          return `LoRA ${slot + 1} 强度必须是 0 到 2 之间的数值`;
+        }
+      }
+    }
     return validateUpscaleValue(upscale);
   }
 
@@ -284,6 +300,10 @@ export default function ParameterForm({ mode, onModeChange, resources, sizePrese
         scheduler,
         text_encoder_source: textEncoderSource,
         remote_text_encoder_id: textEncoderSource === "remote" ? remoteTextEncoderId : undefined,
+        loras:
+          mode === "krea2" && loraEnabled && loras.length
+            ? loras.map((item) => ({ index: item.index, strength: Number(item.strength) }))
+            : undefined,
         upscale: buildUpscalePayload(upscale),
       });
     } catch (err) {
@@ -435,7 +455,7 @@ export default function ParameterForm({ mode, onModeChange, resources, sizePrese
           disabled={!models.length}
           onChange={(e) => setModelIndex(Number(e.target.value))}
         >
-          {models.map((item) => (
+          {pickerModels.map((item) => (
             <option key={item.index} value={item.index}>
               {item.display_name}
             </option>
@@ -457,10 +477,18 @@ export default function ParameterForm({ mode, onModeChange, resources, sizePrese
                 onClick={() => setModelIndex(item.index)}
               >
                 <div className="model-cover">
-                  {cover ? (
+                  {privacyMode ? (
+                    <div className="model-cover-privacy" aria-label="隐私模式">
+                      <img className="model-cover-spacer" src={COVER_SPACER} alt="" />
+                      <span>隐私模式</span>
+                    </div>
+                  ) : cover ? (
                     <img src={cover} alt={item.name} loading="lazy" />
                   ) : (
-                    <div className="model-cover-empty">暂无封面</div>
+                    <div className="model-cover-empty">
+                      <img className="model-cover-spacer" src={COVER_SPACER} alt="" />
+                      <span>暂无封面</span>
+                    </div>
                   )}
                 </div>
                 <div className="model-info">
@@ -501,6 +529,16 @@ export default function ParameterForm({ mode, onModeChange, resources, sizePrese
         ratioPresets={ratioPresets ?? []}
         limits={LIMITS.size}
       />
+
+      {mode === "krea2" && (
+        <LoraCard
+          enabled={loraEnabled}
+          onEnabledChange={setLoraEnabled}
+          loras={loras}
+          onChange={setLoras}
+          options={loraOptions}
+        />
+      )}
 
       <div className="row" id="steps-count-row">
         <div className="field" id="field-steps">

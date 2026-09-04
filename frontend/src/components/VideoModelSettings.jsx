@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api/client";
 import Modal from "./Modal";
+import { COVER_SPACER } from "./modelCover";
 
 // 视频模型分类显示名(与 App 顶部视频生成 tab 同款映射)
 const VIDEO_MODEL_LABELS = {
@@ -20,7 +21,7 @@ function formatSize(bytes) {
 
 // 视频模型设置:结构与 ModelSettings 一致,分类 tab 从 /api/v1/video/models 动态渲染;
 // 后端不支持视频模型别名,编辑弹窗只有封面/备注/量化。
-export default function VideoModelSettings() {
+export default function VideoModelSettings({ privacyMode = false }) {
   const [videoModels, setVideoModels] = useState([]);
   const [videoModelInfo, setVideoModelInfo] = useState({});
   const [videoModel, setVideoModel] = useState(null);
@@ -113,10 +114,18 @@ export default function VideoModelSettings() {
             onKeyDown={(e) => e.key === "Enter" && setEditing(model)}
           >
             <div className="model-cover">
-              {model.has_cover ? (
+              {privacyMode ? (
+                <div className="model-cover-privacy" aria-label="隐私模式">
+                  <img className="model-cover-spacer" src={COVER_SPACER} alt="" />
+                  <span>隐私模式</span>
+                </div>
+              ) : model.has_cover ? (
                 <img src={model.cover_url} alt={model.name} loading="lazy" />
               ) : (
-                <div className="model-cover-empty">暂无封面</div>
+                <div className="model-cover-empty">
+                  <img className="model-cover-spacer" src={COVER_SPACER} alt="" />
+                  <span>暂无封面</span>
+                </div>
               )}
             </div>
             <div className="model-info">
@@ -213,7 +222,10 @@ function VideoModelEditor({ videoModel, model, onClose, onSaved }) {
           {coverUrl ? (
             <img src={coverUrl} alt={model.name} />
           ) : (
-            <div className="model-cover-empty">暂无封面<br />点击上传</div>
+            <div className="model-cover-empty">
+              <img className="model-cover-spacer" src={COVER_SPACER} alt="" />
+              <span>暂无封面<br />点击上传</span>
+            </div>
           )}
           <input
             ref={fileInputRef}

@@ -36,6 +36,7 @@ export default function Lightbox({
   onSendToVideo = null,
   onSendToEdit = null,
   onSendToCaption = null,
+  onDelete = null,
 }) {
   const [meta, setMeta] = useState(null);
   const [drawerOpen, setDrawerOpen] = useState(
@@ -110,11 +111,13 @@ export default function Lightbox({
     );
   }
 
+  // 关闭 lightbox 的唯一显式路径:左上角 ×、抽屉内的 ×、Esc 键。
+  // 不再支持点遮罩/点 body/点图片关闭(避免误触;在网格里点开看大图时尤其容易误点空白处)
+
   return (
     <div
       id="lightbox-overlay"
       className={drawerOpen ? "drawer-open" : undefined}
-      onClick={onClose}
     >
       {onPrev && (
         <button
@@ -165,7 +168,18 @@ export default function Lightbox({
           />
         )}
       </div>
+      {/* 左上角关闭按钮:不再支持点遮罩/点 body 关闭,这是唯一的显式关闭入口之一 */}
+      <button
+        id="lightbox-close-btn"
+        type="button"
+        aria-label="关闭大图"
+        title="关闭大图 (Esc)"
+        onClick={onClose}
+      >
+        ×
+      </button>
       {kind === "video" && (
+        // 视频时把循环播放挪到左下角,避免与左上角关闭按钮重叠
         <button
           id="lightbox-loop-btn"
           type="button"
@@ -210,6 +224,7 @@ export default function Lightbox({
           onSendToVideo={onSendToVideo}
           onSendToEdit={onSendToEdit}
           onSendToCaption={onSendToCaption}
+          onDelete={onDelete}
         />
       )}
     </div>
@@ -217,7 +232,7 @@ export default function Lightbox({
 }
 
 // 右侧信息抽屉:文件信息 + 生成参数 + 提示词(带复制),底部为操作工具栏
-function InfoDrawer({ view, meta, imageUrl, fileInfo, kind = "image", captureFrame = null, onClose, onSendToWorkbench, onSendToVideo, onSendToEdit, onSendToCaption }) {
+function InfoDrawer({ view, meta, imageUrl, fileInfo, kind = "image", captureFrame = null, onClose, onSendToWorkbench, onSendToVideo, onSendToEdit, onSendToCaption, onDelete = null }) {
   const message = useMessage();
   const [menuOpen, setMenuOpen] = useState(false);
   const [settingCover, setSettingCover] = useState(false);
@@ -512,6 +527,24 @@ function InfoDrawer({ view, meta, imageUrl, fileInfo, kind = "image", captureFra
                   }}
                 >
                   {sendingToCaption ? "发送中……" : "发送到图片反推"}
+                </button>
+              )}
+              {/* 父级未注入 onDelete 时(ResultGallery 的 jobs 输出图)不显示,
+                  相册注入后会在末尾追加删除项,与发送类操作隔开 */}
+              {onDelete && <hr />}
+              {onDelete && (
+                <button
+                  id="drawer-delete-image"
+                  type="button"
+                  role="menuitem"
+                  className="danger-item"
+                  title={`删除当前${kind === "video" ? "视频" : "图片"},将从本机移除文件`}
+                  onClick={() => {
+                    setMenuOpen(false);
+                    onDelete();
+                  }}
+                >
+                  {kind === "video" ? "删除视频" : "删除图片"}
                 </button>
               )}
             </div>

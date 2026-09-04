@@ -44,6 +44,8 @@ try:
         H3_REF2VA_MAX_IMAGES,
         H3_REF2VA_MAX_TOTAL,
         H3_REF2VA_MAX_VIDEOS,
+        KREA2_LORA_MAX_STRENGTH,
+        KREA2_MAX_LORAS,
         REBALANCE_MAX_REFERENCE_IMAGES,
         REBALANCE_TOKEN_TIERS,
     )
@@ -71,6 +73,8 @@ except ImportError:  # The Comfy worker runs this module as a standalone script.
         H3_REF2VA_MAX_IMAGES,
         H3_REF2VA_MAX_TOTAL,
         H3_REF2VA_MAX_VIDEOS,
+        KREA2_LORA_MAX_STRENGTH,
+        KREA2_MAX_LORAS,
         REBALANCE_MAX_REFERENCE_IMAGES,
         REBALANCE_TOKEN_TIERS,
     )
@@ -622,6 +626,18 @@ class ComfyWorker:
         self.torch.cuda.reset_peak_memory_stats()
 
         sampling_model = self.model
+        if requested_mode == "krea2" and command.get("loras"):
+            # krea2 可选 LoRA：链式 patch 到本次采样使用的模型副本上，
+            # 不污染缓存的基础模型；释放时随 _unload_gpu 一并卸载。
+            loras_metadata = []
+            for spec in command["loras"]:
+                lora_path = Path(spec["path"]).resolve()
+                lora_name = self._register_exact("loras", lora_path)
+                sampling_model = self.nodes.LoraLoaderModelOnly().load_lora_model_only(
+                    sampling_model, lora_name, float(spec.get("strength", 1.0))
+                )[0]
+                loras_metadata.append(self.resource_fingerprints.describe(lora_path))
+            resource_metadata["loras"] = loras_metadata
         if is_edit:
             # 按参考 workflow：先对源图做 VAEEncode 拿到 source_latent，再走
             # Krea2EditModelPatch 注入 krea2_edit in-context forward。
@@ -1929,7 +1945,8 @@ class ComfyWorker:
     def _ensure_model(self, path: Path) -> bool:
         if self.model is not None and self.model_path == path:
             return False
-        self._unload_gpu()
+        # 只卸载被替换的 UNet（含其 LoRA 克隆），clip/vae 等其余组件保持显存驻留。
+        self._unload_component(self.model)
         self._clear_conditioning_caches()
         self.model = None
         self.model_path = None
@@ -1948,7 +1965,8 @@ class ComfyWorker:
             self.model = self.model_high
             self.model_path = high_path
             return False
-        self._unload_gpu()
+        self._unload_component(self.model_high)
+        self._unload_component(self.model_low)
         self._clear_conditioning_caches()
         self.model = self.model_high = self.model_low = None
         self.model_path = self.model_high_path = self.model_low_path = None
@@ -2104,7 +2122,10 @@ class ComfyWorker:
             and self.vae is not None
         ):
             return False
-        self._unload_gpu()
+        # checkpoint 三件套整体替换：逐个定向卸载，避免波及 upscale_model 等无关缓存。
+        self._unload_component(self.model)
+        self._unload_component(self.clip)
+        self._unload_component(self.vae)
         self._clear_conditioning_caches()
         self.model = self.clip = self.vae = None
         self.model_path = self.clip_path = self.vae_path = None
@@ -2143,7 +2164,7 @@ class ComfyWorker:
     def _ensure_clip_local(self, path: Path, clip_type: str) -> bool:
         if self.clip is not None and self.clip_path == path and self.clip_type == clip_type:
             return False
-        self._unload_gpu()
+        self._unload_component(self.clip)
         self.clip = None
         self.clip_path = None
         self.clip_type = None
@@ -2177,10 +2198,10 @@ class ComfyWorker:
     def _ensure_vae(self, path: Path) -> bool:
         if self.vae is not None and self.vae_path == path:
             return False
-        self._unload_gpu()
+        # 只卸载被替换的 VAE，不再连坐丢弃 upscale_model 缓存。
+        self._unload_component(self.vae)
         self._clear_conditioning_caches()
         self.vae = None
-        self.upscale_model = None
         self.vae_path = None
         gc.collect()
         name = self._register_exact("vae", path)
@@ -2243,7 +2264,7 @@ class ComfyWorker:
     def _ensure_audio_vae(self, path: Path) -> bool:
         if self.audio_vae is not None and self.audio_vae_path == path:
             return False
-        self._unload_gpu()
+        self._unload_component(self.audio_vae)
         self._clear_conditioning_caches()
         self.audio_vae = None
         self.audio_vae_path = None
@@ -2270,6 +2291,20 @@ class ComfyWorker:
     def _unload_gpu(self) -> None:
         self.model_management.unload_all_models()
         self.model_management.soft_empty_cache(force=True)
+
+    @staticmethod
+    def _component_patcher(component):
+        """CLIP/VAE 包装对象的权重挂在 .patcher 上；UNet 本身就是 ModelPatcher。"""
+        if component is None:
+            return None
+        return getattr(component, "patcher", component)
+
+    def _unload_component(self, component) -> None:
+        """换组件时只从显存卸载被替换者（含其 LoRA 克隆），保留其它可复用模型。"""
+        patcher = self._component_patcher(component)
+        if patcher is None:
+            return
+        self.model_management.unload_model_and_clones(patcher)
 
     def cancel(self) -> None:
         self.model_management.interrupt_current_processing()
@@ -2388,6 +2423,22 @@ class ComfyWorker:
                     )
         elif command.get("reference_image_paths"):
             raise ValueError("仅 krea2-rebalance 模式支持参考图")
+        loras = command.get("loras") or []
+        if loras:
+            if command.get("mode") != "krea2":
+                raise ValueError("仅 krea2 模式支持 LoRA")
+            if len(loras) > KREA2_MAX_LORAS:
+                raise ValueError(f"krea2 模式最多支持 {KREA2_MAX_LORAS} 个 LoRA")
+            for spec in loras:
+                if not isinstance(spec, dict) or not spec.get("path"):
+                    raise ValueError("LoRA 必须提供 path")
+                strength = spec.get("strength", 1.0)
+                if not isinstance(strength, (int, float)) or isinstance(strength, bool):
+                    raise ValueError("LoRA strength 必须是数值")
+                if not math.isfinite(float(strength)) or not 0 <= float(strength) <= KREA2_LORA_MAX_STRENGTH:
+                    raise ValueError(
+                        f"LoRA strength 必须是 0 到 {KREA2_LORA_MAX_STRENGTH} 的有限数值"
+                    )
 
     def _validate_runtime_sampling(self, command: dict) -> None:
         sampler = command["sampler"]

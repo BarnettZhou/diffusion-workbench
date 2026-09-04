@@ -221,6 +221,66 @@ class CreateJobsTests(ApiTestCase):
         response = self.client.post("/api/v1/jobs", json=self._payload(count=33))
         self.assertEqual(response.status_code, 422)
 
+    def test_krea2_lora_submit_maps_index_and_strength(self):
+        response = self.client.post(
+            "/api/v1/jobs",
+            json=self._payload(loras=[{"index": 1, "strength": 0.8}, {"index": 2}]),
+        )
+
+        self.assertEqual(response.status_code, 202)
+        job = response.json()["jobs"][0]
+        self.assertEqual(
+            job["loras"],
+            [
+                {"name": "style-a.safetensors", "strength": 0.8},
+                {"name": "style-b.safetensors", "strength": 1.0},
+            ],
+        )
+        settings, _ = self.core.submitted[-1]
+        self.assertEqual(len(settings.loras), 2)
+        self.assertEqual(settings.loras[0].path.name, "style-a.safetensors")
+        self.assertEqual(settings.loras[0].strength, 0.8)
+        self.assertEqual(settings.loras[1].path.name, "style-b.safetensors")
+        self.assertEqual(settings.loras[1].strength, 1.0)
+
+    def test_krea2_without_loras_keeps_empty_lora_list(self):
+        response = self.client.post("/api/v1/jobs", json=self._payload())
+
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(response.json()["jobs"][0]["loras"], [])
+        settings, _ = self.core.submitted[-1]
+        self.assertEqual(settings.loras, ())
+
+    def test_lora_rejected_for_non_krea2_mode(self):
+        payload = self._payload(mode="zit", loras=[{"index": 1}])
+        response = self.client.post("/api/v1/jobs", json=payload)
+
+        self.assertEqual(response.status_code, 422)
+        self.assertIn("krea2", response.json()["detail"])
+
+    def test_lora_above_limit_returns_422(self):
+        loras = [{"index": 1}] * 4
+        response = self.client.post("/api/v1/jobs", json=self._payload(loras=loras))
+        self.assertEqual(response.status_code, 422)
+
+    def test_unknown_lora_index_returns_404(self):
+        response = self.client.post(
+            "/api/v1/jobs", json=self._payload(loras=[{"index": 99}])
+        )
+        self.assertEqual(response.status_code, 404)
+
+    def test_lora_strength_out_of_range_returns_422(self):
+        response = self.client.post(
+            "/api/v1/jobs", json=self._payload(loras=[{"index": 1, "strength": 2.5}])
+        )
+        self.assertEqual(response.status_code, 422)
+
+    def test_lora_resources_endpoint(self):
+        response = self.client.get("/api/v1/resources/krea2/loras")
+        self.assertEqual(response.status_code, 200)
+        resources = response.json()["resources"]
+        self.assertEqual([item["name"] for item in resources], ["style-a.safetensors", "style-b.safetensors"])
+
 
 class GetJobTests(ApiTestCase):
     def test_get_job_returns_persisted_record(self):

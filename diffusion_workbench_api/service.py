@@ -15,7 +15,9 @@ from diffusion_workbench_core import (
     WorkbenchCore,
 )
 from diffusion_workbench_core.domain import (
+    KREA2_MAX_LORAS,
     MINIMAX_H3_MODELS,
+    LoraSpec,
     UpscaleMethod,
     UpscaleSettings,
     VideoGenerationSettings,
@@ -279,6 +281,19 @@ def submit_jobs(core: WorkbenchCore, payload: CreateJobsRequest):
             raise ValueError(f"{mode.value} checkpoint 已内嵌文本编码器")
         vae = None
         text_encoder = None
+    loras: tuple[LoraSpec, ...] = ()
+    if payload.loras:
+        if mode != Mode.KREA2:
+            raise ValueError("仅 krea2 模式支持 LoRA")
+        if len(payload.loras) > KREA2_MAX_LORAS:
+            raise ValueError(f"krea2 模式最多支持 {KREA2_MAX_LORAS} 个 LoRA")
+        loras = tuple(
+            LoraSpec(
+                path=resource_at(core, mode, ResourceKind.LORA, spec.index).path,
+                strength=spec.strength,
+            )
+            for spec in payload.loras
+        )
     settings = GenerationSettings(
         mode=mode,
         model=model,
@@ -298,6 +313,7 @@ def submit_jobs(core: WorkbenchCore, payload: CreateJobsRequest):
         upscale=upscale,
         text_encoder_source=payload.text_encoder_source,
         remote_text_encoder_id=payload.remote_text_encoder_id,
+        loras=loras,
     )
     return core.submit(settings, payload.count)
 

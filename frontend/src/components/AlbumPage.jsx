@@ -638,6 +638,9 @@ export default function AlbumPage({ onSendToWorkbench, onSendToVideo, onSendToEd
               ? () => handleSendToCaption(selected)
               : null
           }
+          // 抽屉菜单中的「删除图片/视频」复用现有的右键删除流程
+          // (setPendingDelete → 确认 modal → confirmDelete),保持单一删除路径
+          onDelete={() => setPendingDelete(selected)}
         />
       )}
       </main>
@@ -771,8 +774,9 @@ function AlbumItem({ image, dir, selected, onClick, onContextMenu }) {
             onError={() => setFailed(true)}
           />
         ) : (
+          // 图片用服务端缩略图(200×200 JPEG,首访懒生成),避免网格每页下几十张原图
           <img
-            src={api.albumImageUrl(image.id, dir)}
+            src={api.albumThumbnailUrl(image.id, dir)}
             alt={image.name}
             loading="lazy"
             onError={() => setFailed(true)}

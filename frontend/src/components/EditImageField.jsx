@@ -28,6 +28,31 @@ export async function normalizeUploadFile(file) {
   return new File([blob], `${base}.png`, { type: "image/png" });
 }
 
+// 水平翻转(镜像):不依赖后端 pipeline,在浏览器用 Canvas 生成新 File。
+// 输出格式沿用原文件类型(jpeg/png/webp),文件名追加 -flipped 后缀便于区分。
+// 失败时把原始错误抛给调用方,UI 已经在调用点 toast 出来。
+export async function flipImageHorizontal(file) {
+  const bitmap = await createImageBitmap(file);
+  try {
+    const canvas = document.createElement("canvas");
+    canvas.width = bitmap.width;
+    canvas.height = bitmap.height;
+    const ctx = canvas.getContext("2d");
+    // 镜像:先平移到右上角,再水平反转,再画图
+    ctx.translate(canvas.width, 0);
+    ctx.scale(-1, 1);
+    ctx.drawImage(bitmap, 0, 0);
+    const outType = UPLOAD_TYPES.includes(file.type) ? file.type : "image/png";
+    const blob = await new Promise((resolve) => canvas.toBlob(resolve, outType));
+    if (!blob) throw new Error("图片翻转失败");
+    const base = (file.name || "input").replace(/\.[^.]+$/, "") || "input";
+    const ext = outType.split("/")[1] || "png";
+    return new File([blob], `${base}-flipped.${ext}`, { type: outType });
+  } finally {
+    bitmap.close();
+  }
+}
+
 // 受控的图片输入组件:上传原图 + ImageEditModal 编辑(裁剪/遮罩/拓展) + 双栏展示。
 // value 形如 { original: {id, previewUrl, name, file?}, edited: {id, previewUrl, name} | null },
 // null 表示未上传。edited 存在时作为提交输入,否则用 original;编辑始终基于原图。
@@ -48,6 +73,8 @@ export default function EditImageField({
   const message = useMessage();
   const [originalUploading, setOriginalUploading] = useState(false);
   const [editedUploading, setEditedUploading] = useState(false);
+  // 水平翻转进度:与上传互斥,共享 onUploadingChange 通知外层
+  const [flipping, setFlipping] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const inputRef = useRef(null);
@@ -145,6 +172,42 @@ export default function EditImageField({
     onChange(null);
   }
 
+  // 水平翻转当前原图:浏览器侧 Canvas 镜像后,走受控上传通道写一个新 id。
+  // 翻转后清除已编辑图(原编辑基于旧原图,继续显示会产生误导),
+  // 新原图作为后续编辑 / 提交的新基线。
+  async function handleFlipHorizontal() {
+    if (!original?.file || flipping || originalUploading || editedUploading) return;
+    setFlipping(true);
+    onUploadingChange?.(true);
+    onError?.(null);
+    try {
+      const flippedFile = await flipImageHorizontal(original.file);
+      const previewUrl = URL.createObjectURL(flippedFile);
+      try {
+        const saved = await api.uploadEditInputImage(flippedFile);
+        revokePreview(original);
+        revokePreview(edited);
+        onChange({
+          original: {
+            id: saved.id,
+            previewUrl,
+            name: flippedFile.name,
+            file: flippedFile,
+          },
+          edited: null,
+        });
+      } catch (err) {
+        URL.revokeObjectURL(previewUrl);
+        throw err;
+      }
+    } catch (err) {
+      reportError(err);
+    } finally {
+      setFlipping(false);
+      onUploadingChange?.(false);
+    }
+  }
+
   // 打开编辑图片弹窗:锁定比例取自当前宽度/高度,自由裁剪时不校验;编辑源始终是原图
   function openEdit() {
     if (!defaultFreeCrop) {
@@ -172,6 +235,19 @@ export default function EditImageField({
               onClick={openEdit}
             >
               编辑图片
+            </button>
+          )}
+          {original && (
+            <button
+              id={`${idPrefix}-flip-btn`}
+              type="button"
+              className="prompt-assist-btn"
+              title="水平翻转当前原图(浏览器侧处理,会替换原图并清空已编辑结果)"
+              aria-label="水平翻转输入图片"
+              disabled={flipping || originalUploading || editedUploading}
+              onClick={handleFlipHorizontal}
+            >
+              {flipping ? "翻转中……" : "水平翻转"}
             </button>
           )}
           {original && (

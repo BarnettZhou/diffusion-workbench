@@ -497,6 +497,18 @@ SDXL 的 `vae_name` 为 `null`，因为 VAE 来自同一 checkpoint。
 相册网格的视频封面必须用本端点的静态图。仅支持 mp4，其他文件返回 404；
 服务器没有 ffmpeg 返回 503。
 
+### `GET /api/v1/album/image/{path}/thumbnail`
+
+图片缩略图：按面积等比缩放到总像素 ≤ 160_000 后转 JPEG（质量 85），查询参数
+`dir` 同上。无论源图比例,新图总像素都尽量接近 160_000（按 `scale = √(max_pixels
+/ 源像素)` 等比缩放;int 截断后实际像素略低):1:1 → 400×400 = 160_000,
+4:3 → 461×346 = 159_506,16:9 → 533×300 = 159_900。首次请求懒生成,后续按
+（目录, 路径, mtime, 大小, max_pixels）缓存到 cache 目录的
+`gallery_thumbnails/`。RGBA/带透明度的 P 模式合成到白底后转 RGB,避免
+JPEG 丢 alpha 后出现黑边。仅支持图片(PNG/JPEG/WebP),视频走 `/poster` 端点,
+其他格式返回 404;未配置 `thumbnail_dir` 返回 503。相册网格用本端点避免每页
+下发数十张原始 PNG,lightbox 仍用 `/album/image/{path}` 取原图。
+
 ### `DELETE /api/v1/album/image/{path}`
 
 从本机删除该图片，查询参数 `dir` 同上，返回 `{"deleted": "<path>"}`。路径校验与

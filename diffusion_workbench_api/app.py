@@ -57,6 +57,7 @@ def create_app(
             core.config.output_dir,
             AlbumDirStore(core.config.database.parent / "album_dirs.json"),
             poster_dir=core.config.database.parent / "album_posters",
+            thumbnail_dir=core.config.database.parent / "gallery_thumbnails",
         )
         app.state.settings_store = SettingsStore(
             core.config.database.parent / "settings.json"
@@ -91,6 +92,15 @@ def create_app(
     # 静态托管前端构建产物(单端口同源,无需反向代理)。API 路由先注册,
     # 优先于根挂载;dist 不存在时(如未构建)跳过。
     from fastapi.staticfiles import StaticFiles
+
+    # JS/CSS 产物文件名带内容 hash,可放心缓存;但 index.html 必须每次重新校验,
+    # 否则 iOS 等浏览器的启发式缓存会一直引用旧 hash 的资源,前端更新不生效。
+    @app.middleware("http")
+    async def _html_no_cache(request, call_next):
+        response = await call_next(request)
+        if response.headers.get("content-type", "").startswith("text/html"):
+            response.headers["Cache-Control"] = "no-cache"
+        return response
 
     dist_dir = Path(__file__).resolve().parent.parent / "frontend" / "dist"
     if dist_dir.is_dir():

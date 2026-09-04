@@ -370,6 +370,56 @@ class ComfyWorkerTests(unittest.TestCase):
                 self._rebalance_command(mode="krea2")
             )
 
+    def _krea2_lora_command(self, **overrides):
+        command = {
+            "mode": "krea2",
+            "width": 576,
+            "height": 576,
+            "steps": 8,
+            "cfg": 1,
+            "sampler": "euler",
+            "scheduler": "simple",
+            "loras": [{"path": "loras/style-a.safetensors", "strength": 0.8}],
+        }
+        command.update(overrides)
+        return command
+
+    def test_krea2_command_with_loras_is_valid(self):
+        ComfyWorker._validate(self._krea2_lora_command())
+        ComfyWorker._validate(
+            self._krea2_lora_command(
+                loras=[{"path": f"loras/style-{i}.safetensors"} for i in range(3)]
+            )
+        )
+
+    def test_krea2_command_rejects_loras_in_other_modes(self):
+        with self.assertRaisesRegex(ValueError, "krea2"):
+            ComfyWorker._validate(self._krea2_lora_command(mode="zit"))
+
+    def test_krea2_command_rejects_more_than_three_loras(self):
+        with self.assertRaisesRegex(ValueError, "最多支持 3 个 LoRA"):
+            ComfyWorker._validate(
+                self._krea2_lora_command(
+                    loras=[{"path": f"loras/style-{i}.safetensors"} for i in range(4)]
+                )
+            )
+
+    def test_krea2_command_validates_lora_shape_and_strength(self):
+        with self.assertRaisesRegex(ValueError, "path"):
+            ComfyWorker._validate(self._krea2_lora_command(loras=[{"strength": 1.0}]))
+        with self.assertRaisesRegex(ValueError, "strength"):
+            ComfyWorker._validate(
+                self._krea2_lora_command(
+                    loras=[{"path": "loras/a.safetensors", "strength": 2.5}]
+                )
+            )
+        with self.assertRaisesRegex(ValueError, "strength"):
+            ComfyWorker._validate(
+                self._krea2_lora_command(
+                    loras=[{"path": "loras/a.safetensors", "strength": float("nan")}]
+                )
+            )
+
     def _edit_command(self, **overrides):
         command = {
             "mode": "edit-krea2",
@@ -569,6 +619,99 @@ class ComfyWorkerTests(unittest.TestCase):
         worker.model_vbar = None
         worker._conditioning_cache = {}
         worker.release()  # 不抛异常即可
+
+    def test_ensure_vae_unloads_only_replaced_vae(self):
+        class FakeVae:
+            def __init__(self, patcher):
+                self.patcher = patcher
+
+        class FakeVaeLoader:
+            def load_vae(self, name):
+                return (FakeVae(f"new:{name}"),)
+
+        calls = []
+
+        class FakeMm:
+            def unload_model_and_clones(self, patcher):
+                calls.append(("unload_model_and_clones", patcher))
+
+            def unload_all_models(self):
+                calls.append(("unload_all_models",))
+
+        worker = object.__new__(ComfyWorker)
+        worker.vae = FakeVae("old-vae-patcher")
+        worker.vae_path = Path("old.safetensors")
+        worker.upscale_model = "upscale-keep"
+        worker.model_management = FakeMm()
+        worker.nodes = type("Nodes", (), {"VAELoader": FakeVaeLoader})
+        worker._register_exact = lambda _category, path: path.name
+        worker._conditioning_cache = {}
+
+        self.assertTrue(worker._ensure_vae(Path("new.safetensors")))
+
+        # 只定向卸载旧 VAE，不做全量 unload_all_models
+        self.assertEqual(calls, [("unload_model_and_clones", "old-vae-patcher")])
+        self.assertEqual(worker.vae.patcher, "new:new.safetensors")
+        self.assertEqual(worker.vae_path, Path("new.safetensors"))
+        # VAE 切换不再连坐丢弃 upscale_model 缓存
+        self.assertEqual(worker.upscale_model, "upscale-keep")
+
+        self.assertFalse(worker._ensure_vae(Path("new.safetensors")))
+        self.assertEqual(len(calls), 1)
+
+    def test_ensure_model_unloads_only_replaced_unet(self):
+        calls = []
+
+        class FakeMm:
+            def unload_model_and_clones(self, patcher):
+                calls.append(("unload_model_and_clones", patcher))
+
+            def unload_all_models(self):
+                calls.append(("unload_all_models",))
+
+        worker = object.__new__(ComfyWorker)
+        worker.model = "old-unet-patcher"
+        worker.model_path = Path("old.safetensors")
+        worker.model_management = FakeMm()
+        worker._load_diffusion_model = lambda path: f"new:{path.name}"
+        worker._conditioning_cache = {}
+
+        self.assertTrue(worker._ensure_model(Path("new.safetensors")))
+
+        self.assertEqual(calls, [("unload_model_and_clones", "old-unet-patcher")])
+        self.assertEqual(worker.model, "new:new.safetensors")
+        self.assertEqual(worker.model_path, Path("new.safetensors"))
+
+    def test_ensure_clip_unloads_only_replaced_clip(self):
+        class FakeClip:
+            patcher = "old-clip-patcher"
+
+        class FakeClipLoader:
+            def load_clip(self, name, clip_type):
+                return (FakeClip(),)
+
+        calls = []
+
+        class FakeMm:
+            def unload_model_and_clones(self, patcher):
+                calls.append(("unload_model_and_clones", patcher))
+
+            def unload_all_models(self):
+                calls.append(("unload_all_models",))
+
+        worker = object.__new__(ComfyWorker)
+        worker.clip = FakeClip()
+        worker.clip_path = Path("old.safetensors")
+        worker.clip_type = "wan"
+        worker.model_management = FakeMm()
+        worker.nodes = type("Nodes", (), {"CLIPLoader": FakeClipLoader})
+        worker._register_exact = lambda _category, path: path.name
+        worker._conditioning_cache = {}
+
+        self.assertTrue(worker._ensure_clip_local(Path("new.safetensors"), "wan"))
+
+        self.assertEqual(calls, [("unload_model_and_clones", "old-clip-patcher")])
+        self.assertEqual(worker.clip_path, Path("new.safetensors"))
 
 
 if __name__ == "__main__":

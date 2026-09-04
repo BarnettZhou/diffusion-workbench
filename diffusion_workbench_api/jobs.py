@@ -28,7 +28,7 @@ from .service import resource_at, submit_jobs
 router = APIRouter(prefix="/api/v1")
 
 ModeParam = Mode
-KindParam = Literal["diffusion", "vae", "text_encoder"]
+KindParam = Literal["diffusion", "vae", "text_encoder", "loras"]
 JobStatusParam = Literal["queued", "running", "completed", "failed", "cancelled"]
 
 

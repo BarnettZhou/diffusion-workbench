@@ -9,6 +9,7 @@ from pathlib import Path
 from .domain import (
     GenerationSettings,
     JobRecord,
+    LoraSpec,
     Mode,
     ModelLoader,
     ResourceKind,
@@ -122,6 +123,8 @@ class JobStore:
                 "secondary_input_image": "TEXT",
                 "text_encoder_source": "TEXT NOT NULL DEFAULT 'local'",
                 "remote_text_encoder_id": "TEXT",
+                # krea2 模式可选 LoRA 列表（JSON: [{"path": ..., "strength": ...}]）；非 krea2 任务为 NULL。
+                "loras_json": "TEXT",
             }
             for name, declaration in migrations.items():
                 if name not in columns:
@@ -261,6 +264,22 @@ class JobStore:
                     if settings.mode == Mode.KREA2_REBALANCE
                     else None
                 )
+                # 仅 krea2 模式写入 LoRA JSON；其他 mode 落 NULL。
+                loras_value = (
+                    json.dumps(
+                        [
+                            {
+                                "path": str(spec.path.resolve()),
+                                "strength": float(spec.strength),
+                            }
+                            for spec in settings.loras
+                        ],
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    )
+                    if settings.loras
+                    else None
+                )
                 values = (
                     job_id,
                     batch_id,
@@ -297,6 +316,7 @@ class JobStore:
                     reference_inputs_value,
                     settings.text_encoder_source,
                     settings.remote_text_encoder_id,
+                    loras_value,
                 )
                 connection.execute(
                     """
@@ -305,8 +325,8 @@ class JobStore:
                         daily_index, mode, prompt, negative_prompt, model, vae, text_encoder, sampler,
                         scheduler, width, height, steps, seed, cfg, model_loader, upscale_json,
                         job_kind, input_image, secondary_input_image, grounding_px, ref_boost, reference_inputs,
-                        text_encoder_source, remote_text_encoder_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        text_encoder_source, remote_text_encoder_id, loras_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     values,
                 )
@@ -619,6 +639,7 @@ class JobStore:
                 float(row["ref_boost"]) if row["ref_boost"] is not None else None
             ),
             **_parse_image_reference_inputs(row),
+            loras=_parse_loras(row),
         )
 
     @staticmethod
@@ -660,6 +681,29 @@ class JobStore:
             error=row["error"],
         )
 
+
+
+def _parse_loras(row: sqlite3.Row) -> tuple[LoraSpec, ...]:
+    """从 loras_json 还原 krea2 任务的 LoRA 列表；NULL 或解析失败回退为空 tuple。"""
+    if "loras_json" not in row.keys():
+        return ()
+    raw = row["loras_json"]
+    data = None
+    if raw:
+        try:
+            data = json.loads(raw)
+        except (TypeError, ValueError):
+            data = None
+    if not isinstance(data, list):
+        return ()
+    specs = []
+    for item in data:
+        if not isinstance(item, dict) or not item.get("path"):
+            continue
+        specs.append(
+            LoraSpec(path=Path(item["path"]), strength=float(item.get("strength", 1.0)))
+        )
+    return tuple(specs)
 
 
 def _rebalance_reference_json(settings: GenerationSettings) -> str | None:

@@ -29,6 +29,9 @@ resources:
     clip_type: krea2
     # Krea2 图像编辑专用 LoRA；提交 Mode.KREA2_EDIT 任务时必须配置且文件存在。
     edit_lora: D:\models\loras\krea2\krea2_identity_edit_v1_2.safetensors
+    # krea2 模式可选 LoRA 候选目录/文件列表；前端按 index 选择，最多 3 个。
+    loras:
+      - D:\models\loras
   zib:
     diffusion:
       - D:\models\diffusion_models\zib

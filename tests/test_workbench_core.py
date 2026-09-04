@@ -11,6 +11,7 @@ from diffusion_workbench_core.config import load_config
 from diffusion_workbench_core.domain import Mode, ResourceKind
 from diffusion_workbench_core.domain import (
     GenerationSettings,
+    LoraSpec,
     ResourceItem,
     UpscaleMethod,
     UpscaleSettings,
@@ -509,6 +510,101 @@ class JobStoreTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "输入图片"):
             settings.validate()
+
+    def test_krea2_jobs_persist_loras(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            store = JobStore(root / "jobs.sqlite3", root / "output")
+            settings = GenerationSettings(
+                mode=Mode.KREA2,
+                model=ResourceItem(1, root / "krea2.safetensors"),
+                vae=ResourceItem(1, root / "vae.safetensors"),
+                text_encoder=root / "te.safetensors",
+                clip_type="krea2",
+                prompt="p",
+                loras=(
+                    LoraSpec(path=root / "loras" / "style-a.safetensors", strength=0.8),
+                    LoraSpec(path=root / "loras" / "style-b.safetensors"),
+                ),
+            )
+
+            jobs = store.create_jobs(settings, 1)
+            persisted = store.get_job(jobs[0].id)
+
+            self.assertEqual(len(persisted.loras), 2)
+            self.assertEqual(
+                persisted.loras[0].path,
+                (root / "loras" / "style-a.safetensors").resolve(),
+            )
+            self.assertEqual(persisted.loras[0].strength, 0.8)
+            self.assertEqual(persisted.loras[1].strength, 1.0)
+
+    def test_krea2_jobs_without_loras_persist_null(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            store = JobStore(root / "jobs.sqlite3", root / "output")
+            settings = GenerationSettings(
+                mode=Mode.KREA2,
+                model=ResourceItem(1, root / "krea2.safetensors"),
+                vae=ResourceItem(1, root / "vae.safetensors"),
+                text_encoder=root / "te.safetensors",
+                clip_type="krea2",
+                prompt="p",
+            )
+
+            jobs = store.create_jobs(settings, 1)
+            persisted = store.get_job(jobs[0].id)
+
+            self.assertEqual(persisted.loras, ())
+
+    def _krea2_lora_settings(self, **overrides):
+        values = {
+            "mode": Mode.KREA2,
+            "model": ResourceItem(1, Path("m")),
+            "vae": ResourceItem(1, Path("v")),
+            "text_encoder": Path("t"),
+            "clip_type": "krea2",
+            "prompt": "p",
+        }
+        values.update(overrides)
+        return GenerationSettings(**values)
+
+    def test_krea2_lora_validate_rejects_other_modes(self):
+        settings = self._krea2_lora_settings(
+            mode=Mode.ZIT,
+            clip_type="stable_diffusion",
+            loras=(LoraSpec(path=Path("lora.safetensors")),),
+        )
+
+        with self.assertRaisesRegex(ValueError, "仅 krea2 模式支持 LoRA"):
+            settings.validate()
+
+    def test_krea2_lora_validate_rejects_more_than_three(self):
+        settings = self._krea2_lora_settings(
+            loras=tuple(LoraSpec(path=Path(f"lora-{i}.safetensors")) for i in range(4)),
+        )
+
+        with self.assertRaisesRegex(ValueError, "最多支持 3 个 LoRA"):
+            settings.validate()
+
+    def test_krea2_lora_validate_rejects_out_of_range_strength(self):
+        for strength in (-0.1, 2.1, float("nan"), float("inf")):
+            settings = self._krea2_lora_settings(
+                loras=(LoraSpec(path=Path("lora.safetensors"), strength=strength),),
+            )
+
+            with self.assertRaisesRegex(ValueError, "strength"):
+                settings.validate()
+
+    def test_krea2_lora_validate_accepts_up_to_three(self):
+        settings = self._krea2_lora_settings(
+            loras=tuple(
+                LoraSpec(path=Path(f"lora-{i}.safetensors"), strength=0.5)
+                for i in range(3)
+            ),
+        )
+
+        settings.validate()
 
     def test_edit_krea2_validate_rejects_latent_hires_upscale(self):
         # latent_hires 的二段采样与 in-context patch 冲突,编辑模式仍然拒绝

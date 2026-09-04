@@ -34,6 +34,7 @@ class FakeApiCore:
                     (root / "krea-te.safetensors",),
                     "krea2",
                     edit_lora=root / "krea2-edit-lora.safetensors",
+                    loras=(root / "loras",),
                 ),
                 Mode.ZIB: ModeResources(
                     (), (), (root / "zib-te.safetensors",), "stable_diffusion"
@@ -87,6 +88,10 @@ class FakeApiCore:
             (Mode.KREA2, ResourceKind.VAE): [ResourceItem(1, root / "krea-vae.safetensors")],
             (Mode.KREA2, ResourceKind.TEXT_ENCODER): [
                 ResourceItem(1, root / "krea-te.safetensors")
+            ],
+            (Mode.KREA2, ResourceKind.LORA): [
+                ResourceItem(1, root / "loras" / "style-a.safetensors"),
+                ResourceItem(2, root / "loras" / "style-b.safetensors"),
             ],
             (Mode.ZIB, ResourceKind.DIFFUSION): [
                 ResourceItem(1, root / "zib.safetensors")
@@ -180,7 +185,8 @@ class FakeApiCore:
         self.caption_calls: list[dict] = []
 
     def list_resources(self, mode, kind):
-        return self.items[(mode, kind)]
+        # 未注册的 (mode, kind) 组合返回空列表,与真实 Core 的 catalog 行为一致
+        return self.items.get((mode, kind), [])
 
     def list_upscale_models(self):
         return self.upscale_models
@@ -240,6 +246,7 @@ class FakeApiCore:
             reference_image_tokens=(
                 settings.reference_image_tokens if is_rebalance else ()
             ),
+            loras=settings.loras,
         )
 
     def submit(self, settings, count):

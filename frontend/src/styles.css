@@ -188,7 +188,7 @@ header span { color: var(--text-dim); font-size: 12px; }
   gap: 12px;
 }
 #models-filter-input {
-  width: 220px;
+  width: 160px;
   flex: none;
 }
 
@@ -521,6 +521,197 @@ button.warn:disabled { opacity: 0.4; cursor: not-allowed; }
 #release-resources-btn:hover:not(:disabled) { color: var(--text); border-color: var(--text-dim); }
 #release-resources-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
+/* ---------- 顶部：隐私模式开关 + 相册 tab 锁定 ---------- */
+/* 开关按钮:关闭时低对比,开启时用强调色高亮当前状态 */
+.privacy-mode-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  font-size: 12px;
+  color: var(--text-dim);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  user-select: none;
+}
+.privacy-mode-toggle:hover { color: var(--text); border-color: var(--text-dim); }
+.privacy-mode-toggle .privacy-mode-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-dim);
+  transition: background 0.15s, box-shadow 0.15s;
+}
+.privacy-mode-toggle.on {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.privacy-mode-toggle.on .privacy-mode-dot {
+  background: var(--accent);
+  box-shadow: 0 0 6px var(--accent);
+}
+
+/* 隐私模式开启时,相册 tab 视觉与行为都禁用;
+   选择器比 #app-tabs button.active 多一个 class,确保同时挂 active+locked 时锁定样式生效 */
+#app-tabs button.privacy-locked,
+#app-tabs button.privacy-locked.active,
+#app-tabs button.privacy-locked:hover,
+#app-tabs button.privacy-locked.active:hover {
+  color: var(--text-dim);
+  opacity: 0.45;
+  cursor: not-allowed;
+  border-bottom-color: transparent;
+}
+
+/* ---------- 移动端：汉堡按钮 + 抽屉(默认隐藏,仅窄屏展示) ---------- */
+#mobile-menu-toggle {
+  display: none; /* 桌面端彻底隐藏;<= 768px 时再显示 */
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 32px;
+  padding: 0;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  color: var(--text);
+  flex: none;
+}
+#mobile-menu-toggle:hover { border-color: var(--text-dim); }
+#mobile-menu-toggle.open { border-color: var(--accent); color: var(--accent); }
+.mobile-menu-bars {
+  display: inline-flex;
+  flex-direction: column;
+  justify-content: space-between;
+  width: 16px;
+  height: 11px;
+}
+.mobile-menu-bars > span {
+  display: block;
+  height: 2px;
+  background: currentColor;
+  border-radius: 1px;
+  transition: transform 0.18s, opacity 0.18s;
+}
+/* 开启时三线变 X:中线淡出,上下两线旋转收拢 */
+#mobile-menu-toggle.open .mobile-menu-bars > span:nth-child(1) {
+  transform: translateY(4.5px) rotate(45deg);
+}
+#mobile-menu-toggle.open .mobile-menu-bars > span:nth-child(2) {
+  opacity: 0;
+}
+#mobile-menu-toggle.open .mobile-menu-bars > span:nth-child(3) {
+  transform: translateY(-4.5px) rotate(-45deg);
+}
+
+/* 抽屉背景:固定全屏遮罩,默认透明不可见,开启时渐入 */
+#mobile-menu-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  z-index: 90;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.18s;
+}
+#mobile-menu-overlay.open {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* 抽屉本体:从左侧滑入,固定在 header 之下 */
+#mobile-menu-drawer {
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: min(280px, 80vw);
+  background: var(--panel);
+  border-right: 1px solid var(--border);
+  box-shadow: 8px 0 24px rgba(0, 0, 0, 0.45);
+  z-index: 95;
+  display: flex;
+  flex-direction: column;
+  transform: translateX(-100%);
+  transition: transform 0.22s ease-out;
+  /* 桌面端常驻隐藏(JS 一律不渲染可见态,但默认仍 off-screen) */
+  pointer-events: none;
+}
+#mobile-menu-drawer.open {
+  transform: translateX(0);
+  pointer-events: auto;
+}
+.mobile-menu-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-dim);
+}
+#mobile-menu-close {
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  font-size: 24px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 4px;
+}
+#mobile-menu-close:hover { color: var(--text); }
+
+#mobile-menu-tabs {
+  display: flex;
+  flex-direction: column;
+  padding: 8px 0;
+  overflow-y: auto;
+}
+#mobile-menu-tabs button {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  width: 100%;
+  padding: 12px 18px;
+  background: transparent;
+  border: none;
+  border-left: 3px solid transparent;
+  color: var(--text-dim);
+  font-size: 15px;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+  font-family: inherit;
+}
+#mobile-menu-tabs button:hover { color: var(--text); background: var(--panel-2); }
+#mobile-menu-tabs button.active {
+  color: var(--text);
+  border-left-color: var(--accent);
+  background: var(--panel-2);
+}
+/* 抽屉里也用同一套 .privacy-locked 视觉(相册在隐私模式时灰化、不可点) */
+#mobile-menu-tabs button.privacy-locked,
+#mobile-menu-tabs button.privacy-locked:hover,
+#mobile-menu-tabs button.privacy-locked.active,
+#mobile-menu-tabs button.privacy-locked.active:hover {
+  color: var(--text-dim);
+  opacity: 0.45;
+  cursor: not-allowed;
+  border-left-color: transparent;
+  background: transparent;
+}
+.mobile-menu-hint {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--text-dim);
+  opacity: 0.85;
+}
+
 /* ---------- 右侧：进度 + 队列 + 结果 ---------- */
 .progress-panel { display: flex; flex-direction: column; gap: 8px; }
 .progress-header {
@@ -624,6 +815,28 @@ button.warn:disabled { opacity: 0.4; cursor: not-allowed; }
   font-weight: 600;
   padding: 6px 14px;
   cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+/* tab 前置图标:SVG 自带白色 stroke,在 header 上看清晰;active/hover 提亮,
+   privacy-locked 灰化 */
+#app-tabs button .tab-icon,
+#mobile-menu-tabs button .tab-icon {
+  width: 16px;
+  height: 16px;
+  opacity: 0.75;
+  flex: none;
+}
+#app-tabs button.active .tab-icon,
+#app-tabs button:hover .tab-icon,
+#mobile-menu-tabs button.active .tab-icon,
+#mobile-menu-tabs button:hover .tab-icon {
+  opacity: 1;
+}
+#app-tabs button.privacy-locked .tab-icon,
+#mobile-menu-tabs button.privacy-locked .tab-icon {
+  opacity: 0.4;
 }
 #app-tabs button:hover { color: var(--text); }
 #app-tabs button.active {
@@ -641,6 +854,59 @@ button.warn:disabled { opacity: 0.4; cursor: not-allowed; }
   }
   #app-tabs::-webkit-scrollbar { display: none; }
   #app-tabs button { flex: none; white-space: nowrap; }
+}
+
+/* ---------- 响应式：<= 768px 切换到汉堡菜单 ---------- */
+/* 覆盖前面 900px 下的"横向滚动 tabs":768px 起直接收起,展示汉堡按钮 */
+@media (max-width: 768px) {
+  #app-tabs { display: none; }
+  #mobile-menu-toggle { display: inline-flex; }
+}
+
+/* 移动端:分段控件(mode-switch / size-mode-switch)不再被按钮撑爆父容器,
+   改为横向溢出滚动;按钮保持自然宽度不收缩,文本单行不折行。
+   父级 flex 容器加 min-width: 0 是允许子项收缩到内容以下的前提条件 */
+@media (max-width: 768px) {
+  #mode-bar,
+  #video-model-bar,
+  #edit-mode-bar {
+    min-width: 0;
+  }
+  .mode-switch,
+  .size-mode-switch {
+    display: flex;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    overflow-x: auto;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+  .mode-switch::-webkit-scrollbar,
+  .size-mode-switch::-webkit-scrollbar { display: none; }
+  .mode-switch button,
+  .size-mode-switch button {
+    flex: none;
+    white-space: nowrap;
+  }
+  /* 卡片头部的小开关(文本编码器/图片尺寸/LoRA)保持桌面端的自然宽度;
+     上面的 width: 100% 只针对顶部模式条,卡片内两个短按钮没有撑爆风险 */
+  .card-header .size-mode-switch { width: auto; }
+}
+
+/* 移动端:设置页"模式 tabs + 筛选输入"工具行改为纵向堆叠,两者各占一行;
+   筛选输入也撑满整行,方便触屏点击 */
+@media (max-width: 768px) {
+  #models-toolbar,
+  #video-models-toolbar {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+  #models-filter-input,
+  #video-models-filter-input {
+    width: 100%;
+  }
 }
 
 /* ---------- 批次画廊:主图 + 缩略图 ---------- */
@@ -730,7 +996,7 @@ button.warn:disabled { opacity: 0.4; cursor: not-allowed; }
 #lightbox-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.82);
+  background: #000;
   z-index: 100;
   display: flex;
 }
@@ -775,10 +1041,31 @@ button.warn:disabled { opacity: 0.4; cursor: not-allowed; }
 }
 #lightbox-info-btn:hover { border-color: var(--accent); }
 
-/* 视频循环播放开关(与 ⓘ 对称,放左上角,避开原生控制条) */
-#lightbox-loop-btn {
+/* 左上角关闭按钮:大图查看的唯一显式关闭入口之一;圆形 × 与 ⓘ 风格统一 */
+#lightbox-close-btn {
   position: absolute;
   top: 12px;
+  left: 12px;
+  z-index: 4;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: rgba(31, 41, 55, 0.85);
+  color: var(--text);
+  border: 1px solid var(--border);
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+#lightbox-close-btn:hover { border-color: var(--accent); }
+
+/* 视频循环播放开关:左上角已让位给关闭按钮,挪到左下角避开原生控制条 */
+#lightbox-loop-btn {
+  position: absolute;
+  bottom: 60px;
   left: 12px;
   z-index: 4;
   padding: 8px 14px;
@@ -926,6 +1213,12 @@ button.warn:disabled { opacity: 0.4; cursor: not-allowed; }
 }
 .drawer-dropup button:hover:not(:disabled) { background: var(--panel); }
 .drawer-dropup button:disabled { color: var(--text-dim); cursor: not-allowed; }
+.drawer-dropup button.danger-item { color: var(--danger); }
+.drawer-dropup hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 4px 0;
+}
 
 #album-page { padding: 0 20px 16px; }
 
@@ -1197,22 +1490,51 @@ button.warn:disabled { opacity: 0.4; cursor: not-allowed; }
 }
 .model-card:hover { border-color: var(--accent); }
 .model-cover {
-  aspect-ratio: 3 / 4;
+  position: relative;
   background: var(--panel);
+  overflow: hidden;
+}
+/* 封面高度只由文档流内替换元素(img)的内在比例驱动:WebKit(iPadOS 全系
+   浏览器内核)在 grid/flex 的内容尺寸计算阶段,会把非替换元素的百分比 padding /
+   aspect-ratio 高度算成 0(真机实测:封面自身 211px 正常,grid 行高却只按
+   文字行 28px 分配,卡片被压成横条)。图片内在比例是唯一全引擎可靠的高度来源;
+   aspect-ratio 仅用于统一裁成 3:4,即使不生效也只退化为原始比例,不会坍塌 */
+.model-cover img {
+  display: block;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 3 / 4;
+  object-fit: cover;
+}
+/* 无封面/隐私占位:内嵌 3:4 透明 SVG(modelCover.js 的 COVER_SPACER)撑高度,
+   文字用绝对定位叠在上面 */
+.model-cover-empty,
+.model-cover-privacy {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
-  overflow: hidden;
 }
-.model-cover img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  display: block;
+.model-cover-empty > span,
+.model-cover-privacy > span {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 .model-cover-empty {
   color: var(--text-dim);
   font-size: 13px;
+  text-align: center;
+  line-height: 1.8;
+}
+/* 隐私模式下的封面占位:沿用与「暂无封面」相同的布局但用强调色,
+   让用户在列表中一眼能识别"这里本应有封面,但被隐藏了" */
+.model-cover-privacy {
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 600;
   text-align: center;
   line-height: 1.8;
 }
@@ -1235,10 +1557,14 @@ button.warn:disabled { opacity: 0.4; cursor: not-allowed; }
 .model-alias { color: var(--accent); }
 .model-quant { text-transform: uppercase; }
 
-/* 生成表单内的模型封面选择器:可滚动,一行 4 张 */
+/* 生成表单内的模型封面选择器:可滚动,一行 4 张。
+   grid-auto-rows 显式锁定 max-content:iPadOS WebKit 对可滚动 grid 的 auto 行高
+   会误用 min-content(卡片被压成 ~28px 横条);封面高度另由文档流内 img 内在比例
+   驱动(见 .model-cover 注释),两者都是真机验证过的必要条件 */
 .model-picker {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
+  grid-auto-rows: minmax(max-content, max-content);
   gap: 10px;
   max-height: 340px;
   overflow-y: auto;
@@ -1331,7 +1657,9 @@ button.warn:disabled { opacity: 0.4; cursor: not-allowed; }
   border-radius: 8px;
   overflow: hidden;
   cursor: zoom-in;
+  position: relative;
 }
+/* 缩略图/视频首帧铺满 3:4 容器并居中裁剪 */
 .album-item img {
   display: block;
   width: 100%;
@@ -1521,6 +1849,12 @@ button.warn:disabled { opacity: 0.4; cursor: not-allowed; }
   #workbench-body {
     flex-direction: column;
   }
+  /* column 布局下 .controls 的 flex: 0 0 840px 会变成强制 840px 高度,
+     进而压缩 .form 内 .field (flex: 1 平分高度) 到几十像素,
+     导致 .model-picker/.model-cover 高度坍塌成"横向一条"。
+     改为按内容自然撑开,#app-main 的 overflow-y: auto 负责整页滚动 */
+  .controls { flex: 0 0 auto; }
+  .controls .field { flex: 0 0 auto; }
   .controls {
     flex: none;
     width: 100%;
@@ -1528,6 +1862,16 @@ button.warn:disabled { opacity: 0.4; cursor: not-allowed; }
   .results {
     width: 100%;
   }
+
+  /* iPad 模拟下 viewport 在 520~900px 区间时 .row 保持横向 flex,
+     6 个 field 挤一行会水平溢出,父级被收缩后 grid item 宽度变 0
+     → padding-top: 0 → cover 高度 0 → 整个卡片塌成"横向一条"。
+     临界点提前到 900px,让 row 在 iPad 上 column 堆叠,
+     field 用 width: 100% 撑满整行(input 才能撑满宽度) */
+  .row { flex-direction: column; gap: 12px; align-items: stretch; }
+  .row > .field { width: 100%; flex: 0 0 auto; }
+  .lora-row { flex-direction: column; align-items: stretch; }
+  .lora-row > .field { width: 100%; }
 
   /* 窄屏下信息抽屉改为右侧浮层,不再挤压图片区域 */
   #lightbox-drawer {
@@ -2012,13 +2356,8 @@ button.warn:disabled { opacity: 0.4; cursor: not-allowed; }
 }
 
 /* ---------- 相册:视频项 ---------- */
-.album-item { position: relative; }
-.album-item video {
-  display: block;
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
+/* 注:AlbumItem 当前用 <img> 加载 poster 服务端封面,不再用 <video>;
+   .album-item 已在前面定义 position: relative + aspect-ratio(3:4)。 */
 /* 「视频」角标,覆盖在首帧画面左上角 */
 .album-kind-badge {
   position: absolute;
@@ -2232,6 +2571,13 @@ button.warn:disabled { opacity: 0.4; cursor: not-allowed; }
   background: var(--accent);
   color: #111;
 }
+
+/* ---------- krea2 LoRA 卡片 ---------- */
+.lora-row { align-items: flex-end; }
+.lora-model-field { flex: 1; min-width: 0; }
+.lora-strength-field { width: 96px; flex: none; }
+.lora-remove-btn { flex: none; margin-bottom: 2px; }
+#lora-add-btn { align-self: flex-start; }
 
 /* ---------- 编辑输入图片:原图 / 已编辑 双栏 ---------- */
 .input-image-lanes {

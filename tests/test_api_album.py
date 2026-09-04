@@ -522,3 +522,136 @@ class AlbumPosterTests(AlbumTests):
             "/api/v1/album/image/2026-07-27/nope.mp4/poster"
         )
         self.assertEqual(response.status_code, 404)
+
+
+class AlbumThumbnailTests(AlbumTests):
+    """相册图片缩略图:首访懒生成,JPEG 200×200,按 (mtime, size) 缓存。"""
+
+    def _png_of_size(self, relpath: str, mtime_ns: int, size, color=(255, 0, 0)):
+        """生成已知尺寸的纯色图,方便校验缩放结果。不覆盖父类 _png 以免影响继承测试。"""
+        from PIL import Image
+
+        path = self.core.config.output_dir / relpath
+        path.parent.mkdir(parents=True, exist_ok=True)
+        Image.new("RGB", size, color).save(path)
+        os.utime(path, ns=(mtime_ns, mtime_ns))
+        return path
+
+    def test_thumbnail_returns_jpeg_within_size_budget(self):
+        # 800x600 源图,按面积等比缩放:scale = √(160000/480000) = 0.57735
+        # → 461×346 = 159_506 像素(int 截断后略低于 160_000)
+        self._png_of_size("2026-07-27/big.png", 1000, size=(800, 600))
+        response = self.client.get("/api/v1/album/image/2026-07-27/big.png/thumbnail")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers["content-type"], "image/jpeg")
+        self.assertTrue(response.content[:2] == b"\xff\xd8")
+
+        import io
+
+        from PIL import Image
+
+        with Image.open(io.BytesIO(response.content)) as thumb:
+            width, height = thumb.size
+        self.assertLessEqual(width * height, 160_000)
+        self.assertGreater(width * height, 159_000)
+        self.assertEqual((width, height), (461, 346))
+        self.assertAlmostEqual(width / height, 800 / 600, delta=0.01)
+
+    def test_thumbnail_square_source_hits_pixel_budget(self):
+        # 正方形源图 1024x1024:scale = √(160000/1048576) = 0.39062 → 400×400 = 160_000
+        self._png_of_size("2026-07-27/square.png", 1000, size=(1024, 1024))
+        response = self.client.get(
+            "/api/v1/album/image/2026-07-27/square.png/thumbnail"
+        )
+        self.assertEqual(response.status_code, 200)
+        import io
+
+        from PIL import Image
+
+        with Image.open(io.BytesIO(response.content)) as thumb:
+            width, height = thumb.size
+        self.assertEqual((width, height), (400, 400))
+        self.assertEqual(width * height, 160_000)
+        self.assertLessEqual(width * height, 160_000)
+
+    def test_thumbnail_landscape_16_9_fills_pixel_budget(self):
+        # 16:9 横图按面积缩放:scale = √(160000/2073600) = 0.27787
+        # → 533×300 = 159_900 像素
+        self._png_of_size("2026-07-27/wide.png", 1000, size=(1920, 1080))
+        response = self.client.get(
+            "/api/v1/album/image/2026-07-27/wide.png/thumbnail"
+        )
+        self.assertEqual(response.status_code, 200)
+        import io
+
+        from PIL import Image
+
+        with Image.open(io.BytesIO(response.content)) as thumb:
+            width, height = thumb.size
+        self.assertEqual((width, height), (533, 300))
+        self.assertEqual(width * height, 159_900)
+        self.assertLessEqual(width * height, 160_000)
+        self.assertGreater(width * height, 159_000)
+        self.assertAlmostEqual(width / height, 1920 / 1080, delta=0.01)
+
+    def test_thumbnail_caches_by_mtime_size(self):
+        self._png_of_size("2026-07-27/cached.png", 1000, size=(400, 300))
+        first = self.client.get("/api/v1/album/image/2026-07-27/cached.png/thumbnail")
+        self.assertEqual(first.status_code, 200)
+
+        # 同 mtime/size 二次请求:内容一致(命中缓存,服务端不再走 PIL)
+        second = self.client.get("/api/v1/album/image/2026-07-27/cached.png/thumbnail")
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(second.content, first.content)
+
+        # 修改文件(mtime_ns 变化)→ 缓存键变化 → 重新生成,内容可能不同
+        self._png_of_size(
+            "2026-07-27/cached.png", 2000, size=(400, 300), color=(0, 0, 255)
+        )
+        third = self.client.get("/api/v1/album/image/2026-07-27/cached.png/thumbnail")
+        self.assertEqual(third.status_code, 200)
+        self.assertNotEqual(third.content, first.content)
+
+    def test_thumbnail_rejects_video(self):
+        # mp4 是当前唯一的视频格式,缩略图端点不处理视频(走 poster 端点)
+        # 内联写最小 mp4 字节(不依赖 AlbumVideoTests._mp4,类层级不在继承链上)
+        path = self.core.config.output_dir / "2026-07-27" / "wan-00001.mp4"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"fake-mp4")
+        os.utime(path, ns=(1000, 1000))
+        response = self.client.get(
+            "/api/v1/album/image/2026-07-27/wan-00001.mp4/thumbnail"
+        )
+        self.assertEqual(response.status_code, 404)
+        self.assertIn("缩略图", response.json()["detail"])
+
+    def test_thumbnail_missing_file_404(self):
+        response = self.client.get(
+            "/api/v1/album/image/2026-07-27/nope.png/thumbnail"
+        )
+        self.assertEqual(response.status_code, 404)
+
+    def test_thumbnail_rejects_path_traversal(self):
+        # 与原图读取一致,越界路径 400/404/422 都接受
+        response = self.client.get(
+            "/api/v1/album/image/..%2F..%2Fsecret.png/thumbnail"
+        )
+        self.assertIn(response.status_code, (400, 404, 422))
+
+    def test_thumbnail_keeps_aspect_for_portrait(self):
+        # 竖图 600x800:scale = √(160000/480000) = 0.57735 → 346×461 = 159_506
+        self._png_of_size("2026-07-27/portrait.png", 1000, size=(600, 800))
+        response = self.client.get(
+            "/api/v1/album/image/2026-07-27/portrait.png/thumbnail"
+        )
+        self.assertEqual(response.status_code, 200)
+        import io
+
+        from PIL import Image
+
+        with Image.open(io.BytesIO(response.content)) as thumb:
+            width, height = thumb.size
+        self.assertEqual((width, height), (346, 461))
+        self.assertEqual(width * height, 159_506)
+        self.assertLessEqual(width * height, 160_000)
+        self.assertGreater(width * height, 159_000)

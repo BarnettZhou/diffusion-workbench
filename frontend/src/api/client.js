@@ -58,6 +58,9 @@ export const api = {
   // 视频封面(服务端 ffmpeg 抽首帧):iOS 不渲染 <video> 首帧,封面须用静态图
   albumPosterUrl: (id, dir = "output") =>
     `${API_BASE}/api/v1/album/image/${encodeURIComponent(id)}/poster?dir=${encodeURIComponent(dir)}`,
+  // 图片缩略图(服务端懒生成 200×200 JPEG):grid 用,lightbox 仍用 albumImageUrl 取原图
+  albumThumbnailUrl: (id, dir = "output") =>
+    `${API_BASE}/api/v1/album/image/${encodeURIComponent(id)}/thumbnail?dir=${encodeURIComponent(dir)}`,
   deleteAlbumImage: (id, dir = "output") =>
     request(
       `/api/v1/album/image/${encodeURIComponent(id)}?dir=${encodeURIComponent(dir)}`,

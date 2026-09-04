@@ -13,6 +13,7 @@ import { useMessage } from "./components/Message";
 import VideoParameterForm from "./components/VideoParameterForm";
 import VideoResultGallery from "./components/VideoResultGallery";
 import Modal from "./components/Modal";
+import { PrivacyModeProvider, usePrivacyMode } from "./components/PrivacyModeContext";
 
 const MODE_LABELS = { zit: "ZIT", zib: "ZIB", krea2: "Krea2", sdxl: "SDXL", "edit-krea2": "Krea2 编辑", "edit-krea2-dual": "双图编辑", "krea2-rebalance": "Krea2 参考重排" };
 // 视频模型分类显示名(设置页「视频模型」tab 同款映射)
@@ -24,9 +25,32 @@ const VIDEO_MODEL_LABELS = {
   "minimax-h3-ref2va": "MiniMax H3 Ref2VA",
   "minimax-h3-turbo": "MiniMax H3 FL2VA Turbo",
 };
+// 顶部主导航的 tab 注册表:key 与 #app-tabs 按钮 id 保持一致;
+// 移动端抽屉复用同一份配置,避免漏改。labelLockedReason 给出禁用原因,
+// 在标签后面以小字提示用户为什么点不动(目前仅相册受隐私模式影响)。
+// icon 引用 frontend/public/icons/ 下的 SVG,作为 tab 按钮的前置图标。
+const PRIMARY_TABS = [
+  { key: "workbench", label: "图片生成", icon: "/icons/picture.svg" },
+  { key: "edit", label: "图像编辑", icon: "/icons/edit.svg" },
+  { key: "video", label: "视频生成", icon: "/icons/video.svg" },
+  { key: "caption", label: "图片反推", icon: "/icons/smart.svg" },
+  { key: "album", label: "相册", icon: "/icons/album.svg", labelLockedReason: "隐私模式下不可访问" },
+  { key: "settings", label: "设置", icon: "/icons/setting.svg" },
+];
 
 export default function App() {
+  return (
+    <PrivacyModeProvider>
+      <AppInner />
+    </PrivacyModeProvider>
+  );
+}
+
+function AppInner() {
+  const { privacyMode, toggle: togglePrivacyMode } = usePrivacyMode();
   const [tab, setTab] = useState("workbench");
+  // 移动端抽屉:开启时遮罩 + 左侧抽屉浮层;切换 tab / 关闭抽屉 / Esc 都置回 false
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   // 设置页首次进入才挂载(其子页再按需挂载),之后切 tab 仅隐藏不卸载
   const [settingsMounted, setSettingsMounted] = useState(false);
   useEffect(() => {
@@ -137,6 +161,7 @@ export default function App() {
         api.resources(item.mode, "diffusion"),
         api.resources(item.mode, "vae"),
         api.resources(item.mode, "text_encoder"),
+        api.resources(item.mode, "loras"),
       ]),
     );
     // 按 mode 动态组装,避免 entries 位置与 mode 对应关系随请求数量变化而错位
@@ -145,9 +170,10 @@ export default function App() {
         modes.map((item, i) => [
           item.mode,
           {
-            models: entries[i * 3].resources,
-            vaes: entries[i * 3 + 1].resources,
-            textEncoders: entries[i * 3 + 2].resources,
+            models: entries[i * 4].resources,
+            vaes: entries[i * 4 + 1].resources,
+            textEncoders: entries[i * 4 + 2].resources,
+            loras: entries[i * 4 + 3].resources,
             modelLoader: item.model_loader,
           },
         ]),
@@ -431,6 +457,32 @@ export default function App() {
     [jobs],
   );
 
+  // 切 tab 的统一入口:在桌面端由 tab 按钮直接调用,在移动端由抽屉调用;
+  // 抽屉的"关+切"合并到一处,避免抽屉开着时重复切换或与隐私模式规则不一致
+  const selectTab = useCallback(
+    (key) => {
+      if (key === "album" && privacyMode) return;
+      setTab(key);
+      setMobileMenuOpen(false);
+    },
+    [privacyMode],
+  );
+
+  // 抽屉开启时锁住背景滚动 + 监听 Esc 关闭;关闭抽屉时还原
+  useEffect(() => {
+    if (!mobileMenuOpen) return undefined;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const onKeyDown = (e) => {
+      if (e.key === "Escape") setMobileMenuOpen(false);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [mobileMenuOpen]);
+
   const orderedVideoJobs = useMemo(
     () =>
       Object.values(videoJobs).sort(
@@ -537,55 +589,43 @@ export default function App() {
   return (
     <div id="app-shell">
       <header id="app-header">
+        {/* 移动端汉堡按钮:桌面端隐藏(<= 768px 才显示) */}
+        <button
+          id="mobile-menu-toggle"
+          type="button"
+          aria-label={mobileMenuOpen ? "关闭导航菜单" : "打开导航菜单"}
+          aria-expanded={mobileMenuOpen}
+          aria-controls="mobile-menu-drawer"
+          className={mobileMenuOpen ? "open" : ""}
+          onClick={() => setMobileMenuOpen((open) => !open)}
+        >
+          <span className="mobile-menu-bars" aria-hidden="true">
+            <span />
+            <span />
+            <span />
+          </span>
+        </button>
         <nav id="app-tabs">
-          <button
-            id="tab-workbench"
-            type="button"
-            className={tab === "workbench" ? "active" : ""}
-            onClick={() => setTab("workbench")}
-          >
-            图片生成
-          </button>
-          <button
-            id="tab-edit"
-            type="button"
-            className={tab === "edit" ? "active" : ""}
-            onClick={() => setTab("edit")}
-          >
-            图像编辑
-          </button>
-          <button
-            id="tab-video"
-            type="button"
-            className={tab === "video" ? "active" : ""}
-            onClick={() => setTab("video")}
-          >
-            视频生成
-          </button>
-          <button
-            id="tab-caption"
-            type="button"
-            className={tab === "caption" ? "active" : ""}
-            onClick={() => setTab("caption")}
-          >
-            图片反推
-          </button>
-          <button
-            id="tab-album"
-            type="button"
-            className={tab === "album" ? "active" : ""}
-            onClick={() => setTab("album")}
-          >
-            相册
-          </button>
-          <button
-            id="tab-settings"
-            type="button"
-            className={tab === "settings" ? "active" : ""}
-            onClick={() => setTab("settings")}
-          >
-            设置
-          </button>
+          {PRIMARY_TABS.map((item) => {
+            const locked = item.key === "album" && privacyMode;
+            return (
+              <button
+                key={item.key}
+                id={`tab-${item.key}`}
+                type="button"
+                className={`${tab === item.key ? "active" : ""} ${locked ? "privacy-locked" : ""}`}
+                disabled={locked}
+                aria-disabled={locked}
+                title={locked ? "隐私模式下不可访问相册" : undefined}
+                onClick={() => (locked ? null : setTab(item.key))}
+              >
+                {item.icon && (
+                  <img className="tab-icon" src={item.icon} alt="" aria-hidden="true" />
+                )}
+                {item.label}
+              </button>
+            );
+          })}
         </nav>
         <span id="ws-status" className={`ws-badge ${wsConnected ? "online" : "offline"}`}>
           {wsConnected ? "实时已连接" : "实时断开"}
@@ -622,6 +662,22 @@ export default function App() {
         >
           资源
         </button>
+        <button
+          id="privacy-mode-toggle"
+          type="button"
+          className={`privacy-mode-toggle ${privacyMode ? "on" : ""}`}
+          role="switch"
+          aria-checked={privacyMode}
+          title={
+            privacyMode
+              ? "当前为隐私模式(隐藏封面/锁定相册),点击关闭"
+              : "点击开启隐私模式:隐藏模型封面、锁定相册"
+          }
+          onClick={togglePrivacyMode}
+        >
+          <span className="privacy-mode-dot" aria-hidden="true" />
+          隐私模式
+        </button>
       </header>
       {/* 相册与工作台一样始终挂载,切 tab 仅隐藏,保留目录/子目录与滚动位置 */}
       <div
@@ -647,6 +703,7 @@ export default function App() {
           modes={Object.keys(resources ?? {})}
           onUpdate={updateSettings}
           onResourcesChanged={refreshResources}
+          privacyMode={privacyMode}
         />
         </div>
       )}
@@ -686,6 +743,7 @@ export default function App() {
             prefill={prefill}
             onSubmit={handleSubmit}
             remoteEncoderIds={remoteEncoderIds}
+            privacyMode={privacyMode}
           />
         </aside>
         <section id="results-panel" className="results">
@@ -1020,6 +1078,59 @@ export default function App() {
           </div>
         </Modal>
       )}
+      {/* 移动端导航抽屉:背景遮罩点击关闭 + 左侧抽屉浮层;
+         用一份 PRIMARY_TABS 配置渲染列表,避免与顶部 #app-tabs 漏改;相册项
+         受隐私模式影响,与桌面端相册 tab 行为一致 */}
+      <div
+        id="mobile-menu-overlay"
+        className={mobileMenuOpen ? "open" : ""}
+        onClick={() => setMobileMenuOpen(false)}
+        aria-hidden={!mobileMenuOpen}
+      />
+      <aside
+        id="mobile-menu-drawer"
+        className={mobileMenuOpen ? "open" : ""}
+        aria-hidden={!mobileMenuOpen}
+      >
+        <div className="mobile-menu-head">
+          <span>导航</span>
+          <button
+            id="mobile-menu-close"
+            type="button"
+            aria-label="关闭导航菜单"
+            onClick={() => setMobileMenuOpen(false)}
+          >
+            ×
+          </button>
+        </div>
+        <nav id="mobile-menu-tabs" role="tablist" aria-label="主导航">
+          {PRIMARY_TABS.map((item) => {
+            const locked = item.key === "album" && privacyMode;
+            return (
+              <button
+                key={item.key}
+                id={`mobile-tab-${item.key}`}
+                type="button"
+                role="tab"
+                aria-selected={tab === item.key}
+                aria-disabled={locked}
+                className={`${tab === item.key ? "active" : ""} ${locked ? "privacy-locked" : ""}`}
+                onClick={() => selectTab(item.key)}
+              >
+                {item.icon && (
+                  <img className="tab-icon" src={item.icon} alt="" aria-hidden="true" />
+                )}
+                <span className="mobile-menu-label">{item.label}</span>
+                {locked && (
+                  <span className="mobile-menu-hint">
+                    {item.labelLockedReason}
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </nav>
+      </aside>
     </div>
   );
 }

@@ -4,6 +4,7 @@ import { normalizeUploadFile } from "./EditParameterForm";
 import { useMessage } from "./Message";
 import PromptPresetPicker from "./PromptPresetPicker";
 import TextEncoderSelector from "./TextEncoderSelector";
+import { COVER_SPACER } from "./modelCover";
 
 // 采样器/调度器选项从 /api/v1/sampling-options 拉取,接口不可用时用兜底列表
 const FALLBACK_SAMPLERS = ["euler", "dpmpp_2m_sde"];
@@ -532,7 +533,10 @@ export default function RebalanceParameterForm({
                     {cover ? (
                       <img src={cover} alt={item.name} loading="lazy" />
                     ) : (
-                      <div className="model-cover-empty">暂无封面</div>
+                      <div className="model-cover-empty">
+                        <img className="model-cover-spacer" src={COVER_SPACER} alt="" />
+                        <span>暂无封面</span>
+                      </div>
                     )}
                   </div>
                   <div className="model-info">

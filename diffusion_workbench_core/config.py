@@ -34,6 +34,9 @@ class ModeResources:
     model_loader: ModelLoader = ModelLoader.COMPONENTS
     # Krea2 图像编辑专用 LoRA；仅 Krea2/Krea2-Edit 实际使用，未配置时为 None。
     edit_lora: Path | None = None
+    # krea2 模式可选 LoRA 候选目录/文件列表（与 diffusion/vae 同规则扫描），
+    # 提交时按 index 选择，最多 3 个；未配置时为空元组。
+    loras: tuple[Path, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -99,11 +102,13 @@ def load_config(path: str | Path) -> WorkbenchConfig:
             clip_type = str(item["clip_type"])
             edit_lora_raw = item.get("edit_lora")
             edit_lora = _resolve(edit_lora_raw, base) if edit_lora_raw else None
+            loras = tuple(_resolve(value, base) for value in item.get("loras", ()))
         else:
             vae = ()
             text_encoder = ()
             clip_type = None
             edit_lora = None
+            loras = ()
         resources[mode] = ModeResources(
             diffusion=tuple(_resolve(value, base) for value in item["diffusion"]),
             vae=vae,
@@ -111,6 +116,7 @@ def load_config(path: str | Path) -> WorkbenchConfig:
             clip_type=clip_type,
             model_loader=model_loader,
             edit_lora=edit_lora,
+            loras=loras,
         )
     timeout = float(raw.get("worker_timeout_seconds", 3600))
     if timeout <= 0:

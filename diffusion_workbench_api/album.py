@@ -238,10 +238,23 @@ class AlbumDirStore:
 class AlbumManager:
     """多目录相册:内置 output + 用户添加的目录,每个目录一个 AlbumIndex。"""
 
-    def __init__(self, output_dir: Path, store: AlbumDirStore, poster_dir: Path | None = None):
+    def __init__(
+        self,
+        output_dir: Path,
+        store: AlbumDirStore,
+        poster_dir: Path | None = None,
+        thumbnail_dir: Path | None = None,
+    ):
         self._output = Path(output_dir).resolve()
         self._store = store
         self._poster_dir = Path(poster_dir) if poster_dir is not None else None
+        self._thumbnail_dir = Path(thumbnail_dir) if thumbnail_dir is not None else None
+        # 缩略图总像素上限(宽×高)。按面积等比缩放:无论源图比例,新图总像素
+        # 都尽量接近且不超过 max_pixels(直接约束面积,而不是约束最长边)。
+        # 缓存键含 max_pixels,以后调整上限旧缓存自动失效。
+        self._thumbnail_max_pixels = 160_000
+        # JPEG 质量;80~85 是肉眼难辨损失的常用阈值,缩略图小尺寸下更省
+        self._thumbnail_quality = 85
         self._lock = threading.Lock()
         self._indexes: dict[str, AlbumIndex] = {}
 
@@ -347,6 +360,77 @@ class AlbumManager:
                     status_code=422,
                     detail=f"视频封面生成失败:{detail or '无法解码首帧'}",
                 )
+            temporary.replace(cache_path)
+        finally:
+            temporary.unlink(missing_ok=True)
+        return cache_path
+
+    def thumbnail_for(self, dir_id: str, relpath: str) -> Path:
+        """图片缩略图:首访懒生成,按 (目录, 路径, mtime, size, 缩放参数) 缓存。
+
+        相册网格每页 60+ 张,直接下发原始 PNG 会浪费带宽与内存;缩略图限定
+        200×200 像素(等比,总像素 ≤ 40_000)并转 JPEG 缓存到 ``thumbnail_dir``。
+        源文件被替换后 mtime/size 变化 → 缓存键变化 → 自动重新生成。
+        仅支持图片(PNG/JPEG/WebP),视频走 poster 端点,其他格式返回 404。
+        """
+        if self._thumbnail_dir is None:
+            raise HTTPException(status_code=503, detail="未配置缩略图缓存目录")
+        index = self.index_for(dir_id)
+        path = index.resolve(relpath)
+        if path.suffix.lower() not in (".png", ".jpg", ".jpeg", ".webp"):
+            raise HTTPException(status_code=404, detail="只有图片才有缩略图")
+        stat = path.stat()
+        # 缩放参数进缓存键,以后调整 max_pixels / quality 时旧缓存自然失效
+        key = (
+            f"{index.root}|{relpath}|{stat.st_mtime_ns}|{stat.st_size}|"
+            f"{self._thumbnail_max_pixels}|{self._thumbnail_quality}"
+        )
+        digest = hashlib.sha1(key.encode("utf-8")).hexdigest()
+        cache_path = self._thumbnail_dir / f"{digest}.jpg"
+        if cache_path.is_file():
+            return cache_path
+        self._thumbnail_dir.mkdir(parents=True, exist_ok=True)
+        temporary = self._thumbnail_dir / f".{digest}.{uuid.uuid4().hex[:8]}.tmp.jpg"
+        try:
+            try:
+                with Image.open(path) as image:
+                    # RGBA → 白色背景合成后再转 RGB,避免 JPEG 丢弃 alpha 通道
+                    # 后出现黑边;纯 RGB 图像 PIL 直接走原通道
+                    if image.mode in ("RGBA", "LA") or (
+                        image.mode == "P" and "transparency" in image.info
+                    ):
+                        background = Image.new("RGB", image.size, (255, 255, 255))
+                        rgba = image.convert("RGBA")
+                        background.paste(rgba, mask=rgba.split()[-1])
+                        image = background
+                    else:
+                        image = image.convert("RGB")
+                    # 按面积等比缩放:scale = √(max_pixels / 源像素),
+                    # 新图总像素 ≤ max_pixels 且尽量接近,不再受「最长边」约束
+                    # (thumbnail 那种方式对非正方形图会远低于 max_pixels)
+                    width, height = image.size
+                    source_pixels = width * height
+                    if source_pixels > self._thumbnail_max_pixels:
+                        scale = (self._thumbnail_max_pixels / source_pixels) ** 0.5
+                        new_width = max(1, int(width * scale))
+                        new_height = max(1, int(height * scale))
+                        image = image.resize(
+                            (new_width, new_height),
+                            Image.Resampling.LANCZOS,
+                        )
+                    image.save(
+                        temporary,
+                        format="JPEG",
+                        quality=self._thumbnail_quality,
+                        optimize=True,
+                    )
+            except (OSError, ValueError) as exc:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"缩略图生成失败:{exc}",
+                ) from exc
+            if not temporary.is_file():
+                raise HTTPException(status_code=422, detail="缩略图生成失败:无法写入")
             temporary.replace(cache_path)
         finally:
             temporary.unlink(missing_ok=True)
@@ -485,6 +569,17 @@ async def album_image_poster(
 ):
     poster = await asyncio.to_thread(manager.poster_for, dir, relpath)
     return FileResponse(poster, media_type="image/jpeg")
+
+
+@router.get("/album/image/{relpath:path}/thumbnail")
+async def album_image_thumbnail(
+    relpath: str,
+    dir: str = Query(default=BUILTIN_DIR_ID),
+    manager: AlbumManager = Depends(get_album_manager),
+):
+    """图片缩略图(200×200 等比,JPEG 质量 85),首访懒生成后缓存。"""
+    thumbnail = await asyncio.to_thread(manager.thumbnail_for, dir, relpath)
+    return FileResponse(thumbnail, media_type="image/jpeg")
 
 
 @router.get("/album/image/{relpath:path}")
