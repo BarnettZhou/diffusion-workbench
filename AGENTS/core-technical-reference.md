@@ -241,7 +241,7 @@ Mode.SDXL        # "sdxl"
 
 ResourceKind.DIFFUSION  # "diffusion"
 ResourceKind.VAE        # "vae"
-ResourceKind.LORA       # "loras"（仅 krea2 模式使用，可选）
+ResourceKind.LORA       # "loras"（仅 krea2 / zit 模式使用，可选）
 ```
 
 视频类型由 `VideoModel` 表示，当前支持 `VideoModel.WAN22_TI2V_5B`（值为
@@ -331,19 +331,19 @@ settings = GenerationSettings(
 - `components` loader 的 text encoder 和 VAE 必须来自该 mode 配置的目录/文件列表
   （text encoder 按 `text_encoder` 资源列表校验成员资格），clip type 固定为配置值；
 - `checkpoint` loader 不接受外置 VAE、text encoder 或 clip type；
-- `loras` 非空时每个 LoRA 必须来自 `resources.krea2.loras` 配置目录/文件列表
+- `loras` 非空时每个 LoRA 必须来自该 mode 配置的 `loras` 目录/文件列表
   （按 `loras` 资源列表校验成员资格）且文件存在。
 
 调用端不得接受客户端传来的任意绝对路径后自行构造 `ResourceItem`。必须从
 `list_resources()` 返回值中选择，避免越权读取服务器文件。
 
-### 5.3.0 krea2 可选 LoRA
+### 5.3.0 krea2 / zit 可选 LoRA
 
-`Mode.KREA2` 支持可选 LoRA 列表（`GenerationSettings.loras`，`LoraSpec(path, strength)`）：
-仅 krea2 模式可用、最多 `KREA2_MAX_LORAS`（3）个，`strength` 为 0 到
-`KREA2_LORA_MAX_STRENGTH`（2.0）的有限数值，缺省 1.0；其他 mode 提交非空 `loras`
-会被 `validate()` 拒绝。候选文件来自 `resources.krea2.loras` 配置（目录/文件列表，
-与 diffusion/vae 同规则扫描，按 index 选择）。
+`Mode.KREA2` 与 `Mode.ZIT` 支持可选 LoRA 列表（`GenerationSettings.loras`，
+`LoraSpec(path, strength)`）：仅 krea2 / zit 模式可用、最多 `MAX_LORAS`（3）个，
+`strength` 为 0 到 `LORA_MAX_STRENGTH`（2.0）的有限数值，缺省 1.0；其他 mode
+提交非空 `loras` 会被 `validate()` 拒绝。候选文件来自该 mode 的 `loras` 配置
+（目录/文件列表，与 diffusion/vae 同规则扫描，按 index 选择）。
 
 Worker 端在 `_ensure_model` 之后用 ComfyUI 原生 `LoraLoaderModelOnly` 把 LoRA 逐个
 链式 patch 到**本次采样使用的模型副本**上，不污染缓存的基础模型；释放时随 `release()`

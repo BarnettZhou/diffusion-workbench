@@ -569,15 +569,24 @@ class JobStoreTests(unittest.TestCase):
         values.update(overrides)
         return GenerationSettings(**values)
 
-    def test_krea2_lora_validate_rejects_other_modes(self):
+    def test_lora_validate_rejects_other_modes(self):
         settings = self._krea2_lora_settings(
-            mode=Mode.ZIT,
+            mode=Mode.ZIB,
             clip_type="stable_diffusion",
             loras=(LoraSpec(path=Path("lora.safetensors")),),
         )
 
-        with self.assertRaisesRegex(ValueError, "仅 krea2 模式支持 LoRA"):
+        with self.assertRaisesRegex(ValueError, "仅 krea2 / zit 模式支持 LoRA"):
             settings.validate()
+
+    def test_zit_lora_validate_accepts_loras(self):
+        settings = self._krea2_lora_settings(
+            mode=Mode.ZIT,
+            clip_type="stable_diffusion",
+            loras=(LoraSpec(path=Path("lora.safetensors"), strength=0.5),),
+        )
+
+        settings.validate()
 
     def test_krea2_lora_validate_rejects_more_than_three(self):
         settings = self._krea2_lora_settings(

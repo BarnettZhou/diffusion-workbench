@@ -123,9 +123,9 @@ class Mode(StrEnum):
 REBALANCE_TOKEN_TIERS = ("low", "normal", "high", "max")
 REBALANCE_MAX_REFERENCE_IMAGES = 4
 
-# krea2 模式可选 LoRA：最多 3 个，strength 取值范围 [0, 2]
-KREA2_MAX_LORAS = 3
-KREA2_LORA_MAX_STRENGTH = 2.0
+# krea2 / zit 模式可选 LoRA：最多 3 个，strength 取值范围 [0, 2]
+MAX_LORAS = 3
+LORA_MAX_STRENGTH = 2.0
 
 
 class VideoModel(StrEnum):
@@ -169,7 +169,7 @@ class ResourceKind(StrEnum):
     DIFFUSION = "diffusion"
     VAE = "vae"
     TEXT_ENCODER = "text_encoder"
-    # krea2 模式可选 LoRA 列表（目录/文件 + index 选择，与上面三种同规则扫描）
+    # krea2 / zit 模式可选 LoRA 列表（目录/文件 + index 选择，与上面三种同规则扫描）
     LORA = "loras"
 
 
@@ -291,7 +291,7 @@ class UpscaleSettings:
 
 @dataclass(frozen=True)
 class LoraSpec:
-    """krea2 模式可选 LoRA：服务端按配置目录解析后的文件路径与强度。"""
+    """krea2 / zit 模式可选 LoRA：服务端按配置目录解析后的文件路径与强度。"""
 
     path: Path
     strength: float = 1.0
@@ -327,7 +327,7 @@ class GenerationSettings:
     reference_image_tokens: tuple[str, ...] = ()
     text_encoder_source: str = "local"
     remote_text_encoder_id: str | None = None
-    # krea2 模式可选 LoRA 列表（最多 KREA2_MAX_LORAS 个）；其他 mode 时保持空 tuple。
+    # krea2 / zit 模式可选 LoRA 列表（最多 MAX_LORAS 个）；其他 mode 时保持空 tuple。
     loras: tuple[LoraSpec, ...] = ()
 
     def validate(self) -> None:
@@ -389,19 +389,19 @@ class GenerationSettings:
         elif self.reference_images:
             raise ValueError("仅 krea2-rebalance 模式支持参考图")
         if self.loras:
-            if self.mode != Mode.KREA2:
-                raise ValueError("仅 krea2 模式支持 LoRA")
-            if len(self.loras) > KREA2_MAX_LORAS:
-                raise ValueError(f"krea2 模式最多支持 {KREA2_MAX_LORAS} 个 LoRA")
+            if self.mode not in (Mode.KREA2, Mode.ZIT):
+                raise ValueError("仅 krea2 / zit 模式支持 LoRA")
+            if len(self.loras) > MAX_LORAS:
+                raise ValueError(f"最多支持 {MAX_LORAS} 个 LoRA")
             for spec in self.loras:
                 if (
                     not isinstance(spec.strength, (int, float))
                     or isinstance(spec.strength, bool)
                     or not math.isfinite(spec.strength)
-                    or not 0 <= spec.strength <= KREA2_LORA_MAX_STRENGTH
+                    or not 0 <= spec.strength <= LORA_MAX_STRENGTH
                 ):
                     raise ValueError(
-                        f"LoRA strength 必须是 0 到 {KREA2_LORA_MAX_STRENGTH} 的有限数值"
+                        f"LoRA strength 必须是 0 到 {LORA_MAX_STRENGTH} 的有限数值"
                     )
 
 
@@ -442,7 +442,7 @@ class JobRecord:
     reference_image_tokens: tuple[str, ...] = ()
     text_encoder_source: str = "local"
     remote_text_encoder_id: str | None = None
-    # krea2 模式可选 LoRA 列表；非 krea2 模式为空 tuple。
+    # krea2 / zit 模式可选 LoRA 列表；其他模式为空 tuple。
     loras: tuple[LoraSpec, ...] = ()
 
 

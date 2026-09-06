@@ -383,6 +383,9 @@ Worker 取消失败返回 500。
   "scheduler": "simple",
   "model_name": "model.safetensors",
   "vae_name": "vae.safetensors",
+  "loras": [
+    { "name": "style-a.safetensors", "strength": 0.8 }
+  ],
   "artifact": { "kind": "original", "width": 576, "height": 576 },
   "upscale": {
     "enabled": true,
@@ -408,7 +411,8 @@ Worker 取消失败返回 500。
 
 `artifact` 是当前文件的真实尺寸与产物类型（`original` / `upscaled`);
 `width`/`height` 仍表示首次生成尺寸。`upscale` 来自任务级放大参数，
-`model_path` 等绝对路径已脱敏为 `model_name`。
+`model_path` 等绝对路径已脱敏为 `model_name`。`loras` 是 krea2 / zit 可选 LoRA
+列表（文件名 + 强度），未启用 LoRA 的图片为空数组。
 SDXL 的 `vae_name` 为 `null`，因为 VAE 来自同一 checkpoint。
 
 - 200 元数据对象
@@ -756,6 +760,20 @@ mp4 没有内嵌元数据,改为按输出文件(日期目录名 + 文件名)反�
 （同 mode/kind 内唯一，冲突 422);name 不存在 404。
 `output_path` 是生成时的路径快照；图片移动或删除不影响 SQLite 任务历史，`GET /jobs`
 和 `GET /jobs/{job_id}` 仍会返回完整记录。
+
+### LoRA 画册（`/loras/{mode}`）
+
+krea2 / zit 的可选 LoRA 有一组与模型信息平行的端点：
+
+- `GET /api/v1/loras/{mode}`：返回 `{"loras": [...]}`，字段与 `/models/{mode}` 一致
+  （`index`/`name`/`alias`/`mode`/`size_bytes`/`note`/`has_cover`/`cover_url`，
+  无 `quant`）；没有 LoRA 资源的 mode 返回空列表。
+- `GET/PUT /api/v1/loras/{mode}/{name}/cover`：封面读取与上传，规则同模型封面。
+- `PUT /api/v1/loras/{mode}/{name}/info`：`alias`（前端称"标题"）写入
+  `ResourceKind.LORA` 的资源别名，与生成表单的 LoRA 下拉共用；`note` 同上。
+
+LoRA 的封面/备注在 `model_info.json` 与 `covers/` 下以 `{mode}-loras` 为存储键，
+与同 mode 的 diffusion 模型隔离，同名文件不会互相覆盖。
 
 ## 视频
 

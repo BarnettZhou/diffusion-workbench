@@ -114,6 +114,21 @@ export const api = {
       if (!response.ok) throw new Error(`封面上传失败(HTTP ${response.status})`);
       return response.json();
     }),
+  // ---------- 生图 LoRA(krea2 / zit 可选 LoRA 画册) ----------
+  loras: (mode) => request(`/api/v1/loras/${mode}`),
+  updateLoraInfo: (mode, name, payload) =>
+    request(`/api/v1/loras/${mode}/${encodeURIComponent(name)}/info`, {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    }),
+  uploadLoraCover: (mode, name, file) =>
+    fetch(
+      `${API_BASE}/api/v1/loras/${mode}/${encodeURIComponent(name)}/cover`,
+      { method: "PUT", headers: { "Content-Type": file.type }, body: file },
+    ).then((response) => {
+      if (!response.ok) throw new Error(`封面上传失败(HTTP ${response.status})`);
+      return response.json();
+    }),
   // ---------- 视频生成 ----------
   // 视频模型分类与能力:{video_model,label,generation_types,requires_input_image}
   videoModels: () => request("/api/v1/video/models"),

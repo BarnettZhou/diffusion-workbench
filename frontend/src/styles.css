@@ -673,9 +673,10 @@ button.warn:disabled { opacity: 0.4; cursor: not-allowed; }
 }
 #mobile-menu-tabs button {
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 2px;
+  flex-direction: row;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
   width: 100%;
   padding: 12px 18px;
   background: transparent;
@@ -687,6 +688,12 @@ button.warn:disabled { opacity: 0.4; cursor: not-allowed; }
   text-align: left;
   cursor: pointer;
   font-family: inherit;
+}
+/* 抽屉里"图片生成"等主标题行:图标 + label 横向并排;hint(隐私模式提示)
+   通过 100% 宽度换到下一行,与桌面端一样作为副标题呈现 */
+#mobile-menu-tabs .mobile-menu-hint {
+  flex-basis: 100%;
+  margin-left: 24px; /* 与图标宽度对齐,缩进与 label 起始位置一致 */
 }
 #mobile-menu-tabs button:hover { color: var(--text); background: var(--panel-2); }
 #mobile-menu-tabs button.active {
@@ -2572,12 +2579,16 @@ button.warn:disabled { opacity: 0.4; cursor: not-allowed; }
   color: #111;
 }
 
-/* ---------- krea2 LoRA 卡片 ---------- */
+/* ---------- krea2 / zit LoRA 卡片 ---------- */
 .lora-row { align-items: flex-end; }
 .lora-model-field { flex: 1; min-width: 0; }
 .lora-strength-field { width: 96px; flex: none; }
 .lora-remove-btn { flex: none; margin-bottom: 2px; }
 #lora-add-btn { align-self: flex-start; }
+
+/* ---------- 抽屉「设置为 LoRA 封面」多 LoRA 选择弹窗 ---------- */
+.lora-cover-picker { display: flex; flex-direction: column; gap: 8px; }
+.lora-cover-picker-item { text-align: left; word-break: break-all; }
 
 /* ---------- 编辑输入图片:原图 / 已编辑 双栏 ---------- */
 .input-image-lanes {

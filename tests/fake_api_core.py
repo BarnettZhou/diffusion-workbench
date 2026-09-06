@@ -26,7 +26,8 @@ class FakeApiCore:
             comfyui=ComfyConfig(root, root / "python.exe"),
             resources={
                 Mode.ZIT: ModeResources(
-                    (), (), (root / "zit-te.safetensors",), "stable_diffusion"
+                    (), (), (root / "zit-te.safetensors",), "stable_diffusion",
+                    loras=(root / "zit-loras",),
                 ),
                 Mode.KREA2: ModeResources(
                     (),
@@ -81,6 +82,10 @@ class FakeApiCore:
             (Mode.ZIT, ResourceKind.VAE): [ResourceItem(1, root / "zit-vae.safetensors")],
             (Mode.ZIT, ResourceKind.TEXT_ENCODER): [
                 ResourceItem(1, root / "zit-te.safetensors")
+            ],
+            (Mode.ZIT, ResourceKind.LORA): [
+                ResourceItem(1, root / "zit-loras" / "zit-style-a.safetensors"),
+                ResourceItem(2, root / "zit-loras" / "zit-style-b.safetensors"),
             ],
             (Mode.KREA2, ResourceKind.DIFFUSION): [
                 ResourceItem(1, root / "krea.safetensors")

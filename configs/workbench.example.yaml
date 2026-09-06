@@ -19,6 +19,9 @@ resources:
     text_encoder:
       - D:\models\text_encoders
     clip_type: stable_diffusion
+    # zit 模式可选 LoRA 候选目录/文件列表；前端按 index 选择，最多 3 个。
+    loras:
+      - D:\models\loras\zit
   krea2:
     diffusion:
       - D:\models\diffusion_models\krea2

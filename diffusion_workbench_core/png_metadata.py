@@ -124,8 +124,8 @@ def build_generation_metadata(
         metadata["parameters"]["reference_image_tokens"] = [
             str(tier) for tier in (command.get("reference_image_tokens") or [])
         ]
-    # krea2 模式可选 LoRA 资源字段；其他模式不写入以保持 schema 干净。
-    if command.get("mode") == "krea2" and command.get("loras"):
+    # krea2 / zit 模式可选 LoRA 资源字段；其他模式不写入以保持 schema 干净。
+    if command.get("mode") in ("krea2", "zit") and command.get("loras"):
         lora_resources = (resources or {}).get("loras") or []
         entries = []
         for index, spec in enumerate(command["loras"]):

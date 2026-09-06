@@ -124,6 +124,11 @@ def _public_metadata(metadata: dict) -> dict:
         "scheduler": parameters.get("scheduler"),
         "model_name": diffusion.get("filename"),
         "vae_name": vae.get("filename"),
+        # krea2 / zit 可选 LoRA;脱敏为文件名 + 强度,不含路径与指纹
+        "loras": [
+            {"name": entry.get("filename"), "strength": entry.get("strength")}
+            for entry in resources.get("loras") or []
+        ],
         # 当前文件的真实尺寸与产物类型;parameters.width/height 是首次生成尺寸
         "artifact": metadata.get("artifact"),
         "upscale": _public_upscale(

@@ -37,7 +37,7 @@ class UpscaleRequest(BaseModel):
 
 
 class LoraRequest(BaseModel):
-    """krea2 模式可选 LoRA;按服务端资源目录的 index 引用,不接受客户端路径。"""
+    """krea2 / zit 模式可选 LoRA;按服务端资源目录的 index 引用,不接受客户端路径。"""
 
     index: int = Field(ge=1)
     strength: float = Field(default=1.0, ge=0, le=2, allow_inf_nan=False)
@@ -62,7 +62,7 @@ class CreateJobsRequest(BaseModel):
     sampler: str = "euler"
     scheduler: str = "simple"
     upscale: UpscaleRequest | None = None
-    # 仅 krea2 模式可用,最多 3 个;其他模式必须为空
+    # 仅 krea2 / zit 模式可用,最多 3 个;其他模式必须为空
     loras: list[LoraRequest] | None = Field(default=None, max_length=3)
 
     # 合法值以 core domain 的 SAMPLERS/SCHEDULERS 为唯一事实来源
@@ -237,7 +237,7 @@ class JobResponse(BaseModel):
     # Krea2 参考图重排字段;非 krea2-rebalance 任务保持空列表。URL 同样指向受控上传目录。
     reference_image_urls: list[str] = Field(default_factory=list)
     reference_image_tokens: list[str] = Field(default_factory=list)
-    # krea2 模式 LoRA 字段;未启用 LoRA 的任务保持空列表。
+    # krea2 / zit 模式 LoRA 字段;未启用 LoRA 的任务保持空列表。
     loras: list[LoraResponse] = Field(default_factory=list)
 
 

@@ -123,7 +123,7 @@ class JobStore:
                 "secondary_input_image": "TEXT",
                 "text_encoder_source": "TEXT NOT NULL DEFAULT 'local'",
                 "remote_text_encoder_id": "TEXT",
-                # krea2 模式可选 LoRA 列表（JSON: [{"path": ..., "strength": ...}]）；非 krea2 任务为 NULL。
+                # krea2 / zit 模式可选 LoRA 列表（JSON: [{"path": ..., "strength": ...}]）；其他任务为 NULL。
                 "loras_json": "TEXT",
             }
             for name, declaration in migrations.items():
@@ -264,7 +264,7 @@ class JobStore:
                     if settings.mode == Mode.KREA2_REBALANCE
                     else None
                 )
-                # 仅 krea2 模式写入 LoRA JSON；其他 mode 落 NULL。
+                # 仅 krea2 / zit 模式写入 LoRA JSON；其他 mode 落 NULL。
                 loras_value = (
                     json.dumps(
                         [
@@ -684,7 +684,7 @@ class JobStore:
 
 
 def _parse_loras(row: sqlite3.Row) -> tuple[LoraSpec, ...]:
-    """从 loras_json 还原 krea2 任务的 LoRA 列表；NULL 或解析失败回退为空 tuple。"""
+    """从 loras_json 还原任务的 LoRA 列表；NULL 或解析失败回退为空 tuple。"""
     if "loras_json" not in row.keys():
         return ()
     raw = row["loras_json"]

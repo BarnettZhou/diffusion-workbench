@@ -16,6 +16,8 @@ const LIMITS = {
   count: { min: 1, max: 32 },
   size: { min: 256, max: 4096, multiple: 16 },
 };
+// 支持可选 LoRA 的文生图模式(与服务端 domain 校验一致)
+const LORA_MODES = new Set(["krea2", "zit"]);
 
 export default function ParameterForm({ mode, onModeChange, resources, sizePresets, ratioPresets = [], promptPresets, prefill, samplingDefaults, llmSettings, onSelectLlmModel, onSubmit, remoteEncoderIds = [], privacyMode = false }) {
   // 模型/VAE 选择按 mode 分开保存,切换 tab 恢复各 mode 上次选中项
@@ -40,7 +42,7 @@ export default function ParameterForm({ mode, onModeChange, resources, sizePrese
   // 采样器/调度器选项是否已拉取完成(首次应用模式默认参数的前置条件)
   const [optionsReady, setOptionsReady] = useState(false);
   const [upscale, setUpscale] = useState(DEFAULT_UPSCALE);
-  // krea2 模式可选 LoRA:默认关闭;loras 每项为 {index, strength 字符串}
+  // krea2 / zit 模式可选 LoRA:默认关闭;loras 每项为 {index, strength 字符串}
   const [loraEnabled, setLoraEnabled] = useState(false);
   const [loras, setLoras] = useState([]);
   const [error, setError] = useState(null);
@@ -265,7 +267,7 @@ export default function ParameterForm({ mode, onModeChange, resources, sizePrese
     if (!Number.isFinite(Number(cfg)) || Number(cfg) <= 0) return "CFG 必须是大于 0 的数值";
     const seedNum = Number(seed);
     if (!Number.isInteger(seedNum) || seedNum < -1) return "seed 必须是 -1(随机)或非负整数";
-    if (mode === "krea2" && loraEnabled) {
+    if (LORA_MODES.has(mode) && loraEnabled) {
       for (const [slot, item] of loras.entries()) {
         if (item.index === null) return `请选择 LoRA ${slot + 1} 的模型`;
         const strength = Number(item.strength);
@@ -301,7 +303,7 @@ export default function ParameterForm({ mode, onModeChange, resources, sizePrese
         text_encoder_source: textEncoderSource,
         remote_text_encoder_id: textEncoderSource === "remote" ? remoteTextEncoderId : undefined,
         loras:
-          mode === "krea2" && loraEnabled && loras.length
+          LORA_MODES.has(mode) && loraEnabled && loras.length
             ? loras.map((item) => ({ index: item.index, strength: Number(item.strength) }))
             : undefined,
         upscale: buildUpscalePayload(upscale),
@@ -530,7 +532,7 @@ export default function ParameterForm({ mode, onModeChange, resources, sizePrese
         limits={LIMITS.size}
       />
 
-      {mode === "krea2" && (
+      {LORA_MODES.has(mode) && (
         <LoraCard
           enabled={loraEnabled}
           onEnabledChange={setLoraEnabled}

@@ -268,6 +268,107 @@ async def update_model_info(
     return {"ok": True}
 
 
+def _lora_store_key(mode: str) -> str:
+    """LoRA 的封面/备注/量化存储键;加后缀与同 mode 的 diffusion 模型隔离,避免同名互相覆盖。"""
+    return f"{mode}-loras"
+
+
+def _find_lora(core, mode: Mode, name: str):
+    for item in core.list_resources(mode, ResourceKind.LORA):
+        if item.path.name == name:
+            return item
+    raise HTTPException(status_code=404, detail=f"LoRA {name} 不存在")
+
+
+@router.get("/loras/{mode}")
+async def list_loras(
+    mode: ModeParam, core=Depends(get_core), store=Depends(get_model_info_store)
+):
+    """krea2 / zit 可选 LoRA 画册卡片,字段与 models 端点一致(不含 quant);
+    其他 mode 没有 LoRA 资源,返回空列表。"""
+    mode_enum = Mode(mode)
+    key = _lora_store_key(mode)
+
+    def collect():
+        loras = []
+        for item in core.list_resources(mode_enum, ResourceKind.LORA):
+            name = item.path.name
+            try:
+                size = item.path.stat().st_size
+            except OSError:
+                size = None
+            has_cover = store.cover_path(key, name) is not None
+            loras.append(
+                {
+                    "index": item.index,
+                    "name": name,
+                    "alias": item.alias,
+                    "mode": mode,
+                    "size_bytes": size,
+                    "note": store.note(key, name),
+                    "has_cover": has_cover,
+                    "cover_url": f"/api/v1/loras/{mode}/{name}/cover" if has_cover else None,
+                }
+            )
+        return loras
+
+    return {"loras": await asyncio.to_thread(collect)}
+
+
+@router.get("/loras/{mode}/{name}/cover")
+async def get_lora_cover(mode: ModeParam, name: str, store=Depends(get_model_info_store)):
+    path = await asyncio.to_thread(store.cover_path, _lora_store_key(mode), name)
+    if path is None:
+        raise HTTPException(status_code=404, detail="暂无封面")
+    return FileResponse(path, media_type=COVER_EXTENSIONS[path.suffix.lower()])
+
+
+@router.put("/loras/{mode}/{name}/cover")
+async def upload_lora_cover(
+    mode: ModeParam,
+    name: str,
+    request: Request,
+    core=Depends(get_core),
+    store=Depends(get_model_info_store),
+):
+    mode_enum = Mode(mode)
+    await asyncio.to_thread(_find_lora, core, mode_enum, name)
+    media_type = (request.headers.get("content-type") or "").split(";")[0].strip()
+    ext = COVER_MEDIA_TYPES.get(media_type)
+    if ext is None:
+        raise HTTPException(status_code=415, detail="封面只支持 png/jpeg/webp")
+    data = await request.body()
+    if not data:
+        raise HTTPException(status_code=422, detail="封面内容为空")
+    if len(data) > MAX_COVER_BYTES:
+        raise HTTPException(status_code=422, detail="封面不能超过 10MB")
+    await asyncio.to_thread(store.save_cover, _lora_store_key(mode), name, ext, data)
+    return {"ok": True, "cover_url": f"/api/v1/loras/{mode}/{name}/cover"}
+
+
+@router.put("/loras/{mode}/{name}/info")
+async def update_lora_info(
+    mode: ModeParam,
+    name: str,
+    payload: ModelInfoUpdate,
+    core=Depends(get_core),
+    store=Depends(get_model_info_store),
+):
+    """LoRA 标题复用资源别名机制(ResourceKind.LORA),备注存 model_info.json。"""
+    mode_enum = Mode(mode)
+    item = await asyncio.to_thread(_find_lora, core, mode_enum, name)
+    if payload.alias is not None:
+        try:
+            await asyncio.to_thread(
+                core.set_alias, mode_enum, ResourceKind.LORA, item.path, payload.alias
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if payload.note is not None:
+        await asyncio.to_thread(store.set_note, _lora_store_key(mode), name, payload.note)
+    return {"ok": True}
+
+
 
 def _find_video_model(core, video_model: VideoModel, name: str):
     for item in core.list_video_models(video_model):

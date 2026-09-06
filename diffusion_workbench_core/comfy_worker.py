@@ -44,8 +44,8 @@ try:
         H3_REF2VA_MAX_IMAGES,
         H3_REF2VA_MAX_TOTAL,
         H3_REF2VA_MAX_VIDEOS,
-        KREA2_LORA_MAX_STRENGTH,
-        KREA2_MAX_LORAS,
+        LORA_MAX_STRENGTH,
+        MAX_LORAS,
         REBALANCE_MAX_REFERENCE_IMAGES,
         REBALANCE_TOKEN_TIERS,
     )
@@ -73,8 +73,8 @@ except ImportError:  # The Comfy worker runs this module as a standalone script.
         H3_REF2VA_MAX_IMAGES,
         H3_REF2VA_MAX_TOTAL,
         H3_REF2VA_MAX_VIDEOS,
-        KREA2_LORA_MAX_STRENGTH,
-        KREA2_MAX_LORAS,
+        LORA_MAX_STRENGTH,
+        MAX_LORAS,
         REBALANCE_MAX_REFERENCE_IMAGES,
         REBALANCE_TOKEN_TIERS,
     )
@@ -626,8 +626,8 @@ class ComfyWorker:
         self.torch.cuda.reset_peak_memory_stats()
 
         sampling_model = self.model
-        if requested_mode == "krea2" and command.get("loras"):
-            # krea2 可选 LoRA：链式 patch 到本次采样使用的模型副本上，
+        if requested_mode in ("krea2", "zit") and command.get("loras"):
+            # krea2 / zit 可选 LoRA：链式 patch 到本次采样使用的模型副本上，
             # 不污染缓存的基础模型；释放时随 _unload_gpu 一并卸载。
             loras_metadata = []
             for spec in command["loras"]:
@@ -2425,19 +2425,19 @@ class ComfyWorker:
             raise ValueError("仅 krea2-rebalance 模式支持参考图")
         loras = command.get("loras") or []
         if loras:
-            if command.get("mode") != "krea2":
-                raise ValueError("仅 krea2 模式支持 LoRA")
-            if len(loras) > KREA2_MAX_LORAS:
-                raise ValueError(f"krea2 模式最多支持 {KREA2_MAX_LORAS} 个 LoRA")
+            if command.get("mode") not in ("krea2", "zit"):
+                raise ValueError("仅 krea2 / zit 模式支持 LoRA")
+            if len(loras) > MAX_LORAS:
+                raise ValueError(f"最多支持 {MAX_LORAS} 个 LoRA")
             for spec in loras:
                 if not isinstance(spec, dict) or not spec.get("path"):
                     raise ValueError("LoRA 必须提供 path")
                 strength = spec.get("strength", 1.0)
                 if not isinstance(strength, (int, float)) or isinstance(strength, bool):
                     raise ValueError("LoRA strength 必须是数值")
-                if not math.isfinite(float(strength)) or not 0 <= float(strength) <= KREA2_LORA_MAX_STRENGTH:
+                if not math.isfinite(float(strength)) or not 0 <= float(strength) <= LORA_MAX_STRENGTH:
                     raise ValueError(
-                        f"LoRA strength 必须是 0 到 {KREA2_LORA_MAX_STRENGTH} 的有限数值"
+                        f"LoRA strength 必须是 0 到 {LORA_MAX_STRENGTH} 的有限数值"
                     )
 
     def _validate_runtime_sampling(self, command: dict) -> None:

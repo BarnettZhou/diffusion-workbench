@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api/client";
+import Modal from "./Modal";
 import { useMessage } from "./Message";
 
 const MODE_LABELS = {
@@ -72,7 +73,10 @@ export default function Lightbox({
     function onKeyDown(event) {
       if (event.key === "ArrowLeft") onPrev?.();
       else if (event.key === "ArrowRight") onNext?.();
-      else if (event.key === "Escape") onClose();
+      else if (event.key === "Escape") {
+        // 抽屉内弹出的 modal(如 LoRA 封面选择)优先消费 Esc,避免把图片预览一起关掉
+        if (!document.querySelector(".modal-overlay")) onClose();
+      }
       else if (event.key === "l" || event.key === "L") toggleLoopPlayback();
     }
     window.addEventListener("keydown", onKeyDown);
@@ -239,6 +243,11 @@ function InfoDrawer({ view, meta, imageUrl, fileInfo, kind = "image", captureFra
   const [sendingToVideo, setSendingToVideo] = useState(false);
   const [sendingToEdit, setSendingToEdit] = useState(null); // 正在发送的编辑槽位:single / scene / subject
   const [sendingToCaption, setSendingToCaption] = useState(false);
+  // 设为 LoRA 封面:图片模式且生成参数带 LoRA 才可用;多个 LoRA 时弹窗选择
+  const [settingLoraCover, setSettingLoraCover] = useState(null); // 正在设置的 LoRA 文件名
+  const [loraPickerOpen, setLoraPickerOpen] = useState(false);
+  const loraItems = kind === "image" ? (view.loras ?? []) : [];
+  const canSetLoraCover = Boolean(view.mode && loraItems.length);
   // 设为封面需要元数据里的分类与模型文件名;视频封面取当前帧,设到视频模型卡片
   const canSetCover =
     kind === "video"
@@ -312,6 +321,30 @@ function InfoDrawer({ view, meta, imageUrl, fileInfo, kind = "image", captureFra
     }
   }
 
+  // 把当前图片字节设为指定 LoRA 的封面(与设为模型封面同一条上传通道)
+  async function handleSetLoraCover(lora) {
+    if (!canSetLoraCover || settingLoraCover) return;
+    setSettingLoraCover(lora.name);
+    try {
+      const response = await fetch(imageUrl);
+      if (!response.ok) throw new Error(`图片读取失败(HTTP ${response.status})`);
+      const blob = await response.blob();
+      await api.uploadLoraCover(view.mode, lora.name, blob);
+      message.success(`已设为 ${lora.name} 的封面`);
+    } catch (err) {
+      message.error(`设置 LoRA 封面失败:${err.message}`);
+    } finally {
+      setSettingLoraCover(null);
+      setLoraPickerOpen(false);
+    }
+  }
+
+  // 菜单入口:只有一个 LoRA 直接设置,多个则弹窗列出供选择
+  function handleSetLoraCoverClick() {
+    if (loraItems.length === 1) handleSetLoraCover(loraItems[0]);
+    else setLoraPickerOpen(true);
+  }
+
   // 把当前图片导入为反推输入图片(与编辑共用受控通道)并跳到图片反推 tab
   async function handleSendToCaption() {
     if (!onSendToCaption || sendingToCaption) return;
@@ -376,11 +409,25 @@ function InfoDrawer({ view, meta, imageUrl, fileInfo, kind = "image", captureFra
           {view.text_encoder_name && (
             <DrawerRow label="Text Encoder" value={view.text_encoder_name} mono />
           )}
-          {view.sampler && (
+          {view.loras?.length > 0 && (
             <DrawerRow
-              label="采样 / 调度"
-              value={`${view.sampler} / ${view.scheduler}`}
+              label="LoRA"
+              value={view.loras
+                // 强度为 1 时不附带强度标注;非 1 时用方括号,避免圆括号看着像文件名的一部分
+                .map((item) =>
+                  Number(item.strength) === 1
+                    ? item.name
+                    : `${item.name} [${item.strength}]`,
+                )
+                .join(", ")}
+              mono
             />
+          )}
+          {view.sampler && (
+            <DrawerRow label="采样器" value={view.sampler} />
+          )}
+          {view.scheduler && (
+            <DrawerRow label="调度器" value={view.scheduler} />
           )}
           {view.cfg != null && <DrawerRow label="CFG" value={String(view.cfg)} />}
           {view.shift != null && <DrawerRow label="Shift" value={String(view.shift)} />}
@@ -456,6 +503,21 @@ function InfoDrawer({ view, meta, imageUrl, fileInfo, kind = "image", captureFra
               >
                 {settingCover ? "设置中……" : "设置为封面"}
               </button>
+              {canSetLoraCover && (
+                <button
+                  id="drawer-set-lora-cover"
+                  type="button"
+                  role="menuitem"
+                  disabled={Boolean(settingLoraCover)}
+                  title="把当前图片设为生成时所用 LoRA 的封面"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    handleSetLoraCoverClick();
+                  }}
+                >
+                  {settingLoraCover ? "设置中……" : "设置为 LoRA 封面"}
+                </button>
+              )}
               {onSendToVideo && (
                 <button
                   id="drawer-send-to-video"
@@ -551,6 +613,33 @@ function InfoDrawer({ view, meta, imageUrl, fileInfo, kind = "image", captureFra
           )}
         </div>
       </footer>
+
+      {loraPickerOpen && (
+        <Modal
+          id="lora-cover-picker"
+          title="设置为 LoRA 封面"
+          onClose={() => setLoraPickerOpen(false)}
+        >
+          <div className="lora-cover-picker">
+            {loraItems.map((item) => (
+              <button
+                key={item.name}
+                id={`lora-cover-pick-${item.name}`}
+                type="button"
+                className="chip lora-cover-picker-item"
+                disabled={Boolean(settingLoraCover)}
+                onClick={() => handleSetLoraCover(item)}
+              >
+                {settingLoraCover === item.name
+                  ? "设置中……"
+                  : Number(item.strength) === 1
+                    ? item.name
+                    : `${item.name} [${item.strength}]`}
+              </button>
+            ))}
+          </div>
+        </Modal>
+      )}
     </aside>
   );
 }

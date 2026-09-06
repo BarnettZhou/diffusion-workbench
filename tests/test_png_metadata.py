@@ -223,6 +223,31 @@ class PngMetadataTests(unittest.TestCase):
         self.assertNotIn("ref_boost", metadata["parameters"])
         self.assertNotIn("edit_lora", metadata["resources"])
 
+    def test_zit_metadata_records_loras(self):
+        command = {
+            "job_id": "zit-job",
+            "mode": "zit",
+            "prompt": "p",
+            "negative_prompt": "",
+            "width": 576,
+            "height": 576,
+            "steps": 8,
+            "seed": 1,
+            "cfg": 1.0,
+            "sampler": "euler",
+            "scheduler": "simple",
+            "model_path": "m",
+            "clip_type": "stable_diffusion",
+            "loras": [{"path": "/tmp/zit-style-a.safetensors", "strength": 0.6}],
+        }
+
+        metadata = build_generation_metadata(command, {})
+
+        loras = metadata["resources"]["loras"]
+        self.assertEqual(len(loras), 1)
+        self.assertEqual(loras[0]["filename"], "zit-style-a.safetensors")
+        self.assertEqual(loras[0]["strength"], 0.6)
+
     def test_rebalance_metadata_records_reference_fields(self):
         command = {
             "job_id": "rebalance-job",

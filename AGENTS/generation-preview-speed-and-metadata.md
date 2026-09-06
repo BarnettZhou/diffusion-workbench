@@ -152,7 +152,7 @@ Worker 的 `prompt` 阶段包含文本 tokenizer/conditioning 构建。连续任
 `ref_boost`（浮点），并在 `resources` 下附加 `edit_lora`（仅文件名 + 路径，无
 SHA-256）。`krea2-rebalance` 模式会在 `parameters` 下附加 `reference_images`
 （参考图文件名列表）与 `reference_image_tokens`（每张图的 token 档位列表）。
-`krea2` 模式启用可选 LoRA 时，在 `resources` 下附加 `loras` 列表（每项为
+`krea2` / `zit` 模式启用可选 LoRA 时，在 `resources` 下附加 `loras` 列表（每项为
 资源指纹 + `strength` 字段）。其他模式不写入这些键。
 
 旧 PNG 不会自动补写元数据。图片编辑器、聊天软件或图床可能删除 PNG 文本块，SQLite

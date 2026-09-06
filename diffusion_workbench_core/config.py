@@ -34,7 +34,7 @@ class ModeResources:
     model_loader: ModelLoader = ModelLoader.COMPONENTS
     # Krea2 图像编辑专用 LoRA；仅 Krea2/Krea2-Edit 实际使用，未配置时为 None。
     edit_lora: Path | None = None
-    # krea2 模式可选 LoRA 候选目录/文件列表（与 diffusion/vae 同规则扫描），
+    # krea2 / zit 模式可选 LoRA 候选目录/文件列表（与 diffusion/vae 同规则扫描），
     # 提交时按 index 选择，最多 3 个；未配置时为空元组。
     loras: tuple[Path, ...] = ()
 

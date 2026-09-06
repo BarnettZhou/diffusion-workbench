@@ -243,6 +243,33 @@ class CreateJobsTests(ApiTestCase):
         self.assertEqual(settings.loras[1].path.name, "style-b.safetensors")
         self.assertEqual(settings.loras[1].strength, 1.0)
 
+    def test_zit_lora_submit_maps_index_and_strength(self):
+        response = self.client.post(
+            "/api/v1/jobs",
+            json=self._payload(
+                mode="zit",
+                model_index=1,
+                loras=[{"index": 1, "strength": 0.6}, {"index": 2}],
+            ),
+        )
+
+        self.assertEqual(response.status_code, 202)
+        job = response.json()["jobs"][0]
+        self.assertEqual(
+            job["loras"],
+            [
+                {"name": "zit-style-a.safetensors", "strength": 0.6},
+                {"name": "zit-style-b.safetensors", "strength": 1.0},
+            ],
+        )
+        settings, _ = self.core.submitted[-1]
+        self.assertEqual(settings.mode, Mode.ZIT)
+        self.assertEqual(len(settings.loras), 2)
+        self.assertEqual(settings.loras[0].path.name, "zit-style-a.safetensors")
+        self.assertEqual(settings.loras[0].strength, 0.6)
+        self.assertEqual(settings.loras[1].path.name, "zit-style-b.safetensors")
+        self.assertEqual(settings.loras[1].strength, 1.0)
+
     def test_krea2_without_loras_keeps_empty_lora_list(self):
         response = self.client.post("/api/v1/jobs", json=self._payload())
 
@@ -251,8 +278,8 @@ class CreateJobsTests(ApiTestCase):
         settings, _ = self.core.submitted[-1]
         self.assertEqual(settings.loras, ())
 
-    def test_lora_rejected_for_non_krea2_mode(self):
-        payload = self._payload(mode="zit", loras=[{"index": 1}])
+    def test_lora_rejected_for_unsupported_mode(self):
+        payload = self._payload(mode="zib", loras=[{"index": 1}])
         response = self.client.post("/api/v1/jobs", json=payload)
 
         self.assertEqual(response.status_code, 422)

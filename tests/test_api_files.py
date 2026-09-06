@@ -130,6 +130,36 @@ class ImageMetadataTests(ApiTestCase):
         self.assertNotIn(str(self.core.root), str(body))
         self.assertNotIn("sha256", str(body))
 
+    def test_metadata_exposes_loras_sanitized(self):
+        from diffusion_workbench_core.png_metadata import build_generation_metadata
+
+        command = self._metadata_command()
+        command["loras"] = [
+            {
+                "path": str(self.core.root / "loras" / "style-a.safetensors"),
+                "strength": 0.8,
+            },
+            {
+                "path": str(self.core.root / "loras" / "style-b.safetensors"),
+                "strength": 1.0,
+            },
+        ]
+        metadata = build_generation_metadata(command, {"comfyui": "0.1"})
+        job = self._completed_job(self._png_with_metadata("zit-00011.png", metadata))
+
+        response = self.client.get(f"/api/v1/images/{job.id}/metadata")
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(
+            body["loras"],
+            [
+                {"name": "style-a.safetensors", "strength": 0.8},
+                {"name": "style-b.safetensors", "strength": 1.0},
+            ],
+        )
+        # 不泄露 LoRA 的服务器绝对路径
+        self.assertNotIn(str(self.core.root), str(body))
+
     def test_v1_metadata_returns_compat_defaults(self):
         from diffusion_workbench_core.png_metadata import build_generation_metadata
 

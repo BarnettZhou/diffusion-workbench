@@ -15,7 +15,7 @@ from diffusion_workbench_core import (
     WorkbenchCore,
 )
 from diffusion_workbench_core.domain import (
-    KREA2_MAX_LORAS,
+    MAX_LORAS,
     MINIMAX_H3_MODELS,
     LoraSpec,
     UpscaleMethod,
@@ -283,10 +283,10 @@ def submit_jobs(core: WorkbenchCore, payload: CreateJobsRequest):
         text_encoder = None
     loras: tuple[LoraSpec, ...] = ()
     if payload.loras:
-        if mode != Mode.KREA2:
-            raise ValueError("仅 krea2 模式支持 LoRA")
-        if len(payload.loras) > KREA2_MAX_LORAS:
-            raise ValueError(f"krea2 模式最多支持 {KREA2_MAX_LORAS} 个 LoRA")
+        if mode not in (Mode.KREA2, Mode.ZIT):
+            raise ValueError("仅 krea2 / zit 模式支持 LoRA")
+        if len(payload.loras) > MAX_LORAS:
+            raise ValueError(f"最多支持 {MAX_LORAS} 个 LoRA")
         loras = tuple(
             LoraSpec(
                 path=resource_at(core, mode, ResourceKind.LORA, spec.index).path,

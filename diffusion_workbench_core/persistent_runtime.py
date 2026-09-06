@@ -300,7 +300,7 @@ class PersistentComfyRuntime:
                 float(job.ref_boost) if job.ref_boost is not None else None
             ),
             "edit_lora_path": edit_lora_path,
-            # krea2 模式可选 LoRA 列表；其他任务一律空列表。
+            # krea2 / zit 模式可选 LoRA 列表；其他任务一律空列表。
             "loras": [
                 {"path": str(spec.path.resolve()), "strength": float(spec.strength)}
                 for spec in job.loras

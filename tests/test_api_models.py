@@ -240,5 +240,84 @@ class ModelCoverTests(ApiTestCase):
         self.assertEqual(response.status_code, 404)
 
 
+class LoraRoutesTests(ApiTestCase):
+    def test_lists_loras_with_info(self):
+        response = self.client.get("/api/v1/loras/krea2")
+        self.assertEqual(response.status_code, 200)
+        loras = response.json()["loras"]
+        self.assertEqual(len(loras), 2)
+        first = loras[0]
+        self.assertEqual(first["name"], "style-a.safetensors")
+        self.assertEqual(first["mode"], "krea2")
+        self.assertIsNone(first["alias"])
+        self.assertEqual(first["note"], "")
+        self.assertFalse(first["has_cover"])
+        self.assertIsNone(first["cover_url"])
+
+    def test_zit_loras_listed(self):
+        response = self.client.get("/api/v1/loras/zit")
+        self.assertEqual(response.status_code, 200)
+        loras = response.json()["loras"]
+        self.assertEqual([item["name"] for item in loras], [
+            "zit-style-a.safetensors",
+            "zit-style-b.safetensors",
+        ])
+
+    def test_mode_without_loras_returns_empty_list(self):
+        response = self.client.get("/api/v1/loras/zib")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["loras"], [])
+
+    def test_update_alias_and_note(self):
+        response = self.client.put(
+            "/api/v1/loras/zit/zit-style-a.safetensors/info",
+            json={"alias": "写实风", "note": "人像常用"},
+        )
+        self.assertEqual(response.status_code, 200)
+
+        loras = self.client.get("/api/v1/loras/zit").json()["loras"]
+        first = loras[0]
+        self.assertEqual(first["alias"], "写实风")
+        self.assertEqual(first["note"], "人像常用")
+        # alias 走资源别名机制,资源列表同步可见
+        resources = self.client.get("/api/v1/resources/zit/loras").json()["resources"]
+        self.assertEqual(resources[0]["alias"], "写实风")
+
+    def test_update_unknown_lora_returns_404(self):
+        response = self.client.put(
+            "/api/v1/loras/zit/nope.safetensors/info", json={"note": "x"}
+        )
+        self.assertEqual(response.status_code, 404)
+
+    def test_upload_and_download_cover(self):
+        data = b"\x89PNG\r\n\x1a\nfakecover"
+        upload = self.client.put(
+            "/api/v1/loras/krea2/style-a.safetensors/cover",
+            content=data,
+            headers={"Content-Type": "image/png"},
+        )
+        self.assertEqual(upload.status_code, 200)
+
+        download = self.client.get("/api/v1/loras/krea2/style-a.safetensors/cover")
+        self.assertEqual(download.status_code, 200)
+        self.assertEqual(download.content, data)
+
+        loras = self.client.get("/api/v1/loras/krea2").json()["loras"]
+        self.assertTrue(loras[0]["has_cover"])
+        self.assertIsNotNone(loras[0]["cover_url"])
+
+    def test_cover_upload_unknown_lora_returns_404(self):
+        response = self.client.put(
+            "/api/v1/loras/krea2/nope.safetensors/cover",
+            content=b"png",
+            headers={"Content-Type": "image/png"},
+        )
+        self.assertEqual(response.status_code, 404)
+
+    def test_missing_cover_returns_404(self):
+        response = self.client.get("/api/v1/loras/zit/zit-style-a.safetensors/cover")
+        self.assertEqual(response.status_code, 404)
+
+
 if __name__ == "__main__":
     unittest.main()

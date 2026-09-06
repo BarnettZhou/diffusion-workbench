@@ -392,9 +392,12 @@ class ComfyWorkerTests(unittest.TestCase):
             )
         )
 
-    def test_krea2_command_rejects_loras_in_other_modes(self):
-        with self.assertRaisesRegex(ValueError, "krea2"):
-            ComfyWorker._validate(self._krea2_lora_command(mode="zit"))
+    def test_zit_command_with_loras_is_valid(self):
+        ComfyWorker._validate(self._krea2_lora_command(mode="zit"))
+
+    def test_command_rejects_loras_in_other_modes(self):
+        with self.assertRaisesRegex(ValueError, "krea2 / zit"):
+            ComfyWorker._validate(self._krea2_lora_command(mode="zib"))
 
     def test_krea2_command_rejects_more_than_three_loras(self):
         with self.assertRaisesRegex(ValueError, "最多支持 3 个 LoRA"):

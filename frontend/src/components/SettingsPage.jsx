@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import LLMRecords from "./LLMRecords";
 import CaptionRecords from "./CaptionRecords";
 import ModelSettings from "./ModelSettings";
+import LoraSettings from "./LoraSettings";
 import VideoModelSettings from "./VideoModelSettings";
 import PromptPresets from "./PromptPresets";
 import RemoteModelSelect from "./RemoteModelSelect";
@@ -12,6 +13,7 @@ import { api } from "../api/client";
 const SETTINGS_TABS = [
   { key: "general", label: "生图设置" },
   { key: "models", label: "生图模型" },
+  { key: "loras", label: "生图Loras" },
   { key: "video", label: "视频设置" },
   { key: "videoModels", label: "视频模型" },
   { key: "llm", label: "大模型" },
@@ -53,6 +55,15 @@ export default function SettingsPage({ settings, modes, onUpdate, onResourcesCha
         {mounted.includes("models") && (
           <div className={panelClass("models")}>
             <ModelSettings
+              modes={modes}
+              onResourcesChanged={onResourcesChanged}
+              privacyMode={privacyMode}
+            />
+          </div>
+        )}
+        {mounted.includes("loras") && (
+          <div className={panelClass("loras")}>
+            <LoraSettings
               modes={modes}
               onResourcesChanged={onResourcesChanged}
               privacyMode={privacyMode}

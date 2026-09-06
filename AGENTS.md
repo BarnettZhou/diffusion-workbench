@@ -13,7 +13,7 @@ ZIB、SDXL 六种模型模式（`Mode` 枚举）。
 通过 stdin/stdout 上的 `DWB_EVENT=` JSON 行通信。
 
 主要能力：单 GPU 串行任务队列、批量提交、模型跨任务复用与切模重载、跳过/停止、
-SQLite 任务持久化与资源别名、krea2 可选 LoRA（按 index 引用，最多 3 个）、
+SQLite 任务持久化与资源别名、krea2 / zit 可选 LoRA（按 index 引用，最多 3 个）、
 PNG 内嵌完整生成参数（iTXt 块）、采样进度/速度/ETA
 与 latent 预览事件、图片反推（caption，本地复用 krea2 的 Qwen3-VL 同步直调不入队；
 也可走设置中多端点 `caption_api` 配置的外部视觉模型 API，Ollama / OpenAI 兼容，不经 GPU Worker）、

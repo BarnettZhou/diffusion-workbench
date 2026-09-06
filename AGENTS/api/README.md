@@ -49,7 +49,7 @@ vite preview 的 `preview.proxy` 当前版本不会转发 `/api`，不要用它�
 | `GET` | `/api/v1/upscale-models` | 放大模型列表（不含路径） |
 | `GET` | `/api/v1/resources/{mode}/{kind}` | 模型/VAE/text encoder/LoRA 列表（kind ∈ diffusion/vae/text_encoder/loras） |
 | `PUT` | `/api/v1/resources/{mode}/{kind}/{index}/alias` | 设置资源别名 |
-| `POST` | `/api/v1/jobs` | 提交一张或一批任务（202；krea2 模式可带 `loras`，按 index 引用、最多 3 个） |
+| `POST` | `/api/v1/jobs` | 提交一张或一批任务（202；krea2 / zit 模式可带 `loras`，按 index 引用、最多 3 个） |
 | `GET` | `/api/v1/jobs` | 历史任务分页 |
 | `GET` | `/api/v1/jobs/{job_id}` | 读取单个任务持久化状态 |
 | `POST` | `/api/v1/control/stop` | 全局停止并清空队列 |
@@ -65,6 +65,10 @@ vite preview 的 `preview.proxy` 当前版本不会转发 `/api`，不要用它�
 | `GET` | `/api/v1/models/{mode}/{name}/cover` | 模型封面图片 |
 | `PUT` | `/api/v1/models/{mode}/{name}/cover` | 上传模型封面（png/jpeg/webp） |
 | `PUT` | `/api/v1/models/{mode}/{name}/info` | 更新模型别名/备注 |
+| `GET` | `/api/v1/loras/{mode}` | LoRA 画册列表（别名/大小/备注/封面；krea2 / zit） |
+| `GET` | `/api/v1/loras/{mode}/{name}/cover` | LoRA 封面图片 |
+| `PUT` | `/api/v1/loras/{mode}/{name}/cover` | 上传 LoRA 封面（png/jpeg/webp） |
+| `PUT` | `/api/v1/loras/{mode}/{name}/info` | 更新 LoRA 标题（别名）/备注 |
 | `GET` | `/api/v1/images/{job_id}` | 下载任务原始 PNG（文件存在即可，不限 completed） |
 | `GET` | `/api/v1/images/{job_id}/upscaled` | 下载任务的放大图 PNG |
 | `GET` | `/api/v1/images/{job_id}/metadata` | 读取 PNG 内嵌生成参数（脱敏） |
